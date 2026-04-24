@@ -53,7 +53,7 @@ class MarketContext:
     def apply_trade(self, trade_data: Dict[str, Any]) -> None:
         """处理逐笔成交，并检查是否消耗了防线"""
         price = float(trade_data['price'])
-        sz = float(trade_data['sz'])
+        sz = float(trade_data['size'])
         side = trade_data['side']
         
         self.current_price = price
