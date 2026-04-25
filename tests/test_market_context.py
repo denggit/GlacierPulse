@@ -58,8 +58,8 @@ async def run_test():
     context = MarketContext(volume_bar_size=100.0)
 
     # 塞入测试防线（为了测试自动消耗机制，建议你填两个离当前 ETH 价格比较近的数字，比如上下各 5 块钱）
-    context.add_liquidity_level(3000.0, 'SSL')
-    context.add_liquidity_level(3200.0, 'BSL')
+    context.add_liquidity_level(2310.0, 'SSL')
+    context.add_liquidity_level(2320.0, 'BSL')
 
     # 2. 回调对接
     # 修复：因为 okx_stream.py 里使用了 await，这里必须显式定义为 async 函数
