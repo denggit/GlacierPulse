@@ -62,7 +62,13 @@ async def run_test():
     context.add_liquidity_level(3200.0, 'BSL')
 
     # 2. 回调对接
-    trade_streamer = OKXTickStreamer(on_tick_callback=lambda data: context.apply_trade(data))
+    # 修复：因为 okx_stream.py 里使用了 await，这里必须显式定义为 async 函数
+    async def async_trade_callback(data):
+        context.apply_trade(data)
+
+    trade_streamer = OKXTickStreamer(on_tick_callback=async_trade_callback)
+
+    # 因为 okx_books_stream.py 里没有用 await，所以它用同步 lambda 没问题
     book_streamer = OKXBooksStreamer(on_book_callback=lambda data: context.apply_book_delta(data))
 
     # 3. 启动！
