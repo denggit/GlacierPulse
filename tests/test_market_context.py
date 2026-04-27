@@ -36,10 +36,8 @@ async def soak_test_monitor(context: MarketContext):
         logger.info("=" * 50)
         logger.info(f"⏱️ [心跳检测] 最新价格: {context.current_price:.2f} | CVD: {context.current_cvd:.2f}")
         logger.info(f"📊 [盘口健康度] Bids: {bid_len}档 | Asks: {ask_len}档")
-        logger.info(
-            f"📦 [微观动能] 等量K线缓存数: {len(context.volume_bars)}/100 | 当前累积: {context.current_vol_accumulator:.2f}")
-        logger.info(
-            f"🎯 [现存防线] 支撑(SSL): {list(context.sell_side_liquidity.keys())} | 阻力(BSL): {list(context.buy_side_liquidity.keys())}")
+        logger.info(f"📦 [资金动能] 等量K线缓存数: {len(context.volume_bars)}/300 | 当前累积: {context.current_notional_accumulator:,.2f} USDT")
+        logger.info(f"🎯 [现存防线] 支撑(SSL): {list(context.sell_side_liquidity.keys())} | 阻力(BSL): {list(context.buy_side_liquidity.keys())}")
 
         # ---------------- 核心检查逻辑 ----------------
         # 1. 检查订单簿是否发散 (OKX 默认推 400 档，如果超过 450 绝对有问题)
