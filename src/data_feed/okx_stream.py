@@ -1,6 +1,5 @@
 import asyncio
-# import json
-import orjson
+import json
 
 import websockets
 
@@ -32,9 +31,7 @@ class OKXTickStreamer:
 
                     while True:
                         response = await ws.recv()
-                        # 原来：data = json.loads(response)
-                        # 换成极速版：
-                        data = orjson.loads(response)
+                        data = json.loads(response)
 
                         # 如果包含交易数据，且上层注册了回调函数
                         if 'data' in data and self.on_tick_callback:
