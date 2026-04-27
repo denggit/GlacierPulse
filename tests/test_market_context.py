@@ -51,15 +51,20 @@ async def soak_test_monitor(context: MarketContext):
             logger.error("🚨 [数据告警] 盘口干涸！WebSocket 可能已断开但未重连！")
 
         logger.info("=" * 50)
-
+        
 
 async def run_test():
-    # 1. 实例化 (Volume Bar 设小一点，设为 100 个 ETH，方便快速看到封口测试)
-    context = MarketContext(volume_bar_size=100.0)
+    # 从你的系统环境变量或 .env 中读取参数 (如果没有则回退到 150 万)
+    # 测试期间，为了能更快看到效果，你可以手动把这里的 fallback 值改小一点，比如 300_000.0 (30万U)
+    notional_threshold = float(os.getenv("TARGET_NOTIONAL_USDT", 300_000.0))
+    
+    # 1. 实例化 (使用新的参数名)
+    context = MarketContext(target_notional_usdt=notional_threshold)
+    logger.info(f"⚙️ 系统已初始化，当前 K 线名义价值门槛: {notional_threshold:,.0f} USDT")
 
-    # 塞入测试防线（为了测试自动消耗机制，建议你填两个离当前 ETH 价格比较近的数字，比如上下各 5 块钱）
-    context.add_liquidity_level(2310.0, 'SSL')
-    context.add_liquidity_level(2320.0, 'BSL')
+    # 塞入测试防线
+    context.add_liquidity_level(3000.0, 'SSL') 
+    context.add_liquidity_level(3200.0, 'BSL')
 
     # 2. 回调对接
     # 修复：因为 okx_stream.py 里使用了 await，这里必须显式定义为 async 函数
