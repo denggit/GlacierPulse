@@ -100,22 +100,22 @@ class Phase1Engine:
         return recent_net_cvd <= self.trigger_cvd_usdt
 
     def _open_window(self, ts: float, current_price: float):
-        """🔥 引擎点火！记录快照"""
         self.is_detecting = True
         self.detect_start_ts = ts
         self.start_price = current_price
         
-        # 【神级优化】：深拷贝当前的 Bids 订单簿，作为初始快照
         self.start_bids_snapshot = copy.deepcopy(self.ctx.bids)
         
-        # 初始化战火线和动能累计
         self.traded_min_price = current_price
         self.traded_max_price = current_price
         self.window_cvd_usdt = 0.0
         self.window_recent_cvd = 0.0
         self.window_last_trade_ts = ts
         
-        logger.info(f"🔥 [流速点火] 检测到极限抛压，开启冰山观测窗！起始价格: {current_price}")
+        # 👇 修改这里：计算当前视窗内的触发 CVD 并打印
+        trigger_cvd = sum(delta for _, delta in self.tick_buffer)
+        logger.info(f"🔥 [流速点火] 视窗开启! 当前3秒内CVD: {trigger_cvd:,.0f} U | "
+                    f"触碰价格: {current_price} | 时间戳: {ts}")
 
     def _update_observation(self, ts: float, price: float, cvd_delta: float):
         """窗口维持：动态拉伸战火线"""
