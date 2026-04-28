@@ -10,6 +10,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import logging
+from dotenv import load_dotenv
 
 from src.data_feed.okx_books_stream import OKXBooksStreamer
 from src.context.market_context import MarketContext
