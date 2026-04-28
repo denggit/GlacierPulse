@@ -9,10 +9,6 @@ import sys
 # 确保能导入 src 目录
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import logging
-from dotenv import load_dotenv
-
-from src.data_feed.okx_stream import OKXStreamer
 from src.data_feed.okx_books_stream import OKXBooksStreamer
 from src.context.market_context import MarketContext
 from src.detectors.iceberg_detector import IcebergDetector
@@ -81,7 +77,7 @@ async def main():
             logger.error(f"❌ 处理 Book 时发生错误: {e}", exc_info=True)
 
     # 5. 启动双流通道
-    trade_streamer = OKXStreamer(callback=handle_trade)
+    trade_streamer = OKXTickStreamer(callback=handle_trade)
     book_streamer = OKXBooksStreamer(callback=handle_book)
     
     # 异步并发：先启动订单簿构建底座，再接入逐笔成交
