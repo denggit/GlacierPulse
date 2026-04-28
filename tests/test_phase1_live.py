@@ -9,6 +9,8 @@ import sys
 # 确保能导入 src 目录
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import logging
+
 from src.data_feed.okx_books_stream import OKXBooksStreamer
 from src.context.market_context import MarketContext
 from src.detectors.iceberg_detector import IcebergDetector
