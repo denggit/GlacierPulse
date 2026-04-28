@@ -34,11 +34,11 @@ logging.getLogger('websockets').setLevel(logging.WARNING)
 async def main():
     load_dotenv()
     
-    # 1. 初始化底座 (它在后台默默切分150万U的K线，但不会再打印了)
+    # 1. 初始化底座
     target_notional = float(os.getenv("TARGET_NOTIONAL_USDT", 1_500_000.0))
     ctx = MarketContext(target_notional_usdt=target_notional)
     
-    # 2. 初始化雷达 (隐藏吸收大于 100万U，且吸收率 > 50%)
+    # 2. 初始化雷达
     detector = IcebergDetector(
         min_hidden_notional_usdt=1_000_000.0, 
         min_absorption_rate=0.5
@@ -47,22 +47,17 @@ async def main():
     # 3. 初始化点火引擎
     engine = Phase1Engine(market_context=ctx, iceberg_detector=detector)
     
-    # 💡 [实盘测试小贴士]：由于测试期间很难立刻碰到 800万 级别的连环爆仓，
-    # 建议你可以先把它改成 -300万 测一下系统的敏锐度，确认能抓到后，再改回 -800万。
     engine.trigger_cvd_usdt = -3_000_000.0  
     
     logger.info("🚀 Phase 1 冰山猎手已启动 | 保持静默运行，只播报异常与猎物...")
 
     # 4. 定义数据流回调
+    # [修复] handle_trade 保持 async，因为 okx_stream 中使用了 await
     async def handle_trade(trade_data):
         try:
-            # 1. 底座记账
             ctx.apply_trade(trade_data)
-            
-            # 2. 引擎查流速
             signal = engine.process_tick(trade_data)
             
-            # 3. 如果关窗结算并抓到了猎物
             if signal:
                 if signal['is_iceberg']:
                     logger.info(f"🎯 [捕获冰山!] 确信度: {signal['confidence']:.2f} | "
@@ -74,20 +69,22 @@ async def main():
         except Exception as e:
             logger.error(f"❌ 处理 Trade 时发生错误: {e}", exc_info=True)
 
-    async def handle_book(book_data):
+    # [修复] 去掉了 async，因为 okx_books_stream 中是普通同步调用
+    def handle_book(book_data):
         try:
             ctx.apply_book_delta(book_data)
         except Exception as e:
             logger.error(f"❌ 处理 Book 时发生错误: {e}", exc_info=True)
 
     # 5. 启动双流通道
+    # [修复] 修改了参数名，与类定义保持一致
     trade_streamer = OKXTickStreamer(on_tick_callback=handle_trade)
     book_streamer = OKXBooksStreamer(on_book_callback=handle_book)
     
-    # 异步并发：先启动订单簿构建底座，再接入逐笔成交
-    asyncio.create_task(book_streamer.start())
+    # [修复] 启动方法名由 start() 改为 connect()
+    asyncio.create_task(book_streamer.connect())
     await asyncio.sleep(1) # 给订单簿 1 秒的初始化时间
-    asyncio.create_task(trade_streamer.start())
+    asyncio.create_task(trade_streamer.connect())
 
     # 挂起主线程，让它天荒地老地跑下去
     while True:
