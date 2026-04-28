@@ -81,8 +81,8 @@ async def main():
             logger.error(f"❌ 处理 Book 时发生错误: {e}", exc_info=True)
 
     # 5. 启动双流通道
-    trade_streamer = OKXTickStreamer(callback=handle_trade)
-    book_streamer = OKXBooksStreamer(callback=handle_book)
+    trade_streamer = OKXTickStreamer(on_tick_callback=handle_trade)
+    book_streamer = OKXBooksStreamer(on_book_callback=handle_book)
     
     # 异步并发：先启动订单簿构建底座，再接入逐笔成交
     asyncio.create_task(book_streamer.start())
