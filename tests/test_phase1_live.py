@@ -4,6 +4,11 @@
 
 import asyncio
 import os
+import sys
+
+# 确保能导入 src 目录
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import logging
 from dotenv import load_dotenv
 
