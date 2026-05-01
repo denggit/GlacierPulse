@@ -64,7 +64,7 @@ async def main():
                     direction_label = "多" if signal.get('direction', 'BUY') == 'BUY' else "空"
 
                     logger.info(f"🎯 [捕获冰山 ({direction_label})] 确信度: {signal['confidence']:.2f} | "
-                                f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {signal['absorption_rate']:.1f}%")
+                                f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {signal.get('absorption_rate', 0) * 100:.1f}%")
                 elif signal['behavior'] == 'SPOOFING_WITHDRAWAL':
                     logger.warning(f"⚠️ [撤单欺诈!] 主力撤销了假墙！"
                                    f"虚假支撑消失量: {abs(signal['hidden_volume']):,.0f} U")
