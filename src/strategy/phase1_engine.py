@@ -25,14 +25,14 @@ class Phase1Engine:
         # ==========================================
         # 在过去 X 秒内，如果净砸盘量达到 Y，立刻点火！
         self.trigger_window_sec = 3.0
-        self.trigger_cvd_usdt = -8_000_000.0  # 默认 800万 USDT 的极速抛压
+        self.trigger_cvd_usdt = -800_000.0  # 默认 80万 USDT 的极速抛压
         self.tick_buffer = collections.deque() # 存放元组: (timestamp, cvd_delta_usdt)
         
         # ==========================================
         # 2. 动态熔断关窗参数 (Close Configs)
         # ==========================================
         self.exhaustion_sec = 1.5           # 熔断器1：超过 1.5 秒没有新的强力砸盘，动能衰竭
-        self.reversal_cvd_usdt = 1_500_000.0  # 熔断器2：出现 50万 USDT 的主买，多头反击，多空逆转
+        self.reversal_cvd_usdt = 150_000.0  # 熔断器2：出现 15万 USDT 的主买，多头反击，多空逆转
         self.max_drop_pct = 0.01            # 熔断器3：价格瞬间击穿超过 1% (黑天鹅防守)
         self.cooldown_until_ts = 0.0        # 熔断器4：冷却期时间戳锁
         
@@ -124,15 +124,18 @@ class Phase1Engine:
         """窗口维持：动态拉伸战火线"""
         self.window_last_trade_ts = ts
         self.window_cvd_usdt += cvd_delta
-        
-        # 记录最近一小段的动能，用来查反弹
-        self.window_recent_cvd += cvd_delta 
-        if cvd_delta < 0: # 如果还在砸盘，重置反弹累计器
-            self.window_recent_cvd = 0.0
-            
+
         # 动态扩大战火线 (极其关键：只记录发生过真实成交的区间)
-        if price < self.traded_min_price: self.traded_min_price = price
-        if price > self.traded_max_price: self.traded_max_price = price
+        if price < self.traded_min_price:
+            self.traded_min_price = price
+            # 👇 【修改】：只有当砸出新低时，才说明之前的托底失败，重置反弹动能！
+            self.window_recent_cvd = 0.0
+        else:
+            # 👇 【修改】：只要没创新低，就算中间有散户小卖单，也老老实实做净值累加！
+            self.window_recent_cvd += cvd_delta
+
+        if price > self.traded_max_price:
+            self.traded_max_price = price
 
     def _check_close_condition(self, ts: float, current_price: float) -> bool:
         """检查三大熔断条件"""
