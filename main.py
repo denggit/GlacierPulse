@@ -58,14 +58,13 @@ async def main():
                 direction_label = "多" if direction == 'BUY' else "空"
                 abs_rate = signal.get('absorption_rate', 0) * 100
                 conf = signal.get('confidence', 0)
-                # 👇 【新增】：获取总攻击量
-                total_attack = abs(signal.get('total_attack', 0))
+
+                # 👇 【修正】：把名字从 total_attack 改为 active_volume
+                actual_attack = abs(signal.get('active_volume', 0))
 
                 # ✨ 【优化过滤】：
-                # 1. 确信度必须大于 0.8 (过滤 0.66 这种弱信号)
-                # 2. 战火窗内的总攻击量必须大于 100万 U (确保不是瞬间闪现的冰山)
-                if conf < 0.8 or total_attack < 1_000_000:
-                    logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({total_attack:,.0f}U)不足，放弃捕捉。")
+                if conf < 0.8 or actual_attack < 1_000_000:
+                    logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({actual_attack:,.0f}U)不足，放弃捕捉。")
                     return
 
                 # ✨ 【高亮逻辑】：吸收率 >= 100% 且确信度高，显示为金黄色加粗特效
