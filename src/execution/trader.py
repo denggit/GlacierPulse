@@ -3,7 +3,7 @@
 """
 @Author     : Zijun Deng
 @File       : trader.py
-@Description: 机构级冰山订单流执行器 (全动态余额感知 + OKX 稳健基建)
+@Description: 机构级冰山订单流执行器 (全动态余额感知 + OKX 稳健基建 + 限价止盈优化)
 """
 import asyncio
 import base64
@@ -111,7 +111,7 @@ class IcebergTrader:
         """接收雷达信号主入口"""
         direction = signal.get('direction', 'BUY')
 
-        # 👇 【新增逻辑】：处理反向平仓
+        # 👇 处理反向平仓
         if direction == 'SELL':
             if self.in_position:
                 # 🛠️ 执行“严格限制”检查
@@ -181,7 +181,7 @@ class IcebergTrader:
         logger.info(
             f"⚔️ [{pos_msg}] 现价 {current_price} | 动用本金: ~{contracts * self.contract_multiplier * current_price / self.leverage:.2f} U | 买入 {contracts} 张")
 
-        # 3. 执行市价买单
+        # 3. 执行市价买单 (Taker)
         buy_payload = {
             "instId": self.symbol, "tdMode": self.td_mode, "side": "buy",
             "ordType": "market", "sz": str(contracts)
@@ -193,7 +193,7 @@ class IcebergTrader:
             self.in_position = True
             self.entry_price = current_price
 
-            # 4. 挂载 OCO (止盈+止损双向单)
+            # 4. 挂载 OCO (止盈限价 + 止损市价)
             await self._place_oco_order(contracts, proposed_tp, proposed_sl)
         else:
             logger.error(f"❌ 进场失败: {buy_res}")
@@ -219,7 +219,7 @@ class IcebergTrader:
             self.in_position = False
             return
 
-        # C. 发送市价平仓单
+        # C. 发送市价平仓单 (反向逃顶必须是市价夺路而逃)
         close_payload = {
             "instId": self.symbol,
             "tdMode": self.td_mode,
@@ -247,9 +247,9 @@ class IcebergTrader:
             "ordType": "oco",
             "sz": str(contracts),
             "tpTriggerPx": str(tp_price),
-            "tpOrdPx": "-1",
+            "tpOrdPx": str(tp_price),     # 🌟 核心修改：指定具体价格，触发后挂出限价单 (Maker) 赚取极低费率
             "slTriggerPx": str(sl_price),
-            "slOrdPx": "-1",
+            "slOrdPx": "-1",              # 🌟 保持不变：止损必须是市价，保命不讲价
             "reduceOnly": True
         }
         res = await self._request("POST", "/api/v5/trade/order-algo", payload)
@@ -258,7 +258,7 @@ class IcebergTrader:
             self.current_oco_algo_id = res['data'][0]['algoId']
             self.current_sl_price = sl_price
             self.current_tp_price = tp_price
-            logger.info(f"🛡️ [阵地稳固] 止损死守: {sl_price} | 止盈目标: {tp_price}")
+            logger.info(f"🛡️ [阵地稳固] 止损(市价): {sl_price} | 止盈(限价): {tp_price}")
         else:
             logger.error(f"❌ OCO 挂单失败，账户处于裸奔状态请注意！{res}")
 
@@ -270,7 +270,7 @@ class IcebergTrader:
             new_sl = round(math.floor(new_iceberg_min_price) - self.sl_tick_offset, 2)
 
             if new_sl > self.current_sl_price:
-                # 👇 【核心修改：流派 3】锚定新冰山底价，重新计算 0.5% 的止盈！
+                # 锚定新冰山底价，重新计算止盈
                 new_tp = round(new_iceberg_min_price * (1 + self.tp_pct), 2)
 
                 logger.info(f"📈 [阶梯追踪!] 发现更高冰山阵地 (+{rise_pct:.2%})，部队前压！")
@@ -284,7 +284,7 @@ class IcebergTrader:
                 if pos_res and pos_res.get('code') == '0':
                     for p in pos_res['data']:
                         if p['instId'] == self.symbol:
-                            contracts = abs(float(p['pos']))  # 直接保留浮点数，如 0.87
+                            contracts = abs(float(p['pos']))
                             break
 
                 if contracts > 0:
