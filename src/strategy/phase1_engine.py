@@ -74,13 +74,17 @@ class Phase1Engine:
             if triggered:
                 self._open_window(ts, price, direction)
         else:
+            # 增加对“动能衰竭”原因的捕获
             if (ts - self.window_last_trade_ts) >= self.exhaustion_sec:
-                logger.debug(f"🛑 [熔断关窗] 动能衰竭 ({self.current_direction})。")
+                self.last_close_reason = "⏳ 动能衰竭(超时)"  # <--- 新增
                 return self._close_window_and_detect()
 
             self._update_observation(ts, price, cvd_delta)
 
-            if self._check_close_condition(ts, price):
+            # 修改 _check_close_condition 使其返回原因
+            stop_signal, reason = self._check_close_condition(ts, price)
+            if stop_signal:
+                self.last_close_reason = reason  # <--- 新增
                 return self._close_window_and_detect()
 
         return None
@@ -144,17 +148,19 @@ class Phase1Engine:
         if price < self.traded_min_price: self.traded_min_price = price
         if price > self.traded_max_price: self.traded_max_price = price
 
-    def _check_close_condition(self, ts: float, current_price: float) -> bool:
+    def _check_close_condition(self, ts: float, current_price: float) -> Tuple[bool, str]:
+        """修改返回值为 (是否关窗, 原因)"""
         if self.current_direction == 'BUY':
-            # 找底部：期待多头反击 (正向 15万U)
-            if self.window_recent_cvd >= self.reversal_cvd_usdt: return True
-            if (self.start_price - current_price) / self.start_price >= self.max_drop_pct: return True
+            if self.window_recent_cvd >= self.reversal_cvd_usdt:
+                return True, "📈 多头反击(CVD翻转)"
+            if (self.start_price - current_price) / self.start_price >= self.max_drop_pct:
+                return True, "📉 跌幅过大(防穿仓)"
         else:
-            # 找顶部：期待空头反击 (负向 -15万U)
-            if self.window_recent_cvd <= -self.reversal_cvd_usdt: return True
-            if (current_price - self.start_price) / self.start_price >= self.max_drop_pct: return True
-
-        return False
+            if self.window_recent_cvd <= -self.reversal_cvd_usdt:
+                return True, "📉 空头压制(CVD翻转)"
+            if (current_price - self.start_price) / self.start_price >= self.max_drop_pct:
+                return True, "📈 涨幅过大(避险)"
+        return False, ""
 
     def _close_window_and_detect(self) -> Optional[Dict]:
         start_thickness_usdt = 0.0
@@ -195,14 +201,15 @@ class Phase1Engine:
         hidden_vol = signal.get('hidden_volume', 0)
         abs_rate = signal.get('absorption_rate', 0) * 100
         is_iceberg = signal.get('is_iceberg', False)
+        direction = "多头" if self.current_direction == 'BUY' else "空头"
 
-        # 加一个直观的小标签，方便你一眼看出为啥没开单
-        result_tag = "🎯 达标" if is_iceberg else "❌ 未达标"
+        # 核心：使用统一的标签前缀 [MATCH] 方便你后续用 grep 过滤
+        tag = f"✅ [MATCH-{direction}]" if is_iceberg else "❌ [IGNORE]"
 
-        logger.info(f"📊 [观测结算] 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
+        logger.info(f"{tag} 原因: {self.last_close_reason} | 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
                     f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
                     f"总攻击: {abs(self.window_cvd_usdt):,.0f} U | 明面盘口消耗: {book_reduction:,.0f} U | "
-                    f"暗盘吸收量: {hidden_vol:,.0f} U (吸收率 {abs_rate:.1f}%) -> {result_tag}")
+                    f"暗盘吸收量: {hidden_vol:,.0f} U (吸收率 {abs_rate:.1f}%)")
 
         self.is_detecting = False
         self.tick_buffer.clear()
