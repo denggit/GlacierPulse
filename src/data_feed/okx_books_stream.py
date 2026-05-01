@@ -7,15 +7,15 @@ from src.utils.log import get_logger
 logger = get_logger(__name__)
 
 class OKXBooksStreamer:
-    def __init__(self, symbol="ETH-USDT-SWAP", on_book_callback=None):
+    def __init__(self, symbol="ETH-USDT-SWAP", multiplier=0.1, on_book_callback=None):
         self.symbol = symbol
+        self.multiplier = multiplier
         # 核心：通过回调把订单簿增量数据抛给 MarketContext
         self.on_book_callback = on_book_callback 
         # 保持和你 okx_stream 一致的域名
         self.ws_url = "wss://ws.okx.com:8443/ws/v5/public"
 
     async def connect(self):
-        """建立 WebSocket 连接，保持心跳与断线重连 (专属订单簿通道)"""
         subscribe_msg = {
             "op": "subscribe",
             "args": [{"channel": "books", "instId": self.symbol}]
@@ -32,13 +32,21 @@ class OKXBooksStreamer:
                         response = await ws.recv()
                         data = json.loads(response)
 
-                        # OKX 订单簿推送只要包含 'data'，就传给下游字典
                         if 'data' in data and self.on_book_callback:
-                            # 订单簿的 data 列表里通常只有一个字典，包含了 bids 和 asks
                             book_data = data['data'][0]
-                            
-                            # 因为 context.apply_book_delta 是普通同步函数，所以直接调用，不需要 await
-                            self.on_book_callback(book_data)
+
+                            # 👇 核心修复：在这里把挂单的张数，清洗成真实的 ETH 数量！
+                            cleaned_bids = [[float(item[0]), float(item[1]) * self.multiplier] for item in
+                                            book_data.get('bids', [])]
+                            cleaned_asks = [[float(item[0]), float(item[1]) * self.multiplier] for item in
+                                            book_data.get('asks', [])]
+
+                            cleaned_book_data = {
+                                'bids': cleaned_bids,
+                                'asks': cleaned_asks
+                            }
+
+                            self.on_book_callback(cleaned_book_data)
 
             except Exception as e:
                 logger.error(f"❌ [数据层] 订单簿链路断开，准备 3 秒后重连: {e}")

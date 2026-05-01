@@ -54,7 +54,7 @@ class Phase1Engine:
         self.window_last_trade_ts = 0.0     # 用于监测动能是否衰竭
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
-        ts = int(trade_data.get('ts', time.time() * 1000)) / 1000.0
+        ts = float(trade_data['ts'])
         price = float(trade_data['price'])
         size = float(trade_data['size'])
         side = trade_data['side']
