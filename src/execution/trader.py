@@ -47,7 +47,7 @@ class IcebergTrader:
         # ==================================
         self.max_risk_pct = 0.05  # 单笔极限亏损 5% (按当前真实余额算)
         self.fee_rate = 0.001  # 往返总手续费 0.1%
-        self.sl_tick_offset = 0.12  # 止损避险偏移 (整数向下再减 0.12)
+        self.sl_tick_offset = 2.12  # 止损避险偏移 (整数向下再减 2.12)
         self.tp_pct = 0.005  # 固定止盈目标 (+0.5%)
         self.trailing_trigger_pct = 0.002  # 追踪触发阈值 (+0.2%)
 
