@@ -180,7 +180,7 @@ class Phase1Engine:
         
         # 这段窗口期内的绝对砸盘量 (必定是正数)
         active_sold = abs(self.window_cvd_usdt)
-        
+
         logger.info(f"📊 [观测结算] 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
                     f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
                     f"总砸盘: {active_sold:,.0f} U | 盘口消耗: {book_reduction:,.0f} U")
@@ -189,14 +189,16 @@ class Phase1Engine:
         self.is_detecting = False
         self.tick_buffer.clear()
 
-        # 👇【新增核心逻辑】：强制进入 2.5 秒的冷却期！
-        # 哪怕刚刚的瀑布还在 3 秒视窗里，这 2.5 秒内也绝不重复开窗测算！
-        self.cooldown_until_ts = self.window_last_trade_ts + 2.5
-
-        # 呼叫黑盒！
+        # 呼叫黑盒！(先出结果，再定冷却时间)
         signal = self.iceberg_radar.detect_buy_iceberg(active_sold, book_reduction)
-        
+
+        # 👇 【核心修复：条件冷却】
         if signal['is_iceberg'] or signal['behavior'] == 'SPOOFING_WITHDRAWAL':
+            # 抓到大鱼了，或者遇到了大骗子。战局已定，进入 2.5 秒长冷却。
+            self.cooldown_until_ts = self.window_last_trade_ts + 2.5
             return signal
-            
-        return None
+        else:
+            # 只是散户的假反弹，没抓到冰山！
+            # 仅仅给 0.1 秒的极短防抖冷却，立刻恢复高能侦察状态，防止漏掉真正的扫损！
+            self.cooldown_until_ts = self.window_last_trade_ts + 0.1
+            return None
