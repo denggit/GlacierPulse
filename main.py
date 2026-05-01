@@ -51,26 +51,28 @@ async def main():
         signal = engine.process_tick(trade_data)
 
         if signal:
-            # 👇 【新增：雷达播报】像 test 一样，先把捕获到的冰山原始数据打印出来！
-            if signal.get('is_iceberg'):
+            # 1. 解析信号身份
+            is_iceberg = signal.get('is_iceberg', False)
+
+            if is_iceberg:
                 direction_label = "多" if signal.get('direction', 'BUY') == 'BUY' else "空"
                 logger.info(f"🎯 [捕获冰山 ({direction_label})] 确信度: {signal['confidence']:.2f} | "
-                            f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {signal['absorption_rate']:.1f}%")
+                            f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {signal.get('absorption_rate', 0) * 100:.1f}%")
             elif signal.get('behavior') == 'SPOOFING_WITHDRAWAL':
                 logger.warning(
                     f"⚠️ [撤单欺诈!] 主力撤销了假墙！虚假支撑消失量: {abs(signal.get('hidden_volume', 0)):,.0f} U")
+                # 👇 【核心修复 1】：如果是撤单欺诈，绝对不能让 Trader 开仓！直接 return 结束！
+                return
+            else:
+                return  # 其他未定义信号，一律丢弃
 
-            # 【防双开锁】：如果上一个下单任务还没执行完，直接忽略新信号！
+            # 👇 下面的开仓防线，只有在 is_iceberg == True 时才允许走到这里！
             if trader_task and not trader_task.done():
                 logger.warning("⚠️ 收到新信号，但上一个交易指令仍在执行中，已忽略该信号以防重复开仓！")
                 return
 
             current_price = float(trade_data['price'])
-
-            # 异步处理交易信号，不阻塞数据接收
             trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
-
-            # 【防错误吞噬】：绑定回调，一旦内部报错，立刻把堆栈打印到日志！
             trader_task.add_done_callback(
                 lambda t: logger.error(f"❌ Trader执行崩溃: {t.exception()}") if t.exception() else None
             )

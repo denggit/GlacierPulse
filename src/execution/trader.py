@@ -146,7 +146,9 @@ class IcebergTrader:
         # 🌟 核心修改：使用动态 API 查回来的实际余额！
         max_loss_usdt = self.available_usdt * self.max_risk_pct
         max_eth_by_risk = max_loss_usdt / total_risk_per_eth
-        max_eth_by_leverage = (self.available_usdt * self.leverage) / current_price
+
+        # 预留 5% 的手续费和滑点空间
+        max_eth_by_leverage = (self.available_usdt * 0.95 * self.leverage) / current_price
 
         actual_eth = min(max_eth_by_risk, max_eth_by_leverage)
 

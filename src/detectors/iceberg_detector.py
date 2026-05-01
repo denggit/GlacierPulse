@@ -22,7 +22,7 @@ class IcebergDetector:
     
     def __init__(self, 
                  min_hidden_notional_usdt: float = 1_000_000.0, 
-                 min_absorption_rate: float = 0.5):
+                 min_absorption_rate: float = 0.7):
         """
         :param min_hidden_notional_usdt: 最小绝对隐藏吸收金额 (默认 100万 USDT，过滤散户噪音)
         :param min_absorption_rate: 动能吸收率。隐藏吸收量占总砸盘量的比例 (默认 0.5，即至少 50% 的抛压是被暗盘接走的)
