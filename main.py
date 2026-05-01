@@ -70,15 +70,42 @@ async def main():
                 conf = signal.get('confidence', 0)
                 actual_attack = abs(signal.get('active_volume', 0))
 
-                # 🌟 2. 插入防飞刀拦截器
+                # ==========================================
+                # 🛡️ 进阶微观结构过滤网 (防飞刀 + 防阴跌)
+                # ==========================================
+
+                # 1. 计算攻击烈度 (单位: U / 秒)
+                # 防止除以 0 导致报错
+                intensity = actual_attack / duration if duration > 0 else 0
+
+                # 2. 防飞刀拦截器 (对付 0.02 秒砸 400 万的连环爆仓针)
                 if duration < 1.0:
-                    logger.warning(f"⚠️ [防飞刀] 耗时仅 {duration:.2f}s，疑似爆仓针直接砸穿盘口，放弃接针！")
+                    logger.warning(
+                        f"⚠️ [拦截-防飞刀] 耗时仅 {duration:.2f}s (烈度 {intensity:,.0f} U/s)，疑似真空爆仓针，不接！")
                     return
 
-                # ✨ 原有的优化过滤：
-                if conf < 0.8 or actual_attack < 1_000_000:
-                    logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({actual_attack:,.0f}U)不足，放弃捕捉。")
+                # 3. 确信度底线
+                if conf < 0.8:
+                    logger.info(f"⏭️ [拦截-低确信度] 确信度({conf:.2f})不足，假墙概率高，放弃。")
                     return
+
+                # 4. 🌟 新增：攻击烈度与阴跌中继过滤
+                # 我们不再死守 100 万 U，而是要求：
+                # (A) 试探总量不能太小 (比如 > 30万 U)
+                # (B) 砸盘必须够猛烈 (比如 > 10万 U/秒)，以过滤掉“温水煮青蛙”的阴跌
+
+                min_attack_volume = 300_000  # 基础门槛下调到 30万 U
+                min_intensity = 100_000  # 每秒交火必须大于 10万 U
+
+                is_valid_volume = actual_attack >= min_attack_volume
+                is_high_intensity = intensity >= min_intensity
+
+                if not (is_valid_volume and is_high_intensity):
+                    logger.info(
+                        f"⏭️ [拦截-动能不足] 总量: {actual_attack:,.0f}U | 烈度: {intensity:,.0f} U/s。未达到(总量>{min_attack_volume / 10000}万 且 烈度>{min_intensity / 10000}万/秒)，疑似阴跌或试探，放弃！")
+                    return
+
+                # ==========================================
 
                 # ✨ 【高亮逻辑】：吸收率 >= 100% 且确信度高，显示为金黄色加粗特效
                 if abs_rate >= 100 and conf >= 0.9:
