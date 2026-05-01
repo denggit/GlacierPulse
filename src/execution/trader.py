@@ -111,8 +111,21 @@ class IcebergTrader:
         """接收雷达信号主入口"""
         direction = signal.get('direction', 'BUY')
 
+        # 👇 【新增逻辑】：处理反向平仓
         if direction == 'SELL':
-            logger.info(f"👀 [数据打点] 记录上方卖盘冰山阻力位，暂不开空。")
+            if self.in_position:
+                # 🛠️ 执行“严格限制”检查
+                conf = signal.get('confidence', 0)
+                hidden_vol = signal.get('hidden_volume', 0)
+                abs_rate = signal.get('absorption_rate', 0)
+
+                if conf >= 0.9 and hidden_vol >= 2_000_000 and abs_rate >= 0.8:
+                    logger.info(f"🚨 [策略B-反向逃顶] 遇到超强阻力 (体量:{hidden_vol:,.0f}U)，执行紧急平仓！")
+                    await self._execute_close_position()
+                else:
+                    logger.info(f"👀 [数据记录] 上方存在空头阻力但强度不足以平仓，确信度:{conf:.2f}")
+            else:
+                logger.debug("👀 [数据打点] 记录上方卖盘冰山阻力位，暂不开空。")
             return
 
         min_price = signal.get('min_price', current_price)
@@ -184,6 +197,46 @@ class IcebergTrader:
             await self._place_oco_order(contracts, proposed_tp, proposed_sl)
         else:
             logger.error(f"❌ 进场失败: {buy_res}")
+
+    async def _execute_close_position(self):
+        """立即平掉所有当前持仓并清理挂单"""
+        # A. 撤销所有当前算法单 (OCO)
+        if self.current_oco_algo_id:
+            cancel_payload = [{"instId": self.symbol, "algoId": self.current_oco_algo_id}]
+            await self._request("POST", "/api/v5/trade/cancel-algos", cancel_payload)
+            self.current_oco_algo_id = None
+
+        # B. 查询实时持仓大小 (防止由于追踪止损导致的部分成交误差)
+        pos_res = await self._request("GET", f"/api/v5/account/positions?instId={self.symbol}")
+        contracts = 0.0
+        if pos_res and pos_res.get('code') == '0':
+            for p in pos_res['data']:
+                if p['instId'] == self.symbol:
+                    contracts = abs(float(p['pos']))
+                    break
+
+        if contracts <= 0:
+            self.in_position = False
+            return
+
+        # C. 发送市价平仓单
+        close_payload = {
+            "instId": self.symbol,
+            "tdMode": self.td_mode,
+            "side": "sell",  # 平多单是卖出
+            "ordType": "market",
+            "sz": str(contracts),
+            "reduceOnly": True
+        }
+        res = await self._request("POST", "/api/v5/trade/order", close_payload)
+
+        if res and res.get('code') == '0':
+            logger.info(f"💰 [逃顶成功] 已按市价平仓 {contracts} 张合约，成功躲避潜在抛压。")
+            self.in_position = False
+            # 平仓后立刻刷新一次余额，准备下一波战斗
+            await self.fetch_balance_and_position()
+        else:
+            logger.error(f"❌ 平仓失败！可能导致裸奔: {res}")
 
     async def _place_oco_order(self, contracts: float, tp_price: float, sl_price: float):
         """挂载止盈止损二选一条件单"""

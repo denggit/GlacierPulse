@@ -51,31 +51,47 @@ async def main():
         signal = engine.process_tick(trade_data)
 
         if signal:
-            # 1. 解析信号身份
             is_iceberg = signal.get('is_iceberg', False)
+            direction = signal.get('direction', 'BUY')
 
             if is_iceberg:
-                direction_label = "多" if signal.get('direction', 'BUY') == 'BUY' else "空"
-                logger.info(f"🎯 [捕获冰山 ({direction_label})] 确信度: {signal['confidence']:.2f} | "
-                            f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {signal.get('absorption_rate', 0) * 100:.1f}%")
+                direction_label = "多" if direction == 'BUY' else "空"
+                abs_rate = signal.get('absorption_rate', 0) * 100
+                conf = signal.get('confidence', 0)
+                # 👇 【新增】：获取总攻击量
+                total_attack = abs(signal.get('total_attack', 0))
+
+                # ✨ 【优化过滤】：
+                # 1. 确信度必须大于 0.8 (过滤 0.66 这种弱信号)
+                # 2. 战火窗内的总攻击量必须大于 100万 U (确保不是瞬间闪现的冰山)
+                if conf < 0.8 or total_attack < 1_000_000:
+                    logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({total_attack:,.0f}U)不足，放弃捕捉。")
+                    return
+
+                # ✨ 【高亮逻辑】：吸收率 >= 100% 且确信度高，显示为金黄色加粗特效
+                if abs_rate >= 100 and conf >= 0.9:
+                    highlight_start = "\033[1;33;44m"  # 蓝底金黄字
+                    highlight_end = "\033[0m"
+                else:
+                    highlight_start = ""
+                    highlight_end = ""
+
+                logger.info(f"{highlight_start}🎯 [捕获冰山 ({direction_label})] 确信度: {conf:.2f} | "
+                            f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {abs_rate:.1f}%{highlight_end}")
+
             elif signal.get('behavior') == 'SPOOFING_WITHDRAWAL':
                 logger.warning(
                     f"⚠️ [撤单欺诈!] 主力撤销了假墙！虚假支撑消失量: {abs(signal.get('hidden_volume', 0)):,.0f} U")
-                # 👇 【核心修复 1】：如果是撤单欺诈，绝对不能让 Trader 开仓！直接 return 结束！
                 return
             else:
-                return  # 其他未定义信号，一律丢弃
+                return
 
-            # 👇 下面的开仓防线，只有在 is_iceberg == True 时才允许走到这里！
+                # 只有在 is_iceberg == True 或者持仓状态下的反向信号才允许下发给 Trader
             if trader_task and not trader_task.done():
-                logger.warning("⚠️ 收到新信号，但上一个交易指令仍在执行中，已忽略该信号以防重复开仓！")
                 return
 
             current_price = float(trade_data['price'])
             trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
-            trader_task.add_done_callback(
-                lambda t: logger.error(f"❌ Trader执行崩溃: {t.exception()}") if t.exception() else None
-            )
 
     # 【处理盘口更新】：必须是同步 def，因为 okx_books_stream 中是普通调用
     def on_book_update(book_data):
