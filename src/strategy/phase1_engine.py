@@ -204,7 +204,7 @@ class Phase1Engine:
         direction = "多头" if self.current_direction == 'BUY' else "空头"
 
         # 核心：使用统一的标签前缀 [MATCH] 方便你后续用 grep 过滤
-        tag = f"✅ [MATCH-{direction}]" if is_iceberg else "❌ [IGNORE]"
+        tag = f"🎯 [MATCH-{direction}]" if is_iceberg else "❌ [IGNORE]"
 
         logger.info(f"{tag} 原因: {self.last_close_reason} | 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
                     f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
@@ -213,6 +213,12 @@ class Phase1Engine:
 
         self.is_detecting = False
         self.tick_buffer.clear()
+
+        # （phase1_engine.py 的结尾附近）
+
+        # 👇【修改】：在 _close_window_and_detect 结尾追加耗时计算
+        duration = self.window_last_trade_ts - self.detect_start_ts
+        signal['duration'] = duration  # 🌟 将耗时注入 signal 提供给 main.py
 
         if signal['is_iceberg'] or signal['behavior'] == 'SPOOFING_WITHDRAWAL':
             self.cooldown_until_ts = self.window_last_trade_ts + 2.5

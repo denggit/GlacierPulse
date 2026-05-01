@@ -60,6 +60,7 @@ class IcebergTrader:
         self.current_oco_algo_id = None
 
         self._balance_update_failures = 0
+        self._is_updating_sl = False  # 🌟 新增：防止高频重复发单的锁
 
         if not self.api_key:
             logger.error("⚠️ OKX API 密钥未配置，请检查 .env 文件！实盘将无法执行下单。")
@@ -357,3 +358,45 @@ class IcebergTrader:
             logger.info(f"✅ 实盘同步成功！{self.symbol} 已锁定 【{self.td_mode.upper()} {self.leverage}X】")
         else:
             logger.warning(f"⚠️ 实盘参数同步提示: {res.get('msg', '可能已经设置过')}")
+
+    async def check_breakeven_lock(self, current_price: float):
+        """🌟 实时价格监控：利润达到 0.3% 时，强制将止损提至进场价 + 0.12%"""
+        # 如果没持仓、刚进场还没拿到底价、或者正在更新订单中，直接返回
+        if not self.in_position or self.entry_price == 0 or self._is_updating_sl:
+            return
+
+        breakeven_sl = round(self.entry_price * 1.0012, 2)
+
+        # 如果当前的止损已经高于或等于保本价，说明已经安全，不需要重复操作
+        if self.current_sl_price >= breakeven_sl:
+            return
+
+        # 计算当前利润率
+        profit_pct = (current_price - self.entry_price) / self.entry_price
+
+        # 触发条件：利润冲破 0.3%！
+        if profit_pct >= 0.003:
+            self._is_updating_sl = True  # 上锁，防止后续 tick 重复调用
+            try:
+                logger.info(
+                    f"🔒 [利润保护] 现价 {current_price} (利润 {profit_pct:.2%})！触发保本锁，止损上调至 +0.12% ({breakeven_sl})")
+
+                # 1. 撤销旧的 OCO 订单
+                if self.current_oco_algo_id:
+                    cancel_payload = [{"instId": self.symbol, "algoId": self.current_oco_algo_id}]
+                    await self._request("POST", "/api/v5/trade/cancel-algos", cancel_payload)
+
+                # 2. 查询当前真实仓位大小
+                pos_res = await self._request("GET", f"/api/v5/account/positions?instId={self.symbol}")
+                contracts = 0.0
+                if pos_res and pos_res.get('code') == '0':
+                    for p in pos_res['data']:
+                        if p['instId'] == self.symbol:
+                            contracts = abs(float(p['pos']))
+                            break
+
+                # 3. 按保本止损价重新挂载 OCO
+                if contracts > 0:
+                    await self._place_oco_order(contracts, self.current_tp_price, breakeven_sl)
+            finally:
+                self._is_updating_sl = False  # 解锁

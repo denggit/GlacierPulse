@@ -48,21 +48,34 @@ async def main():
 
     async def on_trade_tick(trade_data):
         nonlocal trader_task
+        current_price = float(trade_data['price'])
+
+        # 🌟 1. 实时挂载保本锁监控：不管有没有冰山信号，持仓时每笔成交都去测算一下利润
+        if trader.in_position:
+            # 放进后台 Task 运行，绝对不能阻塞主数据流
+            asyncio.create_task(trader.check_breakeven_lock(current_price))
+
         signal = engine.process_tick(trade_data)
 
         if signal:
             is_iceberg = signal.get('is_iceberg', False)
             direction = signal.get('direction', 'BUY')
 
+            # 取出我们刚刚在 Engine 里加的耗时
+            duration = signal.get('duration', 0.0)
+
             if is_iceberg:
                 direction_label = "多" if direction == 'BUY' else "空"
                 abs_rate = signal.get('absorption_rate', 0) * 100
                 conf = signal.get('confidence', 0)
-
-                # 👇 【修正】：把名字从 total_attack 改为 active_volume
                 actual_attack = abs(signal.get('active_volume', 0))
 
-                # ✨ 【优化过滤】：
+                # 🌟 2. 插入防飞刀拦截器
+                if duration < 1.0:
+                    logger.warning(f"⚠️ [防飞刀] 耗时仅 {duration:.2f}s，疑似爆仓针直接砸穿盘口，放弃接针！")
+                    return
+
+                # ✨ 原有的优化过滤：
                 if conf < 0.8 or actual_attack < 1_000_000:
                     logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({actual_attack:,.0f}U)不足，放弃捕捉。")
                     return
