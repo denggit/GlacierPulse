@@ -43,11 +43,23 @@ async def main():
     # 在函数外部定义一个全局变量，防止并发双开
     trader_task = None
 
+    # 在函数外部定义一个全局变量，防止并发双开
+    trader_task = None
+
     async def on_trade_tick(trade_data):
         nonlocal trader_task
         signal = engine.process_tick(trade_data)
 
         if signal:
+            # 👇 【新增：雷达播报】像 test 一样，先把捕获到的冰山原始数据打印出来！
+            if signal.get('is_iceberg'):
+                direction_label = "多" if signal.get('direction', 'BUY') == 'BUY' else "空"
+                logger.info(f"🎯 [捕获冰山 ({direction_label})] 确信度: {signal['confidence']:.2f} | "
+                            f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {signal['absorption_rate']:.1f}%")
+            elif signal.get('behavior') == 'SPOOFING_WITHDRAWAL':
+                logger.warning(
+                    f"⚠️ [撤单欺诈!] 主力撤销了假墙！虚假支撑消失量: {abs(signal.get('hidden_volume', 0)):,.0f} U")
+
             # 【防双开锁】：如果上一个下单任务还没执行完，直接忽略新信号！
             if trader_task and not trader_task.done():
                 logger.warning("⚠️ 收到新信号，但上一个交易指令仍在执行中，已忽略该信号以防重复开仓！")
@@ -55,7 +67,7 @@ async def main():
 
             current_price = float(trade_data['price'])
 
-            # 创建任务
+            # 异步处理交易信号，不阻塞数据接收
             trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
 
             # 【防错误吞噬】：绑定回调，一旦内部报错，立刻把堆栈打印到日志！

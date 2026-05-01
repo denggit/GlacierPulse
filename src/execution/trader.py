@@ -150,12 +150,13 @@ class IcebergTrader:
 
         actual_eth = min(max_eth_by_risk, max_eth_by_leverage)
 
-        # 转换为真实的合约张数 (1张=0.1 ETH)
-        contracts = int(actual_eth / self.contract_multiplier)
+        # 转换为真实的合约张数，支持 0.01 张的极小步长精度
+        raw_contracts = actual_eth / self.contract_multiplier
+        contracts = math.floor(raw_contracts * 100) / 100.0  # 向下取整到两位小数，如 0.875 -> 0.87
 
-        if contracts < 1:
+        if contracts < 0.01:
             logger.warning(
-                f"⚠️ 风险过大，算出的张数 {contracts} 小于 1 张，放弃开仓！(当前余额: {self.available_usdt:.2f} U)")
+                f"⚠️ 风险过大，算出的张数 {contracts} 小于最小下单量 0.01 张，放弃开仓！(当前余额: {self.available_usdt:.2f} U)")
             return
 
         is_full = (actual_eth == max_eth_by_leverage)
@@ -182,7 +183,7 @@ class IcebergTrader:
         else:
             logger.error(f"❌ 进场失败: {buy_res}")
 
-    async def _place_oco_order(self, contracts: int, tp_price: float, sl_price: float):
+    async def _place_oco_order(self, contracts: float, tp_price: float, sl_price: float):
         """挂载止盈止损二选一条件单"""
         payload = {
             "instId": self.symbol,
@@ -224,11 +225,11 @@ class IcebergTrader:
                     await self._request("POST", "/api/v5/trade/cancel-algos", cancel_payload)
 
                 pos_res = await self._request("GET", f"/api/v5/account/positions?instId={self.symbol}")
-                contracts = 0
+                contracts = 0.0
                 if pos_res and pos_res.get('code') == '0':
                     for p in pos_res['data']:
                         if p['instId'] == self.symbol:
-                            contracts = int(abs(float(p['pos'])))
+                            contracts = abs(float(p['pos']))  # 直接保留浮点数，如 0.87
                             break
 
                 if contracts > 0:

@@ -24,8 +24,8 @@ class Phase1Engine:
         # 1. 极速点火参数 (双向触发)
         # ==========================================
         self.trigger_window_sec = 3.0
-        self.trigger_buy_cvd = -800_000.0  # 暴跌 80万 U，触发【多头冰山】探测 (寻找底部支撑)
-        self.trigger_sell_cvd = 800_000.0  # 暴涨 80万 U，触发【空头冰山】探测 (寻找顶部阻力)
+        self.trigger_buy_cvd = -1_500_000.0  # 暴跌 150万 U，触发【多头冰山】探测 (寻找底部支撑)
+        self.trigger_sell_cvd = 1_500_000.0  # 暴涨 150万 U，触发【空头冰山】探测 (寻找顶部阻力)
         self.tick_buffer = collections.deque()
 
         # ==========================================
@@ -191,10 +191,18 @@ class Phase1Engine:
             signal['direction'] = 'SELL'
             signal['max_price'] = self.traded_max_price  # 顶部冰山关注的是最高价
 
-        logger.info(
-            f"📊 [结算] 方向: {self.current_direction} | 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
-            f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
-            f"攻击量: {abs(self.window_cvd_usdt):,.0f} U | 盘口消耗: {book_reduction:,.0f} U")
+        # 👇【修改】：在调用 logger 之前，先从 signal 里把核心数据掏出来
+        hidden_vol = signal.get('hidden_volume', 0)
+        abs_rate = signal.get('absorption_rate', 0) * 100
+        is_iceberg = signal.get('is_iceberg', False)
+
+        # 加一个直观的小标签，方便你一眼看出为啥没开单
+        result_tag = "🎯 达标" if is_iceberg else "❌ 未达标"
+
+        logger.info(f"📊 [观测结算] 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
+                    f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
+                    f"总攻击: {abs(self.window_cvd_usdt):,.0f} U | 明面盘口消耗: {book_reduction:,.0f} U | "
+                    f"暗盘吸收量: {hidden_vol:,.0f} U (吸收率 {abs_rate:.1f}%) -> {result_tag}")
 
         self.is_detecting = False
         self.tick_buffer.clear()
