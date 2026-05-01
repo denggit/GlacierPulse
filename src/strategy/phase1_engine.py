@@ -24,8 +24,8 @@ class Phase1Engine:
         # 1. 极速点火参数 (双向触发)
         # ==========================================
         self.trigger_window_sec = 3.0
-        self.trigger_buy_cvd = -3_000_000.0  # 暴跌 300万 U，触发【多头冰山】探测 (寻找底部支撑)
-        self.trigger_sell_cvd = 3_000_000.0  # 暴涨 300万 U，触发【空头冰山】探测 (寻找顶部阻力)
+        self.trigger_buy_cvd = -1_500_000.0  # 暴跌 150万 U，触发【多头冰山】探测 (寻找底部支撑)
+        self.trigger_sell_cvd = 1_500_000.0  # 暴涨 150万 U，触发【空头冰山】探测 (寻找顶部阻力)
         self.tick_buffer = collections.deque()
 
         # ==========================================
