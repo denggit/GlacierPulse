@@ -40,13 +40,28 @@ async def main():
     # 2. 定义高频数据回调处理链路 (Callback Pipeline)
 
     # 【处理逐笔成交】：必须是 async def，因为 okx_stream 中使用了 await 回调
+    # 在函数外部定义一个全局变量，防止并发双开
+    trader_task = None
+
     async def on_trade_tick(trade_data):
-        """每当有真实成交发生时触发"""
+        nonlocal trader_task
         signal = engine.process_tick(trade_data)
+
         if signal:
+            # 【防双开锁】：如果上一个下单任务还没执行完，直接忽略新信号！
+            if trader_task and not trader_task.done():
+                logger.warning("⚠️ 收到新信号，但上一个交易指令仍在执行中，已忽略该信号以防重复开仓！")
+                return
+
             current_price = float(trade_data['price'])
-            # 异步处理交易信号，不阻塞数据接收
-            asyncio.create_task(trader.process_signal(signal, current_price))
+
+            # 创建任务
+            trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
+
+            # 【防错误吞噬】：绑定回调，一旦内部报错，立刻把堆栈打印到日志！
+            trader_task.add_done_callback(
+                lambda t: logger.error(f"❌ Trader执行崩溃: {t.exception()}") if t.exception() else None
+            )
 
     # 【处理盘口更新】：必须是同步 def，因为 okx_books_stream 中是普通调用
     def on_book_update(book_data):
@@ -84,6 +99,16 @@ async def main():
         logger.info("🛑 收到停止信号，系统正在安全下线...")
         sys.exit(0)
 
+    # ---------------------------------------------------------
+    # 4. 保持主程序永久运行
+    # ---------------------------------------------------------
+    try:
+        # 创建一个永远不会被 set 的 Event，让程序挂起并保持监听
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        # 【修复】：正确捕获 asyncio 取消信号
+        logger.info("🛑 收到系统关闭指令，正在取消所有后台任务并安全下线...")
+        # 实际实盘中，这里还可以调用 await trader._request("POST", "/api/v5/trade/cancel-all-after", ...) 做一键撤单
 
 if __name__ == "__main__":
     if sys.platform == 'win32':
