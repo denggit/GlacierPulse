@@ -4,54 +4,55 @@
 @Author     : Zijun Deng
 @Date       : 4/28/2026
 @File       : phase1_engine.py
-@Description: 机构级扫损与冰山点火引擎 (Tick流速驱动 + 战火线隔离版)
+@Description: 机构级扫损与冰山点火引擎 (全天候双向双轨版)
 """
 
 import collections
 import copy
-import time
-from typing import Dict, Any, Optional
 import logging
+from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
 
 class Phase1Engine:
     def __init__(self, market_context, iceberg_detector):
         self.ctx = market_context
         self.iceberg_radar = iceberg_detector
-        
+
         # ==========================================
-        # 1. 极速点火参数 (Trigger Configs)
+        # 1. 极速点火参数 (双向触发)
         # ==========================================
-        # 在过去 X 秒内，如果净砸盘量达到 Y，立刻点火！
         self.trigger_window_sec = 3.0
-        self.trigger_cvd_usdt = -800_000.0  # 默认 80万 USDT 的极速抛压
-        self.tick_buffer = collections.deque() # 存放元组: (timestamp, cvd_delta_usdt)
-        
+        self.trigger_buy_cvd = -800_000.0  # 暴跌 80万 U，触发【多头冰山】探测 (寻找底部支撑)
+        self.trigger_sell_cvd = 800_000.0  # 暴涨 80万 U，触发【空头冰山】探测 (寻找顶部阻力)
+        self.tick_buffer = collections.deque()
+
         # ==========================================
-        # 2. 动态熔断关窗参数 (Close Configs)
+        # 2. 动态熔断关窗参数
         # ==========================================
-        self.exhaustion_sec = 1.5           # 熔断器1：超过 1.5 秒没有新的强力砸盘，动能衰竭
-        self.reversal_cvd_usdt = 150_000.0  # 熔断器2：出现 15万 USDT 的主买，多头反击，多空逆转
-        self.max_drop_pct = 0.01            # 熔断器3：价格瞬间击穿超过 1% (黑天鹅防守)
-        self.cooldown_until_ts = 0.0        # 熔断器4：冷却期时间戳锁
-        
+        self.exhaustion_sec = 1.5
+        self.reversal_cvd_usdt = 150_000.0  # 反向逆转门槛 15万 U
+        self.max_drop_pct = 0.01  # 击穿安全垫防御 (1%)
+        self.cooldown_until_ts = 0.0
+
         # ==========================================
-        # 3. 状态机与快照内存 (State & Snapshots)
+        # 3. 状态机与快照内存
         # ==========================================
         self.is_detecting = False
-        
+        self.current_direction = None  # 当前探测方向: 'BUY' (找底) 或 'SELL' (找顶)
+
         self.detect_start_ts = 0.0
         self.start_price = 0.0
         self.start_bids_snapshot: Dict[float, float] = {}
-        
-        # 核心：战火线隔离器 (精确记录发生过成交的价格极值)
+        self.start_asks_snapshot: Dict[float, float] = {}
+
         self.traded_min_price = float('inf')
         self.traded_max_price = 0.0
-        
-        self.window_cvd_usdt = 0.0          # 窗口期内累计的净抛压
-        self.window_recent_cvd = 0.0        # 用于监测是否多空逆转的短期累计
-        self.window_last_trade_ts = 0.0     # 用于监测动能是否衰竭
+
+        self.window_cvd_usdt = 0.0
+        self.window_recent_cvd = 0.0
+        self.window_last_trade_ts = 0.0
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
         ts = float(trade_data['ts'])
@@ -66,142 +67,141 @@ class Phase1Engine:
         self._clean_tick_buffer(ts)
 
         if not self.is_detecting:
-            # 闲置状态：如果还在冷却期内，绝对不点火
             if ts < self.cooldown_until_ts:
                 return None
 
-            if self._check_trigger_condition():
-                self._open_window(ts, price)
+            triggered, direction = self._check_trigger_condition()
+            if triggered:
+                self._open_window(ts, price, direction)
         else:
-            # 探测状态：【核心修复】必须先检查是否超时衰竭！
             if (ts - self.window_last_trade_ts) >= self.exhaustion_sec:
-                logger.debug("🛑 [熔断关窗] 抛压动能衰竭 (超时无大单)。")
+                logger.debug(f"🛑 [熔断关窗] 动能衰竭 ({self.current_direction})。")
                 return self._close_window_and_detect()
 
-            # 如果没超时，再去更新最新时间戳和战火线
             self._update_observation(ts, price, cvd_delta)
 
-            # 再检查反弹逆转和击穿
             if self._check_close_condition(ts, price):
                 return self._close_window_and_detect()
 
         return None
 
     def _clean_tick_buffer(self, current_ts: float):
-        """踢出 3 秒前的旧数据，保持窗口滑动"""
         while self.tick_buffer and (current_ts - self.tick_buffer[0][0]) > self.trigger_window_sec:
             self.tick_buffer.popleft()
 
-    def _check_trigger_condition(self) -> bool:
-        """检查点火条件：过去3秒内总净流出是否达到了 800 万"""
-        if not self.tick_buffer: return False
-        
-        # 快速求和过去3秒的 CVD 差值
+    def _check_trigger_condition(self) -> Tuple[bool, Optional[str]]:
+        """双向点火检查"""
+        if not self.tick_buffer: return False, None
         recent_net_cvd = sum(delta for _, delta in self.tick_buffer)
-        
-        # 如果是极端的负数 (抛压大于阈值)
-        return recent_net_cvd <= self.trigger_cvd_usdt
 
-    def _open_window(self, ts: float, current_price: float):
+        if recent_net_cvd <= self.trigger_buy_cvd:
+            return True, 'BUY'  # 寻找做多的冰山
+        elif recent_net_cvd >= self.trigger_sell_cvd:
+            return True, 'SELL'  # 寻找做空的冰山
+
+        return False, None
+
+    def _open_window(self, ts: float, current_price: float, direction: str):
         self.is_detecting = True
+        self.current_direction = direction
         self.detect_start_ts = ts
         self.start_price = current_price
-        
+
+        # 双向快照必须同时拍下
         self.start_bids_snapshot = copy.deepcopy(self.ctx.bids)
-        
+        self.start_asks_snapshot = copy.deepcopy(self.ctx.asks)
+
         self.traded_min_price = current_price
         self.traded_max_price = current_price
         self.window_cvd_usdt = 0.0
         self.window_recent_cvd = 0.0
         self.window_last_trade_ts = ts
-        
-        # 👇 修改这里：计算当前视窗内的触发 CVD 并打印
+
         trigger_cvd = sum(delta for _, delta in self.tick_buffer)
-        logger.info(f"🔥 [流速点火] 视窗开启! 当前3秒内CVD: {trigger_cvd:,.0f} U | "
-                    f"触碰价格: {current_price} | 时间戳: {ts}")
+        icon = "🔥" if direction == 'BUY' else "🚀"
+        target = "多头底" if direction == 'BUY' else "空头顶"
+        logger.info(
+            f"{icon} [流速点火] 寻找{target}! 3秒CVD: {trigger_cvd:,.0f} U | 触碰: {current_price} | 时间戳: {ts}")
 
     def _update_observation(self, ts: float, price: float, cvd_delta: float):
-        """窗口维持：动态拉伸战火线"""
         self.window_last_trade_ts = ts
         self.window_cvd_usdt += cvd_delta
 
-        # 动态扩大战火线 (极其关键：只记录发生过真实成交的区间)
-        if price < self.traded_min_price:
-            self.traded_min_price = price
-            # 👇 【修改】：只有当砸出新低时，才说明之前的托底失败，重置反弹动能！
-            self.window_recent_cvd = 0.0
-        else:
-            # 👇 【修改】：只要没创新低，就算中间有散户小卖单，也老老实实做净值累加！
-            self.window_recent_cvd += cvd_delta
+        if self.current_direction == 'BUY':
+            if price < self.traded_min_price:
+                self.traded_min_price = price
+                self.window_recent_cvd = 0.0  # 砸出新低，反弹重置
+            else:
+                self.window_recent_cvd += cvd_delta
+        else:  # SELL (找顶部阻力)
+            if price > self.traded_max_price:
+                self.traded_max_price = price
+                self.window_recent_cvd = 0.0  # 冲出新高，砸盘动能重置
+            else:
+                self.window_recent_cvd += cvd_delta  # 否则正常累加动能
 
-        if price > self.traded_max_price:
-            self.traded_max_price = price
+        # 始终维护极值
+        if price < self.traded_min_price: self.traded_min_price = price
+        if price > self.traded_max_price: self.traded_max_price = price
 
     def _check_close_condition(self, ts: float, current_price: float) -> bool:
-        """检查三大熔断条件"""
-        # 1. 动能衰竭 (例如超过1.5秒没新单子)
-        # 注意：在实盘中，需要有一个外部的定时器/心跳来驱动没有交易时的衰竭
-        # 这里用两笔 trade 的时间差做简化模拟
-        # --- 删掉这三行，因为已经移到 process_tick 里去了 ---
-        # if (ts - self.window_last_trade_ts) >= self.exhaustion_sec:
-        #     logger.debug("🛑 [熔断关窗] 抛压动能衰竭。")
-        #     return True
-            
-        # 2. 多空逆转 (出现连续的反向买单吃货)
-        if self.window_recent_cvd >= self.reversal_cvd_usdt:
-            logger.debug("🛑 [熔断关窗] 多头开始反击，抛压被消化。")
-            return True
-            
-        # 3. 价格击穿底线 (防御无底洞崩盘)
-        drop_pct = (self.start_price - current_price) / self.start_price
-        if drop_pct >= self.max_drop_pct:
-            logger.debug(f"🛑 [熔断关窗] 价格击穿安全垫 ({drop_pct:.2%})，放弃检测。")
-            return True
-            
+        if self.current_direction == 'BUY':
+            # 找底部：期待多头反击 (正向 15万U)
+            if self.window_recent_cvd >= self.reversal_cvd_usdt: return True
+            if (self.start_price - current_price) / self.start_price >= self.max_drop_pct: return True
+        else:
+            # 找顶部：期待空头反击 (负向 -15万U)
+            if self.window_recent_cvd <= -self.reversal_cvd_usdt: return True
+            if (current_price - self.start_price) / self.start_price >= self.max_drop_pct: return True
+
         return False
 
     def _close_window_and_detect(self) -> Optional[Dict]:
-        """结算：战火线切片隔离，并呼叫雷达"""
-        # 获取当前(结束时)的订单簿
-        end_bids_snapshot = self.ctx.bids
-        
         start_thickness_usdt = 0.0
         end_thickness_usdt = 0.0
-        
-        # 【核心逻辑】：只遍历战火线区间！过滤掉上下方主力的撤单欺诈
-        # 因为盘口是以价格为 Key，我们需要确保只统计区间内的流动性
-        for p, vol in self.start_bids_snapshot.items():
-            if self.traded_min_price <= p <= self.traded_max_price:
-                start_thickness_usdt += (p * vol)  # 转换为 USDT 价值
-                
-        for p, vol in end_bids_snapshot.items():
-            if self.traded_min_price <= p <= self.traded_max_price:
-                end_thickness_usdt += (p * vol)
-                
-        # 盘口真实的减少量
-        book_reduction = start_thickness_usdt - end_thickness_usdt
-        
-        # 这段窗口期内的绝对砸盘量 (必定是正数)
-        active_sold = abs(self.window_cvd_usdt)
+        book_reduction = 0.0
+        signal = None
 
-        logger.info(f"📊 [观测结算] 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
-                    f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
-                    f"总砸盘: {active_sold:,.0f} U | 盘口消耗: {book_reduction:,.0f} U")
+        if self.current_direction == 'BUY':
+            # 抓底部冰山，遍历 Bids 消耗
+            for p, vol in self.start_bids_snapshot.items():
+                if self.traded_min_price <= p <= self.traded_max_price: start_thickness_usdt += (p * vol)
+            for p, vol in self.ctx.bids.items():
+                if self.traded_min_price <= p <= self.traded_max_price: end_thickness_usdt += (p * vol)
 
-        # 状态机重置，准备迎接下一次暴风雨
+            book_reduction = start_thickness_usdt - end_thickness_usdt
+            active_sold = abs(self.window_cvd_usdt)
+            signal = self.iceberg_radar.detect_buy_iceberg(active_sold, book_reduction)
+            signal['direction'] = 'BUY'
+            signal['min_price'] = self.traded_min_price
+
+        else:
+            # 抓顶部冰山，遍历 Asks 消耗
+            for p, vol in self.start_asks_snapshot.items():
+                if self.traded_min_price <= p <= self.traded_max_price: start_thickness_usdt += (p * vol)
+            for p, vol in self.ctx.asks.items():
+                if self.traded_min_price <= p <= self.traded_max_price: end_thickness_usdt += (p * vol)
+
+            book_reduction = start_thickness_usdt - end_thickness_usdt
+            active_bought = abs(self.window_cvd_usdt)  # 这里是总买入量
+
+            # 注意：如果你的 radar 里没写 detect_sell_iceberg，
+            # 可以直接复用 detect_buy_iceberg，因为数学公式（吸收率）是一模一样的！
+            signal = self.iceberg_radar.detect_buy_iceberg(active_bought, book_reduction)
+            signal['direction'] = 'SELL'
+            signal['max_price'] = self.traded_max_price  # 顶部冰山关注的是最高价
+
+        logger.info(
+            f"📊 [结算] 方向: {self.current_direction} | 耗时: {self.window_last_trade_ts - self.detect_start_ts:.2f}s | "
+            f"战火区: [{self.traded_min_price}, {self.traded_max_price}] | "
+            f"攻击量: {abs(self.window_cvd_usdt):,.0f} U | 盘口消耗: {book_reduction:,.0f} U")
+
         self.is_detecting = False
         self.tick_buffer.clear()
 
-        # 呼叫黑盒！(先出结果，再定冷却时间)
-        signal = self.iceberg_radar.detect_buy_iceberg(active_sold, book_reduction)
-
-        # 👇 【核心修复：条件冷却】
         if signal['is_iceberg'] or signal['behavior'] == 'SPOOFING_WITHDRAWAL':
-            # 抓到大鱼了，或者遇到了大骗子。战局已定，进入 2.5 秒长冷却。
             self.cooldown_until_ts = self.window_last_trade_ts + 2.5
             return signal
         else:
-            # 只是散户的假反弹，没抓到冰山！
-            # 仅仅给 0.1 秒的极短防抖冷却，立刻恢复高能侦察状态，防止漏掉真正的扫损！
             self.cooldown_until_ts = self.window_last_trade_ts + 0.1
             return None

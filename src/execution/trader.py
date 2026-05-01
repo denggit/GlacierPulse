@@ -1,16 +1,16 @@
-# !/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 @Author     : Zijun Deng
-@Date       : 3/4/26
 @File       : trader.py
-@Description: 极速订单执行器 (Taker买入 -> Maker止盈 -> 条件止损)
+@Description: 机构级冰山订单流执行器 (全动态余额感知 + OKX 稳健基建)
 """
 import asyncio
 import base64
 import datetime
 import hmac
 import json
+import math
 import os
 import sys
 
@@ -22,55 +22,51 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.utils.log import get_logger
-from src.utils.email_sender import send_trading_signal_email
 from config.env_loader import OKX_CONFIG
-from dataclasses import dataclass
-from typing import Optional, Dict, List
+from typing import Optional, Dict, Any
 
 logger = get_logger(__name__)
 
 
-@dataclass
-class ExecutionResult:
-    """交易执行结果数据类"""
-    symbol: str
-    entry_price: float
-    tp1_price: float
-    tp2_price: float
-    local_low: float
-    position_size: float  # 合约张数
-    tp1_order_id: Optional[str] = None
-    tp2_order_id: Optional[str] = None
-    sl_algo_id: Optional[str] = None
-    remaining_size: Optional[float] = None  # TP1成交后剩余张数
-
-
-class OKXTrader:
-    def __init__(self, symbol="ETH-USDT-SWAP", leverage=20, td_mode="cross", risk_pct=0.5, sl_pct=0.0015, context=None):
+class IcebergTrader:
+    def __init__(self, symbol="ETH-USDT-SWAP", leverage=10, td_mode="cross"):
+        # API 基建
         self.symbol = symbol
         self.api_key = OKX_CONFIG.get('api_key')
         self.secret_key = OKX_CONFIG.get('secret_key')
         self.passphrase = OKX_CONFIG.get('passphrase')
         self.base_url = "https://www.okx.com"
 
-        self.leverage = leverage
+        # 合约基础属性
+        self.contract_multiplier = 0.1  # ETH-USDT-SWAP 一张 = 0.1 ETH
         self.td_mode = td_mode
-        self.risk_pct = risk_pct  # 🌟 比如 0.5 表示每次下注可用余额的 50%
-        self.sl_pct = sl_pct  # 止损百分比
-        self.available_usdt = 0.0  # 🌟 缓存在本地的可用余额
-        self.is_in_position = False  # 默认为空仓（向后兼容）
+        self.leverage = leverage
 
-        self.context = context  # MarketContext实例（可选）
+        # ==================================
+        # 探路策略配置 (去除了写死的资金量)
+        # ==================================
+        self.max_risk_pct = 0.05  # 单笔极限亏损 5% (按当前真实余额算)
+        self.fee_rate = 0.001  # 往返总手续费 0.1%
+        self.sl_tick_offset = 0.12  # 止损避险偏移 (整数向下再减 0.12)
+        self.tp_pct = 0.005  # 固定止盈目标 (+0.5%)
+        self.trailing_trigger_pct = 0.002  # 追踪触发阈值 (+0.2%)
 
-        if not self.api_key or not self.secret_key:
+        # 动态账户与持仓状态机
+        self.available_usdt = 0.0  # 🌟 动态读取的账户可用 USDT 余额
+        self.in_position = False
+        self.entry_price = 0.0
+        self.current_sl_price = 0.0
+        self.current_tp_price = 0.0
+        self.current_oco_algo_id = None
+
+        self._balance_update_failures = 0
+
+        if not self.api_key:
             logger.error("⚠️ OKX API 密钥未配置，请检查 .env 文件！实盘将无法执行下单。")
 
-        # 财务官心跳监控
-        self._last_balance_update = 0.0  # 最后一次成功查询余额的时间戳
-        self._balance_update_failures = 0  # 连续失败次数
-        self._max_failures_before_alert = 5  # 连续失败多少次触发警报
-        self._alert_sent = False  # 是否已发送警报邮件
-
+    # =======================================================
+    # 底层 API 鉴权与请求模块
+    # =======================================================
     def _get_signature(self, timestamp, method, request_path, body):
         message = str(timestamp) + str(method) + str(request_path) + str(body)
         mac = hmac.new(
@@ -78,8 +74,7 @@ class OKXTrader:
             bytes(message, encoding='utf-8'),
             digestmod='sha256'
         )
-        d = mac.digest()
-        return base64.b64encode(d).decode('utf-8')
+        return base64.b64encode(mac.digest()).decode('utf-8')
 
     def _get_headers(self, method, request_path, body=""):
         timestamp = datetime.datetime.utcnow().isoformat()[:-3] + 'Z'
@@ -93,8 +88,6 @@ class OKXTrader:
         }
 
     async def _request(self, method, endpoint, payload=None):
-        """异步非阻塞请求 OKX API"""
-
         def do_request():
             url = self.base_url + endpoint
             body_str = json.dumps(payload) if payload else ""
@@ -111,260 +104,200 @@ class OKXTrader:
 
         return await asyncio.to_thread(do_request)
 
-    # ==================== 原子化API方法 ====================
+    # =======================================================
+    # 策略执行核心逻辑
+    # =======================================================
+    async def process_signal(self, signal: Dict[str, Any], current_price: float):
+        """接收雷达信号主入口"""
+        direction = signal.get('direction', 'BUY')
 
-    async def get_order_status(self, order_id: str) -> str:
-        """获取订单状态"""
-        try:
-            res = await self._request("GET", f"/api/v5/trade/order?instId={self.symbol}&ordId={order_id}")
-            if res and res.get('code') == '0':
-                return res['data'][0]['state']
-            return 'unknown'
-        except Exception as e:
-            logger.error(f"[Trader] 获取订单状态异常: {e}")
-            return 'unknown'
+        if direction == 'SELL':
+            logger.info(f"👀 [数据打点] 记录上方卖盘冰山阻力位，暂不开空。")
+            return
 
-    async def cancel_order(self, order_id: str) -> bool:
-        """取消订单"""
-        try:
-            payload = {"instId": self.symbol, "ordId": order_id}
-            res = await self._request("POST", "/api/v5/trade/cancel-order", payload)
-            return res and res.get('code') == '0'
-        except Exception as e:
-            logger.error(f"[Trader] 取消订单异常: {e}")
-            return False
+        min_price = signal.get('min_price', current_price)
 
-    async def cancel_algo_order(self, algo_id: str) -> bool:
-        """取消算法订单（止损单）"""
-        try:
-            payload = [{"instId": self.symbol, "algoId": algo_id}]
-            res = await self._request("POST", "/api/v5/trade/cancel-algos", payload)
-            return res and res.get('code') == '0'
-        except Exception as e:
-            logger.error(f"[Trader] 取消算法订单异常: {e}")
-            return False
+        if not self.in_position:
+            await self._execute_entry(current_price, min_price)
+        else:
+            await self._check_trailing_stop(current_price, min_price)
 
-        # 🌟 参数里加上 sl_side: str
+    async def _execute_entry(self, current_price: float, iceberg_min_price: float):
+        """精准计算风控并执行市价开多"""
 
-    async def create_stop_loss_order(self, size: float, trigger_price: float, sl_side: str) -> Optional[str]:
-        """创建止损订单"""
-        try:
-            payload = {
-                "instId": self.symbol,
-                "tdMode": self.td_mode,
-                "side": sl_side,  # 🌟 这里改成动态获取的变量
-                "ordType": "conditional",
-                "sz": str(int(size)),  # 🌟 这里必须加上 int() 防止报小数错误！
-                "slTriggerPx": str(trigger_price),
-                "slTriggerPxType": "last",
-                "slOrdPx": "-1",
-                "reduceOnly": True
-            }
-            res = await self._request("POST", "/api/v5/trade/order-algo", payload)
-            if res and res.get('code') == '0':
-                return res['data'][0]['algoId']
-            return None
-        except Exception as e:
-            logger.error(f"[Trader] 创建止损订单异常: {e}")
-            return None
+        # 🌟 安全检查：确保有余额可以交易
+        if self.available_usdt < 2.0:
+            logger.warning(f"⚠️ 当前账户可用余额过低 ({self.available_usdt:.2f} U)，拒绝开仓！")
+            return
 
-    async def get_klines(self, timeframe: str = "5m", limit: int = 15) -> List[Dict]:
-        """获取K线数据"""
-        try:
-            res = await self._request("GET",
-                                      f"/api/v5/market/candles?instId={self.symbol}&bar={timeframe}&limit={limit}")
-            if res and res.get('code') == '0':
-                return res['data']
-            return []
-        except Exception as e:
-            logger.error(f"[Trader] 获取K线数据异常: {e}")
-            return []
+        # 1. 整数避险止损
+        base_int = math.floor(iceberg_min_price)
+        proposed_sl = round(base_int - self.sl_tick_offset, 2)
 
-    async def market_buy(self, size: float, reduce_only: bool = False) -> Dict:
-        payload = {
+        # 2. 风险与头寸计算
+        price_drop_risk_per_eth = current_price - proposed_sl
+        fee_cost_per_eth = current_price * self.fee_rate
+        total_risk_per_eth = price_drop_risk_per_eth + fee_cost_per_eth
+
+        if total_risk_per_eth <= 0:
+            logger.warning("⚠️ 止损价格计算异常，放弃开仓。")
+            return
+
+        # 🌟 核心修改：使用动态 API 查回来的实际余额！
+        max_loss_usdt = self.available_usdt * self.max_risk_pct
+        max_eth_by_risk = max_loss_usdt / total_risk_per_eth
+        max_eth_by_leverage = (self.available_usdt * self.leverage) / current_price
+
+        actual_eth = min(max_eth_by_risk, max_eth_by_leverage)
+
+        # 转换为真实的合约张数 (1张=0.1 ETH)
+        contracts = int(actual_eth / self.contract_multiplier)
+
+        if contracts < 1:
+            logger.warning(
+                f"⚠️ 风险过大，算出的张数 {contracts} 小于 1 张，放弃开仓！(当前余额: {self.available_usdt:.2f} U)")
+            return
+
+        is_full = (actual_eth == max_eth_by_leverage)
+        pos_msg = "满仓(10X)突击" if is_full else "严控防线降杠杆"
+        proposed_tp = round(current_price * (1 + self.tp_pct), 2)
+
+        logger.info(
+            f"⚔️ [{pos_msg}] 现价 {current_price} | 动用本金: ~{contracts * self.contract_multiplier * current_price / self.leverage:.2f} U | 买入 {contracts} 张")
+
+        # 3. 执行市价买单
+        buy_payload = {
             "instId": self.symbol, "tdMode": self.td_mode, "side": "buy",
-            "ordType": "market", "sz": str(int(size))
+            "ordType": "market", "sz": str(contracts)
         }
-        if reduce_only: payload["reduceOnly"] = True
-        return await self._request("POST", "/api/v5/trade/order", payload)
+        buy_res = await self._request("POST", "/api/v5/trade/order", buy_payload)
 
-    async def market_sell(self, size: float, reduce_only: bool = False) -> Dict:
-        payload = {
-            "instId": self.symbol, "tdMode": self.td_mode, "side": "sell",
-            "ordType": "market", "sz": str(int(size))
-        }
-        if reduce_only: payload["reduceOnly"] = True
-        return await self._request("POST", "/api/v5/trade/order", payload)
+        if buy_res and buy_res.get('code') == '0':
+            logger.info("✅ 进场成交！立刻挂载 OCO 防御阵地...")
+            self.in_position = True
+            self.entry_price = current_price
 
-    async def post_only_sell(self, size: int, price: float) -> Dict:
-        """Maker卖出"""
+            # 4. 挂载 OCO (止盈+止损双向单)
+            await self._place_oco_order(contracts, proposed_tp, proposed_sl)
+        else:
+            logger.error(f"❌ 进场失败: {buy_res}")
+
+    async def _place_oco_order(self, contracts: int, tp_price: float, sl_price: float):
+        """挂载止盈止损二选一条件单"""
         payload = {
             "instId": self.symbol,
             "tdMode": self.td_mode,
             "side": "sell",
-            "ordType": "post_only",
-            "sz": str(int(size)),
-            "px": str(price),
+            "ordType": "oco",
+            "sz": str(contracts),
+            "tpTriggerPx": str(tp_price),
+            "tpOrdPx": "-1",
+            "slTriggerPx": str(sl_price),
+            "slOrdPx": "-1",
             "reduceOnly": True
         }
-        return await self._request("POST", "/api/v5/trade/order", payload)
+        res = await self._request("POST", "/api/v5/trade/order-algo", payload)
 
-    # ==================== 核心交易执行 ====================
+        if res and res.get('code') == '0':
+            self.current_oco_algo_id = res['data'][0]['algoId']
+            self.current_sl_price = sl_price
+            self.current_tp_price = tp_price
+            logger.info(f"🛡️ [阵地稳固] 止损死守: {sl_price} | 止盈目标: {tp_price}")
+        else:
+            logger.error(f"❌ OCO 挂单失败，账户处于裸奔状态请注意！{res}")
 
-    async def update_balance_loop(self):
-        """🌟 后台闲时查账协程：每隔 300 秒查询一次余额，缓存在本地
+    async def _check_trailing_stop(self, current_price: float, new_iceberg_min_price: float):
+        """基于新冰山的阶梯追踪止损"""
+        rise_pct = (new_iceberg_min_price - self.entry_price) / self.entry_price
 
-        增强的错误恢复和心跳监控：
-        1. 异常捕获：防止单个异常导致循环停止
-        2. 指数退避：连续失败时增加等待时间，避免API限流
-        3. 心跳时间戳：记录最后成功时间，供外部监控
-        4. 失败警报：连续多次失败时发送警报
-        """
-        logger.info("💰 [财务官] 已上线！将在后台默默监控账户余额...")
+        if rise_pct >= self.trailing_trigger_pct:
+            new_sl = round(math.floor(new_iceberg_min_price) - self.sl_tick_offset, 2)
 
-        # 🌟 新增：启动时第一件事，先把枪管的威力（杠杆）调好！
-        await self.set_leverage_on_startup()
+            if new_sl > self.current_sl_price:
+                # 👇 【核心修改：流派 3】锚定新冰山底价，重新计算 0.5% 的止盈！
+                new_tp = round(new_iceberg_min_price * (1 + self.tp_pct), 2)
 
-        import time
+                logger.info(f"📈 [阶梯追踪!] 发现更高冰山阵地 (+{rise_pct:.2%})，部队前压！")
 
-        while True:
-            try:
-                # 执行余额查询
-                success = await self.fetch_balance()
+                if self.current_oco_algo_id:
+                    cancel_payload = [{"instId": self.symbol, "algoId": self.current_oco_algo_id}]
+                    await self._request("POST", "/api/v5/trade/cancel-algos", cancel_payload)
 
-                # 🌟 核心修复：如果没成功，主动拉响警报！直接丢给下面的 except 块去处理（加倍睡眠+发邮件）！
-                if not success:
-                    raise ConnectionError("API 请求返回空数据或报错，可能遭遇限流或网络断开")
+                pos_res = await self._request("GET", f"/api/v5/account/positions?instId={self.symbol}")
+                contracts = 0
+                if pos_res and pos_res.get('code') == '0':
+                    for p in pos_res['data']:
+                        if p['instId'] == self.symbol:
+                            contracts = int(abs(float(p['pos'])))
+                            break
 
-                # 如果成功了，更新心跳并重置失败计数
-                self._last_balance_update = time.time()
-                if self._balance_update_failures > 0:
+                if contracts > 0:
                     logger.info(
-                        f"💰 [财务官] 查询恢复成功，重置失败计数（之前连续失败 {self._balance_update_failures} 次）")
-                    self._balance_update_failures = 0
-                    self._alert_sent = False
+                        f"🔄 止损上移: {self.current_sl_price} -> {new_sl} | 止盈: {self.current_tp_price} -> {new_tp}")
+                    await self._place_oco_order(contracts, new_tp, new_sl)
 
-                # 检查持仓状态（优先使用context）
-                in_position = self.context.is_in_position if self.context else self.is_in_position
-                if in_position:
-                    # 战时模式：手里有单子，随时可能止盈、止损或打保本
-                    # 财务官每 5 秒死死盯住账户，一旦发现单子没了，立刻光速解锁！
-                    base_sleep = 5
-                else:
-                    # 闲时模式：空仓状态，不需要浪费 API 额度，300 秒查一次余额即可
-                    base_sleep = 300
-
-                # 应用指数退避（如果有连续失败）
-                if self._balance_update_failures > 0:
-                    # 指数退避：2^failures * base_sleep，最大不超过300秒（5分钟）
-                    backoff_factor = min(2 ** self._balance_update_failures, 60)  # 限制最大60倍
-                    sleep_time = min(base_sleep * backoff_factor, 300)
-                    logger.warning(f"💰 [财务官] 连续失败 {self._balance_update_failures} 次，"
-                                   f"休眠时间延长至 {sleep_time:.1f} 秒")
-                    await asyncio.sleep(sleep_time)
-                else:
-                    await asyncio.sleep(base_sleep)
-
-            except asyncio.CancelledError:
-                logger.info("💰 [财务官] 任务被取消")
-                raise
-            except Exception as e:
-                # 捕获所有其他异常，防止循环停止
-                self._balance_update_failures += 1
-                logger.error(f"💰 [财务官] 第 {self._balance_update_failures} 次查询失败: {e}")
-
-                # 连续失败过多时发送警报
-                if self._balance_update_failures >= self._max_failures_before_alert and not self._alert_sent:
-                    logger.critical(f"💰 [财务官] 连续失败 {self._balance_update_failures} 次！"
-                                    f"可能网络或API出现问题，请立即检查！")
-
-                    # 发送警报邮件
-                    try:
-                        alert_details = (
-                            f"⚠️ 财务官连续 {self._balance_update_failures} 次查询余额失败！\n"
-                            f"可能原因：网络连接问题、OKX API限流、或账户权限异常。\n"
-                            f"最后成功查询时间: {time.ctime(self._last_balance_update) if self._last_balance_update > 0 else '从未成功'}\n"
-                            f"当前状态: {'持仓中' if (self.context.is_in_position if self.context else self.is_in_position) else '空仓'}\n"
-                            f"请立即检查服务器网络和OKX API状态！"
-                        )
-                        await send_trading_signal_email(
-                            symbol=self.symbol,
-                            signal_type="🚨 财务官心跳异常",
-                            price=0.0,
-                            details=alert_details
-                        )
-                        self._alert_sent = True
-                        logger.info("📧 财务官异常警报邮件已发送")
-                    except Exception as email_error:
-                        logger.error(f"❌ 发送警报邮件失败: {email_error}")
-
-                # 失败时使用指数退避等待
-                base_sleep = 5 if (self.context.is_in_position if self.context else self.is_in_position) else 300
-                backoff_factor = min(2 ** self._balance_update_failures, 60)
-                sleep_time = min(base_sleep * backoff_factor, 300)
-                logger.warning(f"💰 [财务官] 等待 {sleep_time:.1f} 秒后重试...")
-                await asyncio.sleep(sleep_time)
-
-    async def fetch_balance(self) -> bool:
-        """请求 OKX 获取 USDT 可用余额。返回获取是否成功。"""
-        # 查询当前品种持仓
+    # =======================================================
+    # 财务探针后台守护
+    # =======================================================
+    async def fetch_balance_and_position(self) -> bool:
+        """🌟 核心：同时请求获取 USDT 可用余额与真实持仓状态"""
         pos_res = await self._request("GET", f"/api/v5/account/positions?instId={self.symbol}")
-        # 查询当前余额
         balance_res = await self._request("GET", "/api/v5/account/balance")
 
-        # 🌟 核心：如果两个接口任何一个没返回数据，或者报错，都说明网络或API出问题了
-        if pos_res is None or balance_res is None or pos_res.get('code') != '0' or balance_res.get('code') != '0':
+        if not pos_res or not balance_res or pos_res.get('code') != '0' or balance_res.get('code') != '0':
             return False
 
-        # --- 以下是正常的更新逻辑 (保持不变) ---
+        # 1. 更新持仓状态与 OCO 清理
         positions = pos_res.get('data', [])
-        has_pos = any(abs(float(p.get('pos', 0))) > 0.05 for p in positions)
+        has_pos = any(abs(float(p.get('pos', 0))) > 0 for p in positions)
 
-        if has_pos:
-            self.is_in_position = True
-            if self.context:
-                self.context.is_in_position = True
-        else:
-            self.is_in_position = False
-            if self.context:
-                if self.context.is_in_position:
-                    logger.warning(f"💰 [财务官] 检测到仓位已消失（可能被手动平仓），清除持仓状态")
-                    self.context.clear_position()
-                else:
-                    self.context.is_in_position = False
+        if not has_pos and self.in_position:
+            logger.info("💰 [战报] 侦测到仓位已清空（止盈或止损触发），系统重置状态，等待下一次猎杀。")
+            self.in_position = False
+            self.current_oco_algo_id = None
+            self.current_sl_price = 0.0
+        elif has_pos and not self.in_position:
+            self.in_position = True
 
+        # 2. 动态更新可用余额
         details = balance_res['data'][0]['details']
         for asset in details:
             if asset['ccy'] == 'USDT':
                 self.available_usdt = float(asset['availEq'])
-                logger.debug(f"💵 [闲时查账] 当前账户可用 USDT: {self.available_usdt:.2f}")
                 break
 
-        return True  # 全部成功才返回 True
+        return True
 
-    async def set_leverage_on_startup(self):
-        """🌟 系统冷启动：1. 切换持仓模式(全/逐)  2. 设置杠杆倍数"""
+    async def update_balance_loop(self):
+        """后台查账：断网重连、资金同步、状态同步"""
+        logger.info("💰 [财务官] 已上线！同步初始化 API 状态并拉取真实余额...")
+        await self._set_leverage_on_startup()
 
-        # 1. 强制切换保证金模式 (全仓 cross / 逐仓 isolated)
-        # 注意：OKX 要求切换模式时不能有持仓或挂单
-        mode_payload = {
-            "instId": self.symbol,
-            "mgnMode": self.td_mode  # 这里传入 "cross"
-        }
-        logger.info(f"⚙️ [实盘初始化] 正在设置保证金模式为: {self.td_mode}")
-        # 虽然接口是 set-isolated-mode，但它其实是用来切换全逐仓的开关
+        while True:
+            try:
+                success = await self.fetch_balance_and_position()
+                if success:
+                    self._balance_update_failures = 0
+                else:
+                    raise ConnectionError("API 返回异常数据")
+
+                # 战时 5 秒死盯，平时 60 秒查账
+                await asyncio.sleep(5 if self.in_position else 60)
+
+            except Exception as e:
+                self._balance_update_failures += 1
+                logger.error(f"💰 财务接口异常: {e}")
+                await asyncio.sleep(min(10 * self._balance_update_failures, 300))
+
+    async def _set_leverage_on_startup(self):
+        """系统冷启动：设置全/逐仓与杠杆"""
+        mode_payload = {"instId": self.symbol, "mgnMode": self.td_mode}
         await self._request("POST", "/api/v5/account/set-isolated-mode", mode_payload)
 
-        # 2. 强制设置杠杆倍数
-        lev_payload = {
-            "instId": self.symbol,
-            "lever": str(self.leverage),
-            "mgnMode": self.td_mode
-        }
-        logger.info(f"⚙️ [实盘初始化] 正在设置杠杆倍数为: {self.leverage}X")
+        lev_payload = {"instId": self.symbol, "lever": str(self.leverage), "mgnMode": self.td_mode}
         res = await self._request("POST", "/api/v5/account/set-leverage", lev_payload)
 
         if res and res.get('code') == '0':
-            logger.info(f"✅ 状态同步成功！{self.symbol} 已锁定为 【{self.td_mode.upper()} {self.leverage}X】")
+            logger.info(f"✅ 实盘同步成功！{self.symbol} 已锁定 【{self.td_mode.upper()} {self.leverage}X】")
         else:
-            logger.warning(f"⚠️ 状态同步返回: {res.get('msg', res)}")
+            logger.warning(f"⚠️ 实盘参数同步提示: {res.get('msg', '可能已经设置过')}")
