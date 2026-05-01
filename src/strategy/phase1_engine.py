@@ -32,8 +32,9 @@ class Phase1Engine:
         # 2. 动态熔断关窗参数 (Close Configs)
         # ==========================================
         self.exhaustion_sec = 1.5           # 熔断器1：超过 1.5 秒没有新的强力砸盘，动能衰竭
-        self.reversal_cvd_usdt = 500_000.0  # 熔断器2：出现 50万 USDT 的主买，多头反击，多空逆转
+        self.reversal_cvd_usdt = 1_500_000.0  # 熔断器2：出现 50万 USDT 的主买，多头反击，多空逆转
         self.max_drop_pct = 0.01            # 熔断器3：价格瞬间击穿超过 1% (黑天鹅防守)
+        self.cooldown_until_ts = 0.0        # 熔断器4：冷却期时间戳锁
         
         # ==========================================
         # 3. 状态机与快照内存 (State & Snapshots)
@@ -53,35 +54,37 @@ class Phase1Engine:
         self.window_last_trade_ts = 0.0     # 用于监测动能是否衰竭
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
-        """
-        主入口：接收 WebSocket 传来的每一笔实时 Trade
-        必须在 market_context 处理完基础记账后调用！
-        """
-        # OKX 传来的 timestamp 是毫秒，转成秒
         ts = int(trade_data.get('ts', time.time() * 1000)) / 1000.0
         price = float(trade_data['price'])
         size = float(trade_data['size'])
         side = trade_data['side']
-        
-        # 计算这笔交易的 USDT 名义价值
+
         trade_usdt = price * size
         cvd_delta = trade_usdt if side == 'buy' else -trade_usdt
 
-        # --- 维护点火视窗 (永远在线) ---
         self.tick_buffer.append((ts, cvd_delta))
         self._clean_tick_buffer(ts)
-        
+
         if not self.is_detecting:
-            # 状态：闲置巡逻中 -> 检查是否需要点火
+            # 闲置状态：如果还在冷却期内，绝对不点火
+            if ts < self.cooldown_until_ts:
+                return None
+
             if self._check_trigger_condition():
                 self._open_window(ts, price)
         else:
-            # 状态：窗口已开启 -> 维持观测，更新战火线，并检查是否熔断
+            # 探测状态：【核心修复】必须先检查是否超时衰竭！
+            if (ts - self.window_last_trade_ts) >= self.exhaustion_sec:
+                logger.debug("🛑 [熔断关窗] 抛压动能衰竭 (超时无大单)。")
+                return self._close_window_and_detect()
+
+            # 如果没超时，再去更新最新时间戳和战火线
             self._update_observation(ts, price, cvd_delta)
-            
+
+            # 再检查反弹逆转和击穿
             if self._check_close_condition(ts, price):
                 return self._close_window_and_detect()
-                
+
         return None
 
     def _clean_tick_buffer(self, current_ts: float):
@@ -136,9 +139,10 @@ class Phase1Engine:
         # 1. 动能衰竭 (例如超过1.5秒没新单子)
         # 注意：在实盘中，需要有一个外部的定时器/心跳来驱动没有交易时的衰竭
         # 这里用两笔 trade 的时间差做简化模拟
-        if (ts - self.window_last_trade_ts) >= self.exhaustion_sec:
-            logger.debug("🛑 [熔断关窗] 抛压动能衰竭。")
-            return True
+        # --- 删掉这三行，因为已经移到 process_tick 里去了 ---
+        # if (ts - self.window_last_trade_ts) >= self.exhaustion_sec:
+        #     logger.debug("🛑 [熔断关窗] 抛压动能衰竭。")
+        #     return True
             
         # 2. 多空逆转 (出现连续的反向买单吃货)
         if self.window_recent_cvd >= self.reversal_cvd_usdt:
@@ -183,7 +187,11 @@ class Phase1Engine:
 
         # 状态机重置，准备迎接下一次暴风雨
         self.is_detecting = False
-        self.tick_buffer.clear() 
+        self.tick_buffer.clear()
+
+        # 👇【新增核心逻辑】：强制进入 2.5 秒的冷却期！
+        # 哪怕刚刚的瀑布还在 3 秒视窗里，这 2.5 秒内也绝不重复开窗测算！
+        self.cooldown_until_ts = self.window_last_trade_ts + 2.5
 
         # 呼叫黑盒！
         signal = self.iceberg_radar.detect_buy_iceberg(active_sold, book_reduction)
