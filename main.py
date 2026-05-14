@@ -43,11 +43,60 @@ async def main():
     # 在函数外部定义一个全局变量，防止并发双开
     trader_task = None
 
-    # 在函数外部定义一个全局变量，防止并发双开
-    trader_task = None
+
+    async def handle_signal(signal, current_price):
+        nonlocal trader_task
+
+        if not signal:
+            return
+
+        is_iceberg = signal.get('is_iceberg', False)
+        direction = signal.get('direction', 'BUY')
+
+        # 取出我们刚刚在 Engine 里加的耗时
+        duration = signal.get('duration', 0.0)
+
+        if is_iceberg:
+            direction_label = "多" if direction == 'BUY' else "空"
+            abs_rate = signal.get('absorption_rate', 0) * 100
+            conf = signal.get('confidence', 0)
+            actual_attack = abs(signal.get('active_volume', 0))
+
+            # 🌟 2. 插入防飞刀拦截器
+            if duration < 1.0:
+                logger.warning(f"⚠️ [防飞刀] 耗时仅 {duration:.2f}s，疑似爆仓针直接砸穿盘口，放弃接针！")
+                return
+
+            # ✨ 原有的优化过滤：
+            if conf < 0.8 or actual_attack < 1_000_000:
+                logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({actual_attack:,.0f}U)不足，放弃捕捉。")
+                return
+
+            # ✨ 【高亮逻辑】：吸收率 >= 100% 且确信度高，显示为金黄色加粗特效
+            if abs_rate >= 100 and conf >= 0.9:
+                highlight_start = "\033[1;33;44m"  # 蓝底金黄字
+                highlight_end = "\033[0m"
+            else:
+                highlight_start = ""
+                highlight_end = ""
+
+            logger.info(f"{highlight_start}🎯 [捕获冰山 ({direction_label})] 确信度: {conf:.2f} | "
+                        f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {abs_rate:.1f}%{highlight_end}")
+
+        elif signal.get('behavior') == 'SPOOFING_WITHDRAWAL':
+            logger.warning(
+                f"⚠️ [撤单欺诈!] 主力撤销了假墙！虚假支撑消失量: {abs(signal.get('hidden_volume', 0)):,.0f} U")
+            return
+        else:
+            return
+
+        # 只有在 is_iceberg == True 或者持仓状态下的反向信号才允许下发给 Trader
+        if trader_task and not trader_task.done():
+            return
+
+        trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
 
     async def on_trade_tick(trade_data):
-        nonlocal trader_task
         current_price = float(trade_data['price'])
 
         # 🌟 1. 实时挂载保本锁监控：不管有没有冰山信号，持仓时每笔成交都去测算一下利润
@@ -55,61 +104,24 @@ async def main():
             # 放进后台 Task 运行，绝对不能阻塞主数据流
             asyncio.create_task(trader.check_breakeven_lock(current_price))
 
-        signal = engine.process_tick(trade_data)
+        ctx.apply_trade(trade_data)
 
-        if signal:
-            is_iceberg = signal.get('is_iceberg', False)
-            direction = signal.get('direction', 'BUY')
+        if hasattr(engine, "on_trade"):
+            signal = engine.on_trade(trade_data)
+        else:
+            signal = engine.process_tick(trade_data)
 
-            # 取出我们刚刚在 Engine 里加的耗时
-            duration = signal.get('duration', 0.0)
-
-            if is_iceberg:
-                direction_label = "多" if direction == 'BUY' else "空"
-                abs_rate = signal.get('absorption_rate', 0) * 100
-                conf = signal.get('confidence', 0)
-                actual_attack = abs(signal.get('active_volume', 0))
-
-                # 🌟 2. 插入防飞刀拦截器
-                if duration < 1.0:
-                    logger.warning(f"⚠️ [防飞刀] 耗时仅 {duration:.2f}s，疑似爆仓针直接砸穿盘口，放弃接针！")
-                    return
-
-                # ✨ 原有的优化过滤：
-                if conf < 0.8 or actual_attack < 1_000_000:
-                    logger.info(f"⏭️ [信号过滤] 确信度({conf:.2f})或攻击量({actual_attack:,.0f}U)不足，放弃捕捉。")
-                    return
-
-                # ✨ 【高亮逻辑】：吸收率 >= 100% 且确信度高，显示为金黄色加粗特效
-                if abs_rate >= 100 and conf >= 0.9:
-                    highlight_start = "\033[1;33;44m"  # 蓝底金黄字
-                    highlight_end = "\033[0m"
-                else:
-                    highlight_start = ""
-                    highlight_end = ""
-
-                logger.info(f"{highlight_start}🎯 [捕获冰山 ({direction_label})] 确信度: {conf:.2f} | "
-                            f"隐藏体量: {signal['hidden_volume']:,.0f} U | 吸收率: {abs_rate:.1f}%{highlight_end}")
-
-            elif signal.get('behavior') == 'SPOOFING_WITHDRAWAL':
-                logger.warning(
-                    f"⚠️ [撤单欺诈!] 主力撤销了假墙！虚假支撑消失量: {abs(signal.get('hidden_volume', 0)):,.0f} U")
-                return
-            else:
-                return
-
-                # 只有在 is_iceberg == True 或者持仓状态下的反向信号才允许下发给 Trader
-            if trader_task and not trader_task.done():
-                return
-
-            current_price = float(trade_data['price'])
-            trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
+        await handle_signal(signal, current_price)
 
     # 【处理盘口更新】：必须是同步 def，因为 okx_books_stream 中是普通调用
     def on_book_update(book_data):
         """将盘口增量数据喂给 MarketContext"""
         try:
             ctx.apply_book_delta(book_data)
+            if hasattr(engine, "on_book_update"):
+                signal = engine.on_book_update(book_data)
+                current_price = getattr(ctx, "current_price", 0.0)
+                asyncio.create_task(handle_signal(signal, float(current_price)))
         except Exception as e:
             logger.error(f"❌ 处理 Book 时发生错误: {e}")
 

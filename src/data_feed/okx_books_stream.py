@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import websockets
 
 from src.utils.log import get_logger
@@ -43,7 +44,9 @@ class OKXBooksStreamer:
 
                             cleaned_book_data = {
                                 'bids': cleaned_bids,
-                                'asks': cleaned_asks
+                                'asks': cleaned_asks,
+                                'ts': float(book_data['ts']) / 1000 if 'ts' in book_data else None,
+                                'recv_ts': time.time()
                             }
 
                             self.on_book_callback(cleaned_book_data)
