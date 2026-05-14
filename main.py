@@ -43,8 +43,6 @@ async def main():
     # 在函数外部定义一个全局变量，防止并发双开
     trader_task = None
 
-    # 在函数外部定义一个全局变量，防止并发双开
-    trader_task = None
 
     async def handle_signal(signal, current_price):
         nonlocal trader_task
@@ -122,7 +120,7 @@ async def main():
             ctx.apply_book_delta(book_data)
             if hasattr(engine, "on_book_update"):
                 signal = engine.on_book_update(book_data)
-                current_price = ctx.last_price or ctx.mid_price or 0.0
+                current_price = getattr(ctx, "current_price", 0.0)
                 asyncio.create_task(handle_signal(signal, float(current_price)))
         except Exception as e:
             logger.error(f"❌ 处理 Book 时发生错误: {e}")
