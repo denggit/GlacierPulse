@@ -92,7 +92,6 @@ class Phase1Engine:
             'zone_lower': zone_lower,
             'zone_upper': zone_upper,
             'start_thickness_usdt': start_thickness_usdt,
-            'book_updates_seen': 0,  # 兼容统计：V4 结算核心应使用 book_updates_after_cutoff
             'book_updates_after_cutoff': 0,
             'trade_count': 1,
             'min_trade_price': price,
@@ -261,30 +260,42 @@ class Phase1Engine:
                 book_reduction = float(event.get("start_thickness_usdt", 0.0)) - end_thickness_usdt
                 signal = self.iceberg_radar.detect_sell_iceberg(float(event.get("active_notional", 0.0)), book_reduction)
 
-            hidden_notional = float(signal.get("hidden_notional", 0.0))
-            absorption_ratio = float(signal.get("absorption_ratio", 0.0))
-            log_tag = "[SETTLED-ICEBERG]" if signal.get("is_iceberg") else "[IGNORE-ICEBERG]"
-            logger.info(
-                "%s id=%s direction=%s wait=%.1fms updates=%d active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% trades=%d",
-                log_tag,
-                event.get("event_id"),
-                direction,
-                wait_ms,
-                int(event.get("book_updates_after_cutoff", 0)),
-                float(event.get("active_notional", 0.0)),
-                book_reduction,
-                hidden_notional,
-                absorption_ratio * 100.0,
-                int(event.get("trade_count", 0)),
-            )
+            hidden_volume = float(signal.get("hidden_volume", 0.0))
+            absorption_rate = float(signal.get("absorption_rate", 0.0))
+            is_spoofing_withdrawal = signal.get("behavior") == "SPOOFING_WITHDRAWAL"
+            if is_spoofing_withdrawal:
+                logger.info(
+                    "[SPOOFING-WITHDRAWAL] id=%s direction=%s active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% behavior=%s",
+                    event.get("event_id"),
+                    direction,
+                    float(event.get("active_notional", 0.0)),
+                    book_reduction,
+                    hidden_volume,
+                    absorption_rate * 100.0,
+                    signal.get("behavior"),
+                )
+            else:
+                log_tag = "[SETTLED-ICEBERG]" if signal.get("is_iceberg") else "[IGNORE-ICEBERG]"
+                logger.info(
+                    "%s id=%s direction=%s wait=%.1fms updates=%d active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% trades=%d behavior=%s",
+                    log_tag,
+                    event.get("event_id"),
+                    direction,
+                    wait_ms,
+                    int(event.get("book_updates_after_cutoff", 0)),
+                    float(event.get("active_notional", 0.0)),
+                    book_reduction,
+                    hidden_volume,
+                    absorption_rate * 100.0,
+                    int(event.get("trade_count", 0)),
+                    signal.get("behavior"),
+                )
 
-            if signal.get("is_iceberg") or signal.get("behavior") == "SPOOFING_WITHDRAWAL":
+            if signal.get("is_iceberg") and not is_spoofing_withdrawal:
                 enriched_signal = dict(signal)
                 enriched_signal.update(
                     {
-                        "event_type": "ICEBERG_ABSORPTION"
-                        if signal.get("is_iceberg")
-                        else "SPOOFING_WITHDRAWAL",
+                        "event_type": "ICEBERG_ABSORPTION",
                         "signal_level": "PHASE1",
                         "event_id": event.get("event_id"),
                         "direction": direction,
@@ -304,6 +315,8 @@ class Phase1Engine:
                         "last_trade_recv_ts": float(event.get("last_trade_recv_ts", 0.0)),
                     }
                 )
+                enriched_signal["hidden_volume"] = hidden_volume
+                enriched_signal["absorption_rate"] = absorption_rate
                 if direction == "BUY":
                     enriched_signal["min_price"] = float(event.get("zone_lower", 0.0))
                 elif direction == "SELL":
