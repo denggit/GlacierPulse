@@ -20,7 +20,7 @@ class Phase1Engine:
         self.ctx = market_context
         self.iceberg_radar = iceberg_detector
 
-        self.min_event_start_notional_usdt = 150_000
+        self.min_event_start_notional_usdt = 300_000
         self.min_event_merge_notional_usdt = 20_000
         self.accumulate_window_ms = 100
         self.merge_price_tolerance = 0.5

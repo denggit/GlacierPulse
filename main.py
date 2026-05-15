@@ -35,7 +35,7 @@ async def main():
     ctx = MarketContext()
     iceberg_radar = IcebergDetector()
     engine = Phase1Engine(market_context=ctx, iceberg_detector=iceberg_radar)
-    trader = IcebergTrader(symbol=symbol, leverage=10, td_mode="cross")
+    trader = IcebergTrader(symbol=symbol, leverage=3, td_mode="cross")
 
     # 2. 定义高频数据回调处理链路 (Callback Pipeline)
 
