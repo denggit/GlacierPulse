@@ -27,6 +27,9 @@ class Phase1Engine:
         self.local_zone_width = 1.5
         self.min_local_depth_usdt = 300_000
         self.max_pending_events = 100
+        self.min_book_updates_after_cutoff = 2
+        self.max_wait_ms = 700
+        self.max_price_deviation = 2.0
 
         self.pending_events = collections.deque()
         self._event_seq = 0
@@ -171,6 +174,147 @@ class Phase1Engine:
                 dropped.get('event_id', 'unknown'),
             )
         self.pending_events.append(event)
+
+    def on_book_update(self, book_data: Dict[str, Any]) -> Optional[Dict]:
+        book_ts = float(book_data.get("ts") or 0)
+        book_recv_ts = float(book_data.get("recv_ts") or time.time())
+        current_price = float(getattr(self.ctx, "current_price", 0.0) or 0.0)
+
+        remaining_events = []
+        candidate_signals = []
+
+        for event in self.pending_events:
+            status = event.get("status")
+
+            if status == "ACCUMULATING":
+                if book_recv_ts >= float(event.get("accumulate_until_recv_ts", 0.0)):
+                    event["status"] = "WAITING_BOOK"
+                    event["cutoff_recv_ts"] = float(event.get("accumulate_until_recv_ts", 0.0))
+                    logger.debug(
+                        "[PENDING-CUTOFF] id=%s direction=%s active=%.0fU trades=%d",
+                        event.get("event_id"),
+                        event.get("direction"),
+                        float(event.get("active_notional", 0.0)),
+                        int(event.get("trade_count", 0)),
+                    )
+                else:
+                    remaining_events.append(event)
+                    continue
+
+            if event.get("status") != "WAITING_BOOK":
+                remaining_events.append(event)
+                continue
+
+            wait_ms = (book_recv_ts - float(event.get("trigger_recv_ts", book_recv_ts))) * 1000.0
+            if wait_ms > self.max_wait_ms:
+                logger.info(
+                    "[CANCEL-ICEBERG] id=%s reason=TIMEOUT wait=%.1fms",
+                    event.get("event_id"),
+                    wait_ms,
+                )
+                continue
+
+            direction = str(event.get("direction"))
+            trigger_price = float(event.get("trigger_price", 0.0))
+            if direction == "BUY":
+                if current_price > 0 and current_price < trigger_price - self.max_price_deviation:
+                    logger.info(
+                        "[CANCEL-ICEBERG] id=%s reason=PRICE_BROKE_DOWN current=%.2f trigger=%.2f",
+                        event.get("event_id"),
+                        current_price,
+                        trigger_price,
+                    )
+                    continue
+            elif direction == "SELL":
+                if current_price > trigger_price + self.max_price_deviation:
+                    logger.info(
+                        "[CANCEL-ICEBERG] id=%s reason=PRICE_BROKE_UP current=%.2f trigger=%.2f",
+                        event.get("event_id"),
+                        current_price,
+                        trigger_price,
+                    )
+                    continue
+
+            if book_ts > 0 and book_ts < float(event.get("last_trade_ts", 0.0)):
+                remaining_events.append(event)
+                continue
+
+            event["book_updates_after_cutoff"] = int(event.get("book_updates_after_cutoff", 0)) + 1
+            if event["book_updates_after_cutoff"] < self.min_book_updates_after_cutoff:
+                remaining_events.append(event)
+                continue
+
+            if direction == "BUY":
+                end_thickness_usdt = self._calc_local_depth_usdt(
+                    self.ctx.bids,
+                    float(event.get("zone_lower", 0.0)),
+                    float(event.get("zone_upper", 0.0)),
+                )
+                book_reduction = float(event.get("start_thickness_usdt", 0.0)) - end_thickness_usdt
+                signal = self.iceberg_radar.detect_buy_iceberg(float(event.get("active_notional", 0.0)), book_reduction)
+            else:
+                end_thickness_usdt = self._calc_local_depth_usdt(
+                    self.ctx.asks,
+                    float(event.get("zone_lower", 0.0)),
+                    float(event.get("zone_upper", 0.0)),
+                )
+                book_reduction = float(event.get("start_thickness_usdt", 0.0)) - end_thickness_usdt
+                signal = self.iceberg_radar.detect_sell_iceberg(float(event.get("active_notional", 0.0)), book_reduction)
+
+            hidden_notional = float(signal.get("hidden_notional", 0.0))
+            absorption_ratio = float(signal.get("absorption_ratio", 0.0))
+            log_tag = "[SETTLED-ICEBERG]" if signal.get("is_iceberg") else "[IGNORE-ICEBERG]"
+            logger.info(
+                "%s id=%s direction=%s wait=%.1fms updates=%d active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% trades=%d",
+                log_tag,
+                event.get("event_id"),
+                direction,
+                wait_ms,
+                int(event.get("book_updates_after_cutoff", 0)),
+                float(event.get("active_notional", 0.0)),
+                book_reduction,
+                hidden_notional,
+                absorption_ratio * 100.0,
+                int(event.get("trade_count", 0)),
+            )
+
+            if signal.get("is_iceberg") or signal.get("behavior") == "SPOOFING_WITHDRAWAL":
+                enriched_signal = dict(signal)
+                enriched_signal.update(
+                    {
+                        "event_type": "ICEBERG_ABSORPTION"
+                        if signal.get("is_iceberg")
+                        else "SPOOFING_WITHDRAWAL",
+                        "signal_level": "PHASE1",
+                        "event_id": event.get("event_id"),
+                        "direction": direction,
+                        "trigger_price": trigger_price,
+                        "zone_lower": float(event.get("zone_lower", 0.0)),
+                        "zone_upper": float(event.get("zone_upper", 0.0)),
+                        "wait_ms": wait_ms,
+                        "book_updates_after_cutoff": int(event.get("book_updates_after_cutoff", 0)),
+                        "duration": wait_ms / 1000.0,
+                        "start_thickness_usdt": float(event.get("start_thickness_usdt", 0.0)),
+                        "end_thickness_usdt": end_thickness_usdt,
+                        "book_reduction": book_reduction,
+                        "trade_count": int(event.get("trade_count", 0)),
+                        "min_trade_price": float(event.get("min_trade_price", 0.0)),
+                        "max_trade_price": float(event.get("max_trade_price", 0.0)),
+                        "last_trade_ts": float(event.get("last_trade_ts", 0.0)),
+                        "last_trade_recv_ts": float(event.get("last_trade_recv_ts", 0.0)),
+                    }
+                )
+                if direction == "BUY":
+                    enriched_signal["min_price"] = float(event.get("zone_lower", 0.0))
+                elif direction == "SELL":
+                    enriched_signal["max_price"] = float(event.get("zone_upper", 0.0))
+                candidate_signals.append(enriched_signal)
+
+        self.pending_events = collections.deque(remaining_events)
+
+        if not candidate_signals:
+            return None
+        return max(candidate_signals, key=lambda s: float(s.get("confidence", 0.0)))
 
     @staticmethod
     def _calc_local_depth_usdt(book_levels: Dict[float, float], zone_lower: float, zone_upper: float) -> float:
