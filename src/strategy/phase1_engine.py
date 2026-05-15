@@ -20,7 +20,10 @@ class Phase1Engine:
         self.ctx = market_context
         self.iceberg_radar = iceberg_detector
 
-        self.min_trade_notional_usdt = 150_000
+        self.min_event_start_notional_usdt = 150_000
+        self.min_event_merge_notional_usdt = 20_000
+        self.accumulate_window_ms = 100
+        self.merge_price_tolerance = 0.5
         self.local_zone_width = 1.5
         self.min_local_depth_usdt = 300_000
         self.max_pending_events = 100
@@ -32,14 +35,15 @@ class Phase1Engine:
         return self.on_trade(trade_data)
 
     def on_trade(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
-        """V3: 仅根据主动成交创建 PendingIcebergEvent，不下单、不结算。"""
+        """V3.5: 创建/合并 ACCUMULATING PendingIcebergEvent，不下单、不结算。"""
         price = float(trade_data['price'])
         size = float(trade_data['size'])
         side = str(trade_data['side']).lower()
         trade_ts = float(trade_data['ts'])
+        recv_ts = float(trade_data.get('recv_ts', time.time()))
 
         active_notional = price * size
-        if active_notional < self.min_trade_notional_usdt:
+        if active_notional < self.min_event_merge_notional_usdt:
             return None
 
         if side == 'sell':
@@ -53,6 +57,21 @@ class Phase1Engine:
         else:
             return None
 
+        merged = self._try_merge_accumulating_event(
+            direction=direction,
+            side=side,
+            price=price,
+            size=size,
+            active_notional=active_notional,
+            trade_ts=trade_ts,
+            recv_ts=recv_ts,
+        )
+        if merged:
+            return None
+
+        if active_notional < self.min_event_start_notional_usdt:
+            return None
+
         start_thickness_usdt = self._calc_local_depth_usdt(local_book, zone_lower, zone_upper)
         if start_thickness_usdt < self.min_local_depth_usdt:
             return None
@@ -62,30 +81,83 @@ class Phase1Engine:
             'direction': direction,
             'trigger_price': price,
             'trigger_ts': trade_ts,
-            'trigger_recv_ts': time.time(),
+            'trigger_recv_ts': recv_ts,
+            'accumulate_until_recv_ts': recv_ts + self.accumulate_window_ms / 1000.0,
             'active_notional': active_notional,
             'active_size': size,
             'side': side,
             'zone_lower': zone_lower,
             'zone_upper': zone_upper,
             'start_thickness_usdt': start_thickness_usdt,
-            'book_updates_seen': 0,
-            'status': 'PENDING',
+            'book_updates_seen': 0,  # 兼容统计：V4 结算核心应使用 book_updates_after_cutoff
+            'book_updates_after_cutoff': 0,
+            'trade_count': 1,
+            'min_trade_price': price,
+            'max_trade_price': price,
+            'last_trade_ts': trade_ts,
+            'last_trade_recv_ts': recv_ts,
+            'status': 'ACCUMULATING',
         }
         self._append_pending_event(event)
 
         logger.info(
-            "[PENDING-ICEBERG] id=%s direction=%s price=%.2f active=%.0fU depth=%.0fU zone=[%.2f, %.2f] pending=%d",
+            "[PENDING-ICEBERG] id=%s direction=%s price=%.2f active=%.0fU trades=%d depth=%.0fU zone=[%.2f, %.2f] cutoff=%dms pending=%d",
             event['event_id'],
             direction,
             price,
             active_notional,
+            event['trade_count'],
             start_thickness_usdt,
             zone_lower,
             zone_upper,
+            self.accumulate_window_ms,
             len(self.pending_events),
         )
         return None
+
+    def _try_merge_accumulating_event(
+        self,
+        direction: str,
+        side: str,
+        price: float,
+        size: float,
+        active_notional: float,
+        trade_ts: float,
+        recv_ts: float,
+    ) -> bool:
+        for event in reversed(self.pending_events):
+            if event.get("status") != "ACCUMULATING":
+                continue
+            if recv_ts > float(event.get("accumulate_until_recv_ts", 0.0)):
+                continue
+            if event.get("direction") != direction or event.get("side") != side:
+                continue
+
+            zone_lower = float(event.get("zone_lower", 0.0)) - self.merge_price_tolerance
+            zone_upper = float(event.get("zone_upper", 0.0)) + self.merge_price_tolerance
+            if not (zone_lower <= price <= zone_upper):
+                continue
+
+            event["active_notional"] += active_notional
+            event["active_size"] += size
+            event["trade_count"] += 1
+            event["last_trade_ts"] = trade_ts
+            event["last_trade_recv_ts"] = recv_ts
+            event["min_trade_price"] = min(float(event["min_trade_price"]), price)
+            event["max_trade_price"] = max(float(event["max_trade_price"]), price)
+
+            logger.debug(
+                "[PENDING-MERGE] id=%s direction=%s price=%.2f add=%.0fU total=%.0fU trades=%d",
+                event.get("event_id"),
+                direction,
+                price,
+                active_notional,
+                event["active_notional"],
+                event["trade_count"],
+            )
+            return True
+
+        return False
 
     def _next_event_id(self) -> str:
         self._event_seq += 1
