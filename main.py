@@ -62,9 +62,27 @@ async def main():
             conf = signal.get('confidence', 0)
             actual_attack = abs(signal.get('active_volume', 0))
 
+            if signal.get("event_type") == "ICEBERG_ABSORPTION":
+                phase1_quality = signal.get("phase1_quality", "LOW")
+                if phase1_quality != "HIGH":
+                    logger.info(
+                        "[PHASE1-GATE] skip quality=%s hidden=%.0fU absorption=%.1f%% active=%.0fU conf=%.2f",
+                        phase1_quality,
+                        float(signal.get("hidden_volume", 0.0)),
+                        float(signal.get("absorption_rate", 0.0)) * 100.0,
+                        float(signal.get("active_volume", 0.0)),
+                        float(conf),
+                    )
+                    return
+
             # 🌟 2. 插入防飞刀拦截器
-            if duration < 1.0:
-                logger.warning(f"⚠️ [防飞刀] 耗时仅 {duration:.2f}s，疑似爆仓针直接砸穿盘口，放弃接针！")
+            wait_ms = signal.get("wait_ms", duration * 1000)
+            if wait_ms < 200:
+                logger.warning(
+                    "[ANTI-KNIFE] wait=%.1fms duration=%.2fs, skip signal.",
+                    float(wait_ms),
+                    float(duration),
+                )
                 return
 
             # ✨ 原有的优化过滤：

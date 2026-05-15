@@ -262,6 +262,8 @@ class Phase1Engine:
 
             hidden_volume = float(signal.get("hidden_volume", 0.0))
             absorption_rate = float(signal.get("absorption_rate", 0.0))
+            active_volume = float(signal.get("active_volume", 0.0))
+            confidence = float(signal.get("confidence", 0.0))
             is_spoofing_withdrawal = signal.get("behavior") == "SPOOFING_WITHDRAWAL"
             if is_spoofing_withdrawal:
                 logger.info(
@@ -292,6 +294,7 @@ class Phase1Engine:
                 )
 
             if signal.get("is_iceberg") and not is_spoofing_withdrawal:
+                phase1_quality = self._classify_phase1_quality(signal)
                 enriched_signal = dict(signal)
                 enriched_signal.update(
                     {
@@ -313,10 +316,22 @@ class Phase1Engine:
                         "max_trade_price": float(event.get("max_trade_price", 0.0)),
                         "last_trade_ts": float(event.get("last_trade_ts", 0.0)),
                         "last_trade_recv_ts": float(event.get("last_trade_recv_ts", 0.0)),
+                        "phase1_quality": phase1_quality,
+                        "hidden_notional": hidden_volume,
+                        "absorption_ratio": absorption_rate,
                     }
                 )
                 enriched_signal["hidden_volume"] = hidden_volume
                 enriched_signal["absorption_rate"] = absorption_rate
+                logger.info(
+                    "[PHASE1-QUALITY] id=%s quality=%s hidden=%.0fU absorption=%.1f%% active=%.0fU confidence=%.2f",
+                    event.get("event_id"),
+                    phase1_quality,
+                    hidden_volume,
+                    absorption_rate * 100.0,
+                    active_volume,
+                    confidence,
+                )
                 if direction == "BUY":
                     enriched_signal["min_price"] = float(event.get("zone_lower", 0.0))
                 elif direction == "SELL":
@@ -328,6 +343,30 @@ class Phase1Engine:
         if not candidate_signals:
             return None
         return max(candidate_signals, key=lambda s: float(s.get("confidence", 0.0)))
+
+    def _classify_phase1_quality(self, signal: Dict[str, Any]) -> str:
+        hidden_volume = float(signal.get("hidden_volume", 0.0))
+        absorption_rate = float(signal.get("absorption_rate", 0.0))
+        active_volume = float(signal.get("active_volume", 0.0))
+        confidence = float(signal.get("confidence", 0.0))
+
+        if (
+            hidden_volume >= 2_000_000
+            and absorption_rate >= 0.80
+            and active_volume >= 2_000_000
+            and confidence >= 0.85
+        ):
+            return "HIGH"
+
+        if (
+            hidden_volume >= 1_000_000
+            and absorption_rate >= 0.70
+            and active_volume >= 1_000_000
+            and confidence >= 0.75
+        ):
+            return "MEDIUM"
+
+        return "LOW"
 
     @staticmethod
     def _calc_local_depth_usdt(book_levels: Dict[float, float], zone_lower: float, zone_upper: float) -> float:
