@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import websockets
 
@@ -42,7 +43,8 @@ class OKXTickStreamer:
                                     'price': float(trade['px']),
                                     'size': float(trade['sz']) * self.multiplier,
                                     'side': trade['side'],
-                                    'ts': float(trade['ts']) / 1000.0  # 转为秒级时间戳
+                                    'ts': float(trade['ts']) / 1000.0,  # 转为秒级时间戳
+                                    'recv_ts': time.time()
                                 }
                                 # 将干净的字典抛给 Engine3Commander 的 on_tick 函数
                                 await self.on_tick_callback(tick_clean)
