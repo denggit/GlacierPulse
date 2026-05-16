@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 
 
 class IcebergTrader:
-    def __init__(self, symbol="ETH-USDT-SWAP", leverage=10, td_mode="cross"):
+    def __init__(self, symbol="ETH-USDT-SWAP", leverage=5, td_mode="cross"):
         # API 基建
         self.symbol = symbol
         self.api_key = OKX_CONFIG.get('api_key')
@@ -176,7 +176,7 @@ class IcebergTrader:
             return
 
         is_full = (actual_eth == max_eth_by_leverage)
-        pos_msg = "满仓(10X)突击" if is_full else "严控防线降杠杆"
+        pos_msg = f"满仓({self.leverage}X)突击" if is_full else "严控防线降杠杆"
         proposed_tp = round(current_price * (1 + self.tp_pct), 2)
 
         logger.info(
