@@ -23,6 +23,11 @@ from src.data_feed.okx_stream import OKXTickStreamer
 
 logger = get_logger("Main")
 
+# A1-Iceberg 单点事件尚未完成 Cluster/Lifecycle 验证，禁止直接交易。
+# 只有 V6/A2/A3 完整接入后，才允许重新打开交易链路。
+# 这不是 phase1_quality == HIGH 的开单开关；LOW/MEDIUM/HIGH 单点事件一律只记录、不交易。
+A1_SINGLE_EVENT_TRADING_ENABLED = False
+
 
 async def main():
     logger.info("==================================================")
@@ -64,16 +69,22 @@ async def main():
 
             if signal.get("event_type") == "ICEBERG_ABSORPTION":
                 phase1_quality = signal.get("phase1_quality", "LOW")
-                if phase1_quality != "HIGH":
-                    logger.info(
-                        "[PHASE1-GATE] skip quality=%s hidden=%.0fU absorption=%.1f%% active=%.0fU conf=%.2f",
-                        phase1_quality,
-                        float(signal.get("hidden_volume", 0.0)),
-                        float(signal.get("absorption_rate", 0.0)) * 100.0,
-                        float(signal.get("active_volume", 0.0)),
-                        float(conf),
-                    )
-                    return
+                logger.info(
+                    "[A1-ICEBERG-EVENT] id=%s direction=%s quality=%s price=%.2f zone=[%.2f, %.2f] hidden=%.0fU absorption=%.1f%% active=%.0fU conf=%.2f wait=%.1fms trades=%s",
+                    signal.get("event_id"),
+                    direction,
+                    phase1_quality,
+                    float(signal.get("trigger_price", current_price or 0.0)),
+                    float(signal.get("zone_lower", 0.0)),
+                    float(signal.get("zone_upper", 0.0)),
+                    float(signal.get("hidden_volume", 0.0)),
+                    float(signal.get("absorption_rate", 0.0)) * 100.0,
+                    float(signal.get("active_volume", 0.0)),
+                    float(signal.get("confidence", 0.0)),
+                    float(signal.get("wait_ms", duration * 1000)),
+                    signal.get("trade_count", 0),
+                )
+                return
 
             # 🌟 2. 插入防飞刀拦截器
             wait_ms = signal.get("wait_ms", duration * 1000)
@@ -110,6 +121,10 @@ async def main():
 
         # 只有在 is_iceberg == True 或者持仓状态下的反向信号才允许下发给 Trader
         if trader_task and not trader_task.done():
+            return
+
+        if not A1_SINGLE_EVENT_TRADING_ENABLED:
+            logger.info("[A1-TRADING-DISABLED] single-event trading disabled; skip trader.")
             return
 
         trader_task = asyncio.create_task(trader.process_signal(signal, current_price))
@@ -158,8 +173,8 @@ async def main():
     asyncio.create_task(trade_stream.connect())
     logger.info("📡 [数据流] OKX 逐笔成交 (Trades) WebSocket 任务已拉起。")
 
-    # 启动 Trader 的后台财务官探针 (实时查账、同步仓位)
-    asyncio.create_task(trader.update_balance_loop())
+    # A1 单点冰山事件进入 V6 Cluster/Lifecycle 前，关闭 Trader 后台余额同步。
+    # asyncio.create_task(trader.update_balance_loop())
 
     logger.info("==================================================")
     logger.info("🟢 系统初始化完成，已进入最高警戒深海潜航状态！")

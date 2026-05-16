@@ -1,0 +1,7 @@
+A1 (Absorption / 吸收) 👉 量化学名：Iceberg Order Detection (冰山订单探测) / Stop-Hunt Liquidity Sweep (扫损流动性清扫)。
+它捕捉的是做市商利用被动限价单，接盘散户恐慌性市价单的瞬间。
+
+A2 (Accumulation or Auction / 熬干或拍卖) 👉 量化学名：Volatility Compression (波动率压缩) / Liquidity Vacuum (流动性真空)。
+它捕捉的是多空双方弹药耗尽，微观价差缩小，盘口进入死寂，等待新方向的数学特征。
+
+A3 (Aggression / 攻击点火) 👉 量化学名：Directional Imbalance Ignition (定向失衡点火) / Momentum Breakout (动量突破)。
