@@ -12,6 +12,8 @@ import logging
 import time
 from typing import Dict, Any, Optional
 
+from src.strategy.iceberg_zone_tracker import IcebergZoneTracker
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +35,7 @@ class Phase1Engine:
 
         self.pending_events = collections.deque()
         self._event_seq = 0
+        self.zone_tracker = IcebergZoneTracker()
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
         return self.on_trade(trade_data)
@@ -178,6 +181,7 @@ class Phase1Engine:
         book_ts = float(book_data.get("ts") or 0)
         book_recv_ts = float(book_data.get("recv_ts") or time.time())
         current_price = float(getattr(self.ctx, "current_price", 0.0) or 0.0)
+        self.zone_tracker.expire_old_zones(book_recv_ts)
 
         remaining_events = []
         candidate_signals = []
@@ -211,6 +215,15 @@ class Phase1Engine:
                     event.get("event_id"),
                     wait_ms,
                 )
+                self._update_iceberg_zone(
+                    event=event,
+                    result="CANCEL",
+                    current_price=current_price,
+                    wait_ms=wait_ms,
+                    cancel_reason="TIMEOUT",
+                    settle_ts=book_ts,
+                    settle_recv_ts=book_recv_ts,
+                )
                 continue
 
             direction = str(event.get("direction"))
@@ -223,6 +236,15 @@ class Phase1Engine:
                         current_price,
                         trigger_price,
                     )
+                    self._update_iceberg_zone(
+                        event=event,
+                        result="CANCEL",
+                        current_price=current_price,
+                        wait_ms=wait_ms,
+                        cancel_reason="PRICE_BROKE_DOWN",
+                        settle_ts=book_ts,
+                        settle_recv_ts=book_recv_ts,
+                    )
                     continue
             elif direction == "SELL":
                 if current_price > trigger_price + self.max_price_deviation:
@@ -231,6 +253,15 @@ class Phase1Engine:
                         event.get("event_id"),
                         current_price,
                         trigger_price,
+                    )
+                    self._update_iceberg_zone(
+                        event=event,
+                        result="CANCEL",
+                        current_price=current_price,
+                        wait_ms=wait_ms,
+                        cancel_reason="PRICE_BROKE_UP",
+                        settle_ts=book_ts,
+                        settle_recv_ts=book_recv_ts,
                     )
                     continue
 
@@ -265,6 +296,10 @@ class Phase1Engine:
             active_volume = float(signal.get("active_volume", 0.0))
             confidence = float(signal.get("confidence", 0.0))
             is_spoofing_withdrawal = signal.get("behavior") == "SPOOFING_WITHDRAWAL"
+            phase1_quality = None
+            if signal.get("is_iceberg") and not is_spoofing_withdrawal:
+                phase1_quality = self._classify_phase1_quality(signal)
+
             if is_spoofing_withdrawal:
                 logger.info(
                     "[SPOOFING-WITHDRAWAL] id=%s direction=%s active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% behavior=%s",
@@ -275,6 +310,16 @@ class Phase1Engine:
                     hidden_volume,
                     absorption_rate * 100.0,
                     signal.get("behavior"),
+                )
+                self._update_iceberg_zone(
+                    event=event,
+                    result="SPOOFING",
+                    signal=signal,
+                    current_price=current_price,
+                    book_reduction=book_reduction,
+                    wait_ms=wait_ms,
+                    settle_ts=book_ts,
+                    settle_recv_ts=book_recv_ts,
                 )
             else:
                 log_tag = "[SETTLED-ICEBERG]" if signal.get("is_iceberg") else "[IGNORE-ICEBERG]"
@@ -292,9 +337,19 @@ class Phase1Engine:
                     int(event.get("trade_count", 0)),
                     signal.get("behavior"),
                 )
+                self._update_iceberg_zone(
+                    event=event,
+                    result="ICEBERG" if signal.get("is_iceberg") else "IGNORE",
+                    signal=signal,
+                    quality=phase1_quality,
+                    current_price=current_price,
+                    book_reduction=book_reduction,
+                    wait_ms=wait_ms,
+                    settle_ts=book_ts,
+                    settle_recv_ts=book_recv_ts,
+                )
 
             if signal.get("is_iceberg") and not is_spoofing_withdrawal:
-                phase1_quality = self._classify_phase1_quality(signal)
                 enriched_signal = dict(signal)
                 enriched_signal.update(
                     {
@@ -343,6 +398,89 @@ class Phase1Engine:
         if not candidate_signals:
             return None
         return max(candidate_signals, key=lambda s: float(s.get("confidence", 0.0)))
+
+    def _update_iceberg_zone(
+        self,
+        event: Dict[str, Any],
+        result: str,
+        signal: Optional[Dict[str, Any]] = None,
+        quality: Optional[str] = None,
+        current_price: float = 0.0,
+        book_reduction: float = 0.0,
+        wait_ms: float = 0.0,
+        cancel_reason: Optional[str] = None,
+        settle_ts: float = 0.0,
+        settle_recv_ts: float = 0.0,
+    ) -> Optional[Dict[str, Any]]:
+        zone_event = self._build_iceberg_impact_event(
+            event=event,
+            result=result,
+            signal=signal,
+            quality=quality,
+            book_reduction=book_reduction,
+            wait_ms=wait_ms,
+            cancel_reason=cancel_reason,
+            settle_ts=settle_ts,
+            settle_recv_ts=settle_recv_ts,
+        )
+        return self.zone_tracker.update(zone_event, current_price=current_price)
+
+    def _build_iceberg_impact_event(
+        self,
+        event: Dict[str, Any],
+        result: str,
+        signal: Optional[Dict[str, Any]] = None,
+        quality: Optional[str] = None,
+        book_reduction: float = 0.0,
+        wait_ms: float = 0.0,
+        cancel_reason: Optional[str] = None,
+        settle_ts: float = 0.0,
+        settle_recv_ts: float = 0.0,
+    ) -> Dict[str, Any]:
+        signal = signal or {}
+        recv_ts = self._safe_float(settle_recv_ts, time.time()) or time.time()
+        ts = (
+            self._safe_float(settle_ts, 0.0)
+            or self._safe_float(event.get("last_trade_ts"), 0.0)
+            or self._safe_float(event.get("trigger_ts"), 0.0)
+            or recv_ts
+        )
+        active_volume = self._safe_float(signal.get("active_volume", event.get("active_notional", 0.0)), 0.0)
+
+        return {
+            "event_id": str(event.get("event_id", "")),
+            "ts": ts,
+            "recv_ts": recv_ts,
+            "direction": str(event.get("direction", "")),
+            "result": result,
+            "quality": quality,
+            "trigger_price": self._safe_float(event.get("trigger_price"), 0.0),
+            "zone_lower": self._safe_float(event.get("zone_lower"), 0.0),
+            "zone_upper": self._safe_float(event.get("zone_upper"), 0.0),
+            "active_volume": active_volume,
+            "hidden_volume": self._safe_float(signal.get("hidden_volume"), 0.0),
+            "absorption_rate": self._safe_float(signal.get("absorption_rate"), 0.0),
+            "confidence": self._safe_float(signal.get("confidence"), 0.0),
+            "book_reduction": self._safe_float(book_reduction, 0.0),
+            "trade_count": self._safe_int(event.get("trade_count"), 0),
+            "wait_ms": self._safe_float(wait_ms, 0.0),
+            "behavior": str(signal.get("behavior") or ("CANCEL" if result == "CANCEL" else "")),
+            "cancel_reason": cancel_reason,
+        }
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
 
     def _classify_phase1_quality(self, signal: Dict[str, Any]) -> str:
         hidden_volume = float(signal.get("hidden_volume", 0.0))
