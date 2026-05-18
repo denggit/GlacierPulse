@@ -41,6 +41,8 @@ class IcebergOutcomeEvaluator:
 
         item = self._items_by_id.get(zid)
         if item is None:
+            if zid in self._seen_zone_ids:
+                return
             item = {
                 "zone_id": zid, "direction": direction,
                 "live_zone_lower": live_low, "live_zone_upper": live_high, "zone_lower": live_low, "zone_upper": live_high,
@@ -117,23 +119,35 @@ class IcebergOutcomeEvaluator:
         d = item.get("direction"); minp=self._safe_float(item.get("min_price_seen"),0.0); maxp=self._safe_float(item.get("max_price_seen"),0.0)
         ll=self._safe_float(item.get("live_zone_lower"),0.0); lh=self._safe_float(item.get("live_zone_upper"),0.0)
         if d=="BUY":
-            item["broke_live_iceberg_low"] = minp < ll; item["reclaimed_live_iceberg_low"] = item["broke_live_iceberg_low"] and price is not None and price >= ll
-            item["reclaimed_live_opposite_boundary"] = (price is not None and price >= lh) or bool(item.get("reclaimed_live_opposite_boundary"))
+            item["broke_live_iceberg_low"] = minp < ll
+            item["reclaimed_live_iceberg_low"] = bool(item.get("reclaimed_live_iceberg_low")) or (
+                item["broke_live_iceberg_low"] and price is not None and price >= ll
+            )
+            item["reclaimed_live_opposite_boundary"] = bool(item.get("reclaimed_live_opposite_boundary")) or (price is not None and price >= lh)
             item["live_break_depth_usdt"] = max(ll-minp,0.0); item["live_break_depth_pct"] = item["live_break_depth_usdt"]/ll if ll>0 else 0.0
         else:
-            item["broke_live_iceberg_high"] = maxp > lh; item["reclaimed_live_iceberg_high"] = item["broke_live_iceberg_high"] and price is not None and price <= lh
-            item["reclaimed_live_opposite_boundary"] = (price is not None and price <= ll) or bool(item.get("reclaimed_live_opposite_boundary"))
+            item["broke_live_iceberg_high"] = maxp > lh
+            item["reclaimed_live_iceberg_high"] = bool(item.get("reclaimed_live_iceberg_high")) or (
+                item["broke_live_iceberg_high"] and price is not None and price <= lh
+            )
+            item["reclaimed_live_opposite_boundary"] = bool(item.get("reclaimed_live_opposite_boundary")) or (price is not None and price <= ll)
             item["live_break_depth_usdt"] = max(maxp-lh,0.0); item["live_break_depth_pct"] = item["live_break_depth_usdt"]/lh if lh>0 else 0.0
         if not item.get("is_frozen"):
             return
         fl=self._safe_float(item.get("frozen_zone_lower"),0.0); fh=self._safe_float(item.get("frozen_zone_upper"),0.0)
         if d=="BUY":
-            item["broke_frozen_iceberg_low"] = minp < fl; item["reclaimed_frozen_iceberg_low"] = item["broke_frozen_iceberg_low"] and price is not None and price >= fl
-            item["reclaimed_frozen_opposite_boundary"] = (price is not None and price >= fh) or bool(item.get("reclaimed_frozen_opposite_boundary"))
+            item["broke_frozen_iceberg_low"] = minp < fl
+            item["reclaimed_frozen_iceberg_low"] = bool(item.get("reclaimed_frozen_iceberg_low")) or (
+                item["broke_frozen_iceberg_low"] and price is not None and price >= fl
+            )
+            item["reclaimed_frozen_opposite_boundary"] = bool(item.get("reclaimed_frozen_opposite_boundary")) or (price is not None and price >= fh)
             item["frozen_break_depth_usdt"] = max(fl-minp,0.0); item["frozen_break_depth_pct"] = item["frozen_break_depth_usdt"]/fl if fl>0 else 0.0
         else:
-            item["broke_frozen_iceberg_high"] = maxp > fh; item["reclaimed_frozen_iceberg_high"] = item["broke_frozen_iceberg_high"] and price is not None and price <= fh
-            item["reclaimed_frozen_opposite_boundary"] = (price is not None and price <= fl) or bool(item.get("reclaimed_frozen_opposite_boundary"))
+            item["broke_frozen_iceberg_high"] = maxp > fh
+            item["reclaimed_frozen_iceberg_high"] = bool(item.get("reclaimed_frozen_iceberg_high")) or (
+                item["broke_frozen_iceberg_high"] and price is not None and price <= fh
+            )
+            item["reclaimed_frozen_opposite_boundary"] = bool(item.get("reclaimed_frozen_opposite_boundary")) or (price is not None and price <= fl)
             item["frozen_break_depth_usdt"] = max(maxp-fh,0.0); item["frozen_break_depth_pct"] = item["frozen_break_depth_usdt"]/fh if fh>0 else 0.0
 
     def _emit_outcome_if_due(self, item: dict, ts: float) -> None:
