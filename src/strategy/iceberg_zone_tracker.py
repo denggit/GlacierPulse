@@ -41,6 +41,7 @@ class IcebergZoneTracker:
 
         self.zones: List[Dict[str, Any]] = []
         self._zone_seq = 0
+        self._pending_finalized_zones: List[Dict[str, Any]] = []
 
     def update(self, event: Dict[str, Any], current_price: float = 0.0) -> Optional[Dict[str, Any]]:
         """
@@ -78,12 +79,16 @@ class IcebergZoneTracker:
             if now - last_seen <= self.zone_expire_sec:
                 continue
 
+            previous_state = zone.get("state")
+            zone["previous_state"] = previous_state
             zone["state"] = "EXPIRED"
             expired.append(zone)
+            self._append_finalized_zone(zone)
             logger.info(
-                "[ICEBERG-ZONE-EXPIRED] id=%s direction=%s final_state=%s events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f",
+                "[ICEBERG-ZONE-EXPIRED] id=%s direction=%s previous_state=%s final_state=%s events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f",
                 zone.get("zone_id"),
                 zone.get("direction"),
+                previous_state,
                 zone.get("state"),
                 int(zone.get("event_count", 0)),
                 int(zone.get("iceberg_count", 0)),
@@ -294,14 +299,12 @@ class IcebergZoneTracker:
         broke_zone = False
         if direction == "BUY":
             broke_zone = (
-                (current > 0 and current < zone_lower - self.broken_buffer_usdt)
-                or event_upper < check_lower - self.broken_buffer_usdt
+                (current > 0 and current < check_lower - self.broken_buffer_usdt)
                 or cancel_reason == "PRICE_BROKE_DOWN"
             )
         elif direction == "SELL":
             broke_zone = (
-                (current > 0 and current > zone_upper + self.broken_buffer_usdt)
-                or event_lower > check_upper + self.broken_buffer_usdt
+                (current > 0 and current > check_upper + self.broken_buffer_usdt)
                 or cancel_reason == "PRICE_BROKE_UP"
             )
 
@@ -309,14 +312,15 @@ class IcebergZoneTracker:
             zone["state"] = "BROKEN"
             zone["broken_count"] = int(zone.get("broken_count", 0)) + 1
             if old_state != "BROKEN":
+                self._append_finalized_zone(zone)
                 logger.info(
-                    "[ICEBERG-ZONE-BROKEN] id=%s direction=%s event=%s current=%.2f zone=[%.2f,%.2f] reason=price_broke_zone",
+                    "[ICEBERG-ZONE-BROKEN] id=%s direction=%s event=%s current=%.2f old_zone=[%.2f,%.2f] reason=price_broke_zone",
                     zone.get("zone_id"),
                     direction,
                     event.get("event_id"),
                     current,
-                    zone_lower,
-                    zone_upper,
+                    check_lower,
+                    check_upper,
                 )
             return
 
@@ -379,17 +383,6 @@ class IcebergZoneTracker:
                 event.get("quality"),
                 float(zone.get("net_score", 0.0)),
             )
-            if zone.get("state") == "STRESSED":
-                logger.info(
-                    "[ICEBERG-ZONE-STRESSED] id=%s direction=%s result=%s event=%s reason=negative_pressure pos=%.2f neg=%.2f net=%.2f",
-                    zone.get("zone_id"),
-                    zone.get("direction"),
-                    event.get("result"),
-                    event.get("event_id"),
-                    float(zone.get("positive_score", 0.0)),
-                    float(zone.get("negative_score", 0.0)),
-                    float(zone.get("net_score", 0.0)),
-                )
             return
 
         logger.info(
@@ -501,3 +494,14 @@ class IcebergZoneTracker:
             )
         )
         del self.zones[: max(0, len(self.zones) - self.max_active_zones)]
+
+    def drain_finalized_zones(self) -> List[Dict[str, Any]]:
+        finalized = list(self._pending_finalized_zones)
+        self._pending_finalized_zones.clear()
+        return finalized
+
+    def _append_finalized_zone(self, zone: Dict[str, Any]) -> None:
+        if zone.get("_finalized_emitted"):
+            return
+        zone["_finalized_emitted"] = True
+        self._pending_finalized_zones.append(self._public_zone(zone))
