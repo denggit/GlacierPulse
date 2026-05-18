@@ -59,6 +59,7 @@ class IcebergZoneTracker:
             zone = self._create_zone(normalized)
             if normalized.get("cancel_reason") in ("PRICE_BROKE_DOWN", "PRICE_BROKE_UP"):
                 self._update_state(zone, normalized, current_price)
+            self._maybe_freeze_zone(zone, normalized)
             self._log_zone_update(zone, normalized, "NEW")
             self._prune_zones()
             return zone
@@ -177,6 +178,13 @@ class IcebergZoneTracker:
             "positive_score": 0.0,
             "negative_score": 0.0,
             "net_score": 0.0,
+            "frozen_zone_lower": None,
+            "frozen_zone_upper": None,
+            "frozen_ts": None,
+            "frozen_reason": None,
+            "frozen_state": None,
+            "frozen_event_id": None,
+            "is_frozen": False,
             "reload_count": 0,
             "stress_count": 1 if initial_state == "STRESSED" else 0,
             "broken_count": 0,
@@ -238,6 +246,7 @@ class IcebergZoneTracker:
             previous_lower=previous_lower,
             previous_upper=previous_upper,
         )
+        self._maybe_freeze_zone(zone, event)
         return zone
 
     def _recalculate_score(self, zone: Dict[str, Any]) -> None:
@@ -371,6 +380,48 @@ class IcebergZoneTracker:
 
         zone["state"] = new_state
 
+    def _maybe_freeze_zone(self, zone: Dict[str, Any], event: Dict[str, Any]) -> None:
+        if zone.get("is_frozen"):
+            return
+        reason = self._freeze_reason(zone, event)
+        if reason is None:
+            return
+        zone["frozen_zone_lower"] = float(zone.get("zone_lower", 0.0))
+        zone["frozen_zone_upper"] = float(zone.get("zone_upper", 0.0))
+        zone["frozen_ts"] = float(event.get("ts", 0.0))
+        zone["frozen_reason"] = reason
+        zone["frozen_state"] = zone.get("state")
+        zone["frozen_event_id"] = event.get("event_id")
+        zone["is_frozen"] = True
+        logger.info(
+            "[ICEBERG-ZONE-FROZEN] id=%s direction=%s reason=%s state=%s event=%s frozen_zone=[%.2f,%.2f] live_zone=[%.2f,%.2f] pos=%.2f neg=%.2f net=%.2f",
+            zone.get("zone_id"),
+            zone.get("direction"),
+            reason,
+            zone.get("state"),
+            event.get("event_id"),
+            float(zone.get("frozen_zone_lower", 0.0)),
+            float(zone.get("frozen_zone_upper", 0.0)),
+            float(zone.get("zone_lower", 0.0)),
+            float(zone.get("zone_upper", 0.0)),
+            float(zone.get("positive_score", 0.0)),
+            float(zone.get("negative_score", 0.0)),
+            float(zone.get("net_score", 0.0)),
+        )
+
+    @staticmethod
+    def _freeze_reason(zone: Dict[str, Any], event: Dict[str, Any]) -> Optional[str]:
+        state = str(zone.get("state") or "")
+        if str(event.get("result") or "") == "ICEBERG" and str(event.get("quality") or "") == "HIGH":
+            return "HIGH_ICEBERG"
+        if state == "RELOADING":
+            return "STATE_RELOADING"
+        if state == "ACTIVE":
+            return "STATE_ACTIVE"
+        if int(zone.get("iceberg_count", 0)) >= 2 and float(zone.get("net_score", 0.0)) > 0:
+            return "MULTI_ICEBERG_POSITIVE_NET"
+        return None
+
     def _log_zone_update(self, zone: Dict[str, Any], event: Dict[str, Any], action: str) -> None:
         if action == "NEW":
             logger.info(
@@ -489,8 +540,17 @@ class IcebergZoneTracker:
             "direction": zone.get("direction"),
             "state": zone.get("state"),
             "previous_state": zone.get("previous_state"),
+            "live_zone_lower": zone.get("zone_lower"),
+            "live_zone_upper": zone.get("zone_upper"),
             "zone_lower": zone.get("zone_lower"),
             "zone_upper": zone.get("zone_upper"),
+            "frozen_zone_lower": zone.get("frozen_zone_lower"),
+            "frozen_zone_upper": zone.get("frozen_zone_upper"),
+            "frozen_ts": zone.get("frozen_ts"),
+            "frozen_reason": zone.get("frozen_reason"),
+            "frozen_state": zone.get("frozen_state"),
+            "frozen_event_id": zone.get("frozen_event_id"),
+            "is_frozen": zone.get("is_frozen", False),
             "anchor_price": zone.get("anchor_price"),
             "first_seen_ts": zone.get("first_seen_ts"),
             "last_seen_ts": zone.get("last_seen_ts"),
