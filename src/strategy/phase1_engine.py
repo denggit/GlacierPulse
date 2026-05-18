@@ -13,6 +13,7 @@ import time
 from typing import Dict, Any, Optional
 
 from src.strategy.iceberg_zone_tracker import IcebergZoneTracker
+from src.strategy.iceberg_outcome_evaluator import IcebergOutcomeEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class Phase1Engine:
         self.pending_events = collections.deque()
         self._event_seq = 0
         self.zone_tracker = IcebergZoneTracker()
+        self.outcome_evaluator = IcebergOutcomeEvaluator()
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
         return self.on_trade(trade_data)
@@ -47,6 +49,10 @@ class Phase1Engine:
         side = str(trade_data['side']).lower()
         trade_ts = float(trade_data['ts'])
         recv_ts = float(trade_data.get('recv_ts', time.time()))
+        try:
+            self.outcome_evaluator.on_price(price=price, ts=trade_ts)
+        except Exception:
+            logger.exception("[ICEBERG-ZONE-OUTCOME] evaluator_on_price_failed")
 
         active_notional = price * size
         if active_notional < self.min_event_merge_notional_usdt:
@@ -394,6 +400,19 @@ class Phase1Engine:
                 candidate_signals.append(enriched_signal)
 
         self.pending_events = collections.deque(remaining_events)
+        finalized_zones = self.zone_tracker.drain_finalized_zones()
+        for zone in finalized_zones:
+            try:
+                self.outcome_evaluator.register_zone(
+                    zone,
+                    now_ts=book_ts or book_recv_ts,
+                    current_price=current_price,
+                )
+            except Exception:
+                logger.exception(
+                    "[ICEBERG-ZONE-OUTCOME] evaluator_register_failed id=%s",
+                    zone.get("zone_id"),
+                )
 
         if not candidate_signals:
             return None
