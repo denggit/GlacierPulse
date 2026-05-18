@@ -27,11 +27,15 @@ class IcebergOutcomeEvaluator:
         self.max_tracking_zones = self._safe_int(max_tracking_zones, 500)
 
         self._tracking_items: List[Dict[str, Any]] = []
-        self._registered_ids = set()
+        self._items_by_id: Dict[str, Dict[str, Any]] = {}
+        self._seen_zone_ids = set()
 
     def register_zone(self, zone: dict, now_ts: float, current_price: float = 0.0) -> None:
+        self.upsert_zone(zone, now_ts=now_ts, current_price=current_price)
+
+    def upsert_zone(self, zone: dict, now_ts: float, current_price: float = 0.0) -> None:
         zid = str(zone.get("zone_id") or "")
-        if not zid or zid in self._registered_ids:
+        if not zid:
             return
         direction = str(zone.get("direction") or "")
         if direction not in ("BUY", "SELL"):
@@ -46,44 +50,82 @@ class IcebergOutcomeEvaluator:
         else:
             ref = zone_upper if direction == "BUY" else zone_lower
 
-        item = {
-            "zone_id": zid,
-            "direction": direction,
-            "zone_lower": zone_lower,
-            "zone_upper": zone_upper,
-            "anchor_price": self._safe_float(zone.get("anchor_price"), 0.0),
-            "first_seen_ts": self._safe_float(zone.get("first_seen_ts"), now),
-            "last_seen_ts": self._safe_float(zone.get("last_seen_ts"), now),
-            "registered_ts": now,
-            "reference_price": ref,
-            "final_state": str(zone.get("state") or ""),
-            "previous_state": zone.get("previous_state"),
-            "event_count": self._safe_int(zone.get("event_count"), 0),
-            "iceberg_count": self._safe_int(zone.get("iceberg_count"), 0),
-            "ignore_count": self._safe_int(zone.get("ignore_count"), 0),
-            "spoof_count": self._safe_int(zone.get("spoof_count"), 0),
-            "cancel_count": self._safe_int(zone.get("cancel_count"), 0),
-            "high_count": self._safe_int(zone.get("high_count"), 0),
-            "medium_count": self._safe_int(zone.get("medium_count"), 0),
-            "low_count": self._safe_int(zone.get("low_count"), 0),
-            "positive_score": self._safe_float(zone.get("positive_score"), 0.0),
-            "negative_score": self._safe_float(zone.get("negative_score"), 0.0),
-            "net_score": self._safe_float(zone.get("net_score"), 0.0),
-            "min_price_seen": ref,
-            "max_price_seen": ref,
-            "broke_iceberg_boundary": False,
-            "boundary_break_ts": None,
-            "boundary_break_depth_usdt": 0.0,
-            "boundary_break_depth_pct": 0.0,
-            "reclaimed_iceberg_boundary": False,
-            "boundary_reclaim_ts": None,
-            "reclaimed_opposite_boundary": False,
-            "opposite_boundary_reclaim_ts": None,
-            "emitted_horizons": set(),
-            "completed": False,
-        }
-        self._tracking_items.append(item)
-        self._registered_ids.add(zid)
+        item = self._items_by_id.get(zid)
+        if item is None:
+            item = {
+                "zone_id": zid,
+                "direction": direction,
+                "zone_lower": zone_lower,
+                "zone_upper": zone_upper,
+                "anchor_price": self._safe_float(zone.get("anchor_price"), 0.0),
+                "first_seen_ts": self._safe_float(zone.get("first_seen_ts"), now),
+                "last_seen_ts": self._safe_float(zone.get("last_seen_ts"), now),
+                "registered_ts": now,
+                "reference_price": ref,
+                "current_state": str(zone.get("state") or ""),
+                "final_state": None,
+                "previous_state": None,
+                "event_count": self._safe_int(zone.get("event_count"), 0),
+                "iceberg_count": self._safe_int(zone.get("iceberg_count"), 0),
+                "ignore_count": self._safe_int(zone.get("ignore_count"), 0),
+                "spoof_count": self._safe_int(zone.get("spoof_count"), 0),
+                "cancel_count": self._safe_int(zone.get("cancel_count"), 0),
+                "high_count": self._safe_int(zone.get("high_count"), 0),
+                "medium_count": self._safe_int(zone.get("medium_count"), 0),
+                "low_count": self._safe_int(zone.get("low_count"), 0),
+                "positive_score": self._safe_float(zone.get("positive_score"), 0.0),
+                "negative_score": self._safe_float(zone.get("negative_score"), 0.0),
+                "net_score": self._safe_float(zone.get("net_score"), 0.0),
+                "min_price_seen": ref,
+                "max_price_seen": ref,
+                "broke_iceberg_boundary": False,
+                "boundary_break_ts": None,
+                "boundary_break_depth_usdt": 0.0,
+                "boundary_break_depth_pct": 0.0,
+                "reclaimed_iceberg_boundary": False,
+                "boundary_reclaim_ts": None,
+                "reclaimed_opposite_boundary": False,
+                "opposite_boundary_reclaim_ts": None,
+                "emitted_horizons": set(),
+                "completed": False,
+            }
+            self._tracking_items.append(item)
+            self._items_by_id[zid] = item
+            self._seen_zone_ids.add(zid)
+            self._prune_completed()
+            return
+
+        item["zone_lower"] = min(self._safe_float(item.get("zone_lower"), zone_lower), zone_lower)
+        item["zone_upper"] = max(self._safe_float(item.get("zone_upper"), zone_upper), zone_upper)
+        item["anchor_price"] = self._safe_float(zone.get("anchor_price"), 0.0)
+        item["last_seen_ts"] = self._safe_float(zone.get("last_seen_ts"), now)
+        item["current_state"] = str(zone.get("state") or "")
+        item["event_count"] = self._safe_int(zone.get("event_count"), 0)
+        item["iceberg_count"] = self._safe_int(zone.get("iceberg_count"), 0)
+        item["ignore_count"] = self._safe_int(zone.get("ignore_count"), 0)
+        item["spoof_count"] = self._safe_int(zone.get("spoof_count"), 0)
+        item["cancel_count"] = self._safe_int(zone.get("cancel_count"), 0)
+        item["high_count"] = self._safe_int(zone.get("high_count"), 0)
+        item["medium_count"] = self._safe_int(zone.get("medium_count"), 0)
+        item["low_count"] = self._safe_int(zone.get("low_count"), 0)
+        item["positive_score"] = self._safe_float(zone.get("positive_score"), 0.0)
+        item["negative_score"] = self._safe_float(zone.get("negative_score"), 0.0)
+        item["net_score"] = self._safe_float(zone.get("net_score"), 0.0)
+
+    def finalize_zone(self, zone: dict, now_ts: float, current_price: float = 0.0) -> None:
+        zid = str(zone.get("zone_id") or "")
+        if not zid:
+            return
+        if zid not in self._items_by_id:
+            self.upsert_zone(zone, now_ts=now_ts, current_price=current_price)
+        item = self._items_by_id.get(zid)
+        if item is None:
+            return
+        self.upsert_zone(zone, now_ts=now_ts, current_price=current_price)
+        item["final_state"] = str(zone.get("state") or "")
+        item["previous_state"] = zone.get("previous_state")
+        item["finalized_ts"] = self._safe_float(now_ts, 0.0)
+        item["current_state"] = str(zone.get("state") or "")
         self._prune_completed()
 
     def on_price(self, price: float, ts: float) -> None:
@@ -218,7 +260,7 @@ class IcebergOutcomeEvaluator:
         broke_field = "broke_iceberg_low" if direction == "BUY" else "broke_iceberg_high"
         reclaim_field = "reclaimed_iceberg_low" if direction == "BUY" else "reclaimed_iceberg_high"
         logger.info(
-            "[ICEBERG-ZONE-OUTCOME] id=%s horizon=%s direction=%s final_state=%s previous_state=%s zone=[%.2f,%.2f] ref=%.2f "
+            "[ICEBERG-ZONE-OUTCOME] id=%s horizon=%s direction=%s current_state=%s finalized=%s final_state=%s previous_state=%s zone=[%.2f,%.2f] ref=%.2f tracking_age=%.1fs finalized_ts=%.3f "
             "events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f mfe=%.2fU mfe_pct=%.3f%% mae=%.2fU mae_pct=%.3f%% "
             "min=%.2f max=%.2f %s=%s break_depth=%.2fU break_depth_pct=%.3f%% %s=%s reclaimed_opposite_boundary=%s "
             "sl_0_5u_hit=%s sl_1_0u_hit=%s sl_1_5u_hit=%s sl_2_0u_hit=%s sl_3_0u_hit=%s "
@@ -226,11 +268,15 @@ class IcebergOutcomeEvaluator:
             snapshot.get("zone_id"),
             snapshot.get("horizon"),
             direction,
+            snapshot.get("current_state"),
+            str(bool(snapshot.get("final_state"))).lower(),
             snapshot.get("final_state"),
             snapshot.get("previous_state"),
             self._safe_float(snapshot.get("zone_lower"), 0.0),
             self._safe_float(snapshot.get("zone_upper"), 0.0),
             self._safe_float(snapshot.get("reference_price"), 0.0),
+            self._safe_float(snapshot.get("snapshot_ts"), 0.0) - self._safe_float(snapshot.get("registered_ts"), 0.0),
+            self._safe_float(snapshot.get("finalized_ts"), 0.0),
             self._safe_int(snapshot.get("event_count"), 0),
             self._safe_int(snapshot.get("iceberg_count"), 0),
             self._safe_int(snapshot.get("ignore_count"), 0),
@@ -263,17 +309,20 @@ class IcebergOutcomeEvaluator:
         )
 
     def _prune_completed(self) -> None:
-        if len(self._tracking_items) <= self.max_tracking_zones:
-            return
-        self._tracking_items = [x for x in self._tracking_items if not x.get("completed")] + [
-            x for x in self._tracking_items if x.get("completed")
-        ]
+        completed_ids = {str(x.get("zone_id") or "") for x in self._tracking_items if x.get("completed")}
+        if completed_ids:
+            self._tracking_items = [x for x in self._tracking_items if str(x.get("zone_id") or "") not in completed_ids]
+            for zid in completed_ids:
+                self._items_by_id.pop(zid, None)
+                self._seen_zone_ids.add(zid)
         if len(self._tracking_items) <= self.max_tracking_zones:
             return
         self._tracking_items.sort(key=lambda x: self._safe_float(x.get("registered_ts"), 0.0))
         while len(self._tracking_items) > self.max_tracking_zones:
             dropped = self._tracking_items.pop(0)
-            self._registered_ids.discard(str(dropped.get("zone_id") or ""))
+            zid = str(dropped.get("zone_id") or "")
+            self._items_by_id.pop(zid, None)
+            self._seen_zone_ids.add(zid)
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:

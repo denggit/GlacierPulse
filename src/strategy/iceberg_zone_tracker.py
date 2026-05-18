@@ -309,14 +309,16 @@ class IcebergZoneTracker:
             )
 
         if broke_zone:
+            zone["previous_state"] = old_state
             zone["state"] = "BROKEN"
             zone["broken_count"] = int(zone.get("broken_count", 0)) + 1
             if old_state != "BROKEN":
                 self._append_finalized_zone(zone)
                 logger.info(
-                    "[ICEBERG-ZONE-BROKEN] id=%s direction=%s event=%s current=%.2f old_zone=[%.2f,%.2f] reason=price_broke_zone",
+                    "[ICEBERG-ZONE-BROKEN] id=%s direction=%s previous_state=%s event=%s current=%.2f old_zone=[%.2f,%.2f] reason=price_broke_zone",
                     zone.get("zone_id"),
                     direction,
+                    old_state,
                     event.get("event_id"),
                     current,
                     check_lower,
@@ -482,7 +484,28 @@ class IcebergZoneTracker:
 
     @staticmethod
     def _public_zone(zone: Dict[str, Any]) -> Dict[str, Any]:
-        return {key: value for key, value in zone.items() if not str(key).startswith("_")}
+        return {
+            "zone_id": zone.get("zone_id"),
+            "direction": zone.get("direction"),
+            "state": zone.get("state"),
+            "previous_state": zone.get("previous_state"),
+            "zone_lower": zone.get("zone_lower"),
+            "zone_upper": zone.get("zone_upper"),
+            "anchor_price": zone.get("anchor_price"),
+            "first_seen_ts": zone.get("first_seen_ts"),
+            "last_seen_ts": zone.get("last_seen_ts"),
+            "event_count": zone.get("event_count"),
+            "iceberg_count": zone.get("iceberg_count"),
+            "ignore_count": zone.get("ignore_count"),
+            "spoof_count": zone.get("spoof_count"),
+            "cancel_count": zone.get("cancel_count"),
+            "high_count": zone.get("high_count"),
+            "medium_count": zone.get("medium_count"),
+            "low_count": zone.get("low_count"),
+            "positive_score": zone.get("positive_score"),
+            "negative_score": zone.get("negative_score"),
+            "net_score": zone.get("net_score"),
+        }
 
     def _prune_zones(self) -> None:
         if len(self.zones) <= self.max_active_zones:

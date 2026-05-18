@@ -403,14 +403,14 @@ class Phase1Engine:
         finalized_zones = self.zone_tracker.drain_finalized_zones()
         for zone in finalized_zones:
             try:
-                self.outcome_evaluator.register_zone(
+                self.outcome_evaluator.finalize_zone(
                     zone,
                     now_ts=book_ts or book_recv_ts,
                     current_price=current_price,
                 )
             except Exception:
                 logger.exception(
-                    "[ICEBERG-ZONE-OUTCOME] evaluator_register_failed id=%s",
+                    "[ICEBERG-ZONE-OUTCOME] evaluator_finalize_failed id=%s",
                     zone.get("zone_id"),
                 )
 
@@ -442,7 +442,20 @@ class Phase1Engine:
             settle_ts=settle_ts,
             settle_recv_ts=settle_recv_ts,
         )
-        return self.zone_tracker.update(zone_event, current_price=current_price)
+        zone = self.zone_tracker.update(zone_event, current_price=current_price)
+        if zone:
+            try:
+                self.outcome_evaluator.upsert_zone(
+                    zone,
+                    now_ts=settle_ts or settle_recv_ts or time.time(),
+                    current_price=current_price,
+                )
+            except Exception:
+                logger.exception(
+                    "[ICEBERG-ZONE-OUTCOME] evaluator_upsert_failed id=%s",
+                    zone.get("zone_id"),
+                )
+        return zone
 
     def _build_iceberg_impact_event(
         self,
