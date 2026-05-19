@@ -403,6 +403,85 @@ def test_phase2_sell_clean_sweep_reclaim_path_confirms():
     assert snapshot["has_retested_inside_zone"] is True
 
 
+def test_phase2_buy_below_zone_absorption_confirms_with_relevant_book_depth(caplog):
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-buy-below", frozen_ts=100.0), now_ts=100.0) is True
+
+    with caplog.at_level(logging.INFO):
+        evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
+        evaluator.on_book_update(
+            {
+                "ts": 101.2,
+                "bids": {3000.0: 80.0, 2999.2: 20.0},
+                "asks": {3000.5: 5.0, 3002.0: 100.0},
+            }
+        )
+        evaluator.on_price(price=2999.0, ts=101.3)
+
+    snapshot = evaluator.get_active_zone("iz-buy-below")
+    assert snapshot["state"] == "PHASE2_CONFIRMED"
+    assert snapshot["phase2_type"] == "BELOW_ZONE_ABSORPTION"
+    assert snapshot["has_swept_boundary"] is True
+    assert snapshot["has_absorbed_after_sweep"] is True
+    assert snapshot["has_reclaimed_boundary"] is False
+    assert snapshot["has_retested_inside_zone"] is False
+    assert snapshot["phase2_total_score"] >= evaluator.min_below_zone_total_score
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        "[PHASE2-CONFIRMED]" in message
+        and "phase2_type=BELOW_ZONE_ABSORPTION" in message
+        and "confirm_reason=below_zone_book_absorption_with_relevant_depth" in message
+        and "suggested_stop=" in message
+        for message in messages
+    )
+
+
+def test_phase2_sell_below_zone_absorption_confirms_with_relevant_book_depth():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_sell_frozen_zone("iz-sell-below", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_trade({"price": 3002.0, "size": 50.0, "side": "buy", "ts": 101.1})
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3001.0: 5.0, 2999.0: 100.0},
+            "asks": {3001.5: 80.0, 3002.0: 20.0},
+        }
+    )
+    evaluator.on_price(price=3002.0, ts=101.3)
+
+    snapshot = evaluator.get_active_zone("iz-sell-below")
+    assert snapshot["state"] == "PHASE2_CONFIRMED"
+    assert snapshot["phase2_type"] == "BELOW_ZONE_ABSORPTION"
+    assert snapshot["has_swept_boundary"] is True
+    assert snapshot["has_absorbed_after_sweep"] is True
+    assert snapshot["has_reclaimed_boundary"] is False
+    assert snapshot["has_retested_inside_zone"] is False
+
+
+def test_phase2_below_zone_absorption_does_not_override_sweep_reclaim():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-below-priority", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_price(price=3000.2, ts=101.0)
+    evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3000.0: 80.0, 2999.2: 20.0},
+            "asks": {3000.5: 5.0, 3002.0: 100.0},
+        }
+    )
+    evaluator.on_trade({"price": 3000.1, "size": 50.0, "side": "buy", "ts": 102.2})
+    evaluator.on_price(price=3000.3, ts=103.0)
+
+    snapshot = evaluator.get_active_zone("iz-below-priority")
+    assert snapshot["state"] == "PHASE2_CONFIRMED"
+    assert snapshot["phase2_type"] == "SWEEP_RECLAIM"
+    assert snapshot["phase2_type"] != "BELOW_ZONE_ABSORPTION"
+
+
 def test_phase2_buy_without_relevant_book_depth_does_not_absorb_from_book_score():
     evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
     assert evaluator.register_frozen_zone(_frozen_zone("iz-no-depth-state", frozen_ts=100.0), now_ts=100.0) is True
@@ -421,6 +500,27 @@ def test_phase2_buy_without_relevant_book_depth_does_not_absorb_from_book_score(
     assert snapshot["book_absorption_score"] == 0.0
     assert snapshot["state"] == "PHASE2_SWEEPING_LOW"
     assert snapshot["has_absorbed_after_sweep"] is False
+
+
+def test_phase2_below_zone_no_depth_without_pressure_decay_does_not_confirm():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-below-no-depth", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3100.0: 100.0},
+            "asks": {3101.0: 100.0},
+        }
+    )
+    evaluator.on_price(price=2999.0, ts=101.3)
+
+    snapshot = evaluator.get_active_zone("iz-below-no-depth")
+    assert snapshot["state"] != "PHASE2_CONFIRMED"
+    assert snapshot["phase2_type"] != "BELOW_ZONE_ABSORPTION"
+    assert snapshot["relevant_book_depth_available"] is False
+    assert snapshot["pressure_decay_score"] < evaluator.min_absorption_score
 
 
 def test_phase2_break_depth_soft_does_not_fail():
@@ -480,7 +580,6 @@ def test_phase2_state_machine_does_not_call_trader(monkeypatch):
 
     evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
     assert evaluator.register_frozen_zone(_frozen_zone("iz-no-trade", frozen_ts=100.0), now_ts=100.0) is True
-    evaluator.on_price(price=3000.2, ts=101.0)
     evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
     evaluator.on_book_update(
         {
@@ -489,8 +588,8 @@ def test_phase2_state_machine_does_not_call_trader(monkeypatch):
             "asks": {3000.5: 5.0},
         }
     )
-    evaluator.on_trade({"price": 3000.1, "size": 50.0, "side": "buy", "ts": 102.2})
-    evaluator.on_price(price=3000.3, ts=103.0)
+    evaluator.on_price(price=2999.0, ts=101.3)
 
     assert evaluator.get_active_zone("iz-no-trade")["state"] == "PHASE2_CONFIRMED"
+    assert evaluator.get_active_zone("iz-no-trade")["phase2_type"] == "BELOW_ZONE_ABSORPTION"
     assert called == {"process_signal": 0, "request": 0}

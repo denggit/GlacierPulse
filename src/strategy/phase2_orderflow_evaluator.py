@@ -23,13 +23,13 @@ from config.research_evaluator import (
     PHASE2_MAX_TIME_BELOW_MS,
     PHASE2_MIN_ABSORPTION_SCORE,
     PHASE2_MIN_ACTIVE_NOTIONAL_3S,
+    PHASE2_MIN_BELOW_ZONE_TOTAL_SCORE,
     PHASE2_MIN_RECLAIM_SCORE,
     PHASE2_MIN_RELOAD_SCORE,
     PHASE2_MIN_RETEST_SCORE,
     PHASE2_MIN_TOTAL_SCORE,
     PHASE2_RECLAIM_BUFFER_USDT,
     PHASE2_RETEST_BUFFER_USDT,
-    PHASE2_STATE_LOG_MIN_INTERVAL_SEC,
     PHASE2_TEST_ZONE_BUFFER_USDT,
     PHASE2_ZONE_TTL_SECONDS,
 )
@@ -236,11 +236,11 @@ class Phase2OrderflowEvaluator:
         self.min_reclaim_score = max(0.0, float(PHASE2_MIN_RECLAIM_SCORE))
         self.min_retest_score = max(0.0, float(PHASE2_MIN_RETEST_SCORE))
         self.min_total_score = max(0.0, float(PHASE2_MIN_TOTAL_SCORE))
+        self.min_below_zone_total_score = max(0.0, float(PHASE2_MIN_BELOW_ZONE_TOTAL_SCORE))
         self.max_sweep_depth_pct_soft = max(0.0, float(PHASE2_MAX_SWEEP_DEPTH_PCT_SOFT))
         self.max_sweep_depth_pct_hard = max(0.0, float(PHASE2_MAX_SWEEP_DEPTH_PCT_HARD))
         self.max_time_below_ms = max(0.0, float(PHASE2_MAX_TIME_BELOW_MS))
         self.max_time_above_ms = max(0.0, float(PHASE2_MAX_TIME_ABOVE_MS))
-        self.state_log_min_interval_sec = max(0.0, float(PHASE2_STATE_LOG_MIN_INTERVAL_SEC))
         self.active_zones: "OrderedDict[str, Phase2TrackedZone]" = OrderedDict()
 
     def register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
@@ -835,6 +835,8 @@ class Phase2OrderflowEvaluator:
 
         confirm_reason = self._confirm_reason(zone=zone)
         if not confirm_reason:
+            confirm_reason = self._below_zone_absorption_confirm_reason(zone=zone, now_ts=now_ts)
+        if not confirm_reason:
             confirm_reason = self._clean_hold_confirm_reason(zone=zone)
         if confirm_reason:
             zone.has_confirmed = True
@@ -926,6 +928,21 @@ class Phase2OrderflowEvaluator:
                 - depth_penalty,
             ),
         )
+        if zone.has_swept_boundary and not zone.has_reclaimed_boundary:
+            if (
+                (zone.direction == "BUY" and zone.last_price < zone.frozen_low)
+                or (zone.direction == "SELL" and zone.last_price > zone.frozen_high)
+            ):
+                below_zone_total_score = (
+                    0.60 * zone.absorption_score
+                    + 0.25 * zone.pressure_decay_score
+                    + 0.15 * self._directional_reload_score(zone)
+                    - depth_penalty
+                )
+                zone.phase2_total_score = max(
+                    zone.phase2_total_score,
+                    max(0.0, min(1.0, below_zone_total_score)),
+                )
 
     def _absorption_reason(self, zone: Phase2TrackedZone) -> str:
         if not self._is_sweeping_boundary(zone=zone, price=zone.last_price):
@@ -974,6 +991,49 @@ class Phase2OrderflowEvaluator:
         ):
             zone.phase2_type = "SWEEP_RECLAIM"
             return "event_sequence_sweep_absorb_reclaim_retest"
+        return ""
+
+    def _below_zone_absorption_confirm_reason(self, zone: Phase2TrackedZone, now_ts: float) -> str:
+        if zone.has_failed or zone.has_reclaimed_boundary:
+            return ""
+        if not zone.has_swept_boundary or not zone.has_absorbed_after_sweep:
+            return ""
+        if zone.state_entered_ts >= now_ts:
+            return ""
+        if zone.direction == "BUY":
+            if zone.state not in ("PHASE2_SWEEPING_LOW", "PHASE2_ABSORBING_BELOW_LOW"):
+                return ""
+            if zone.last_price >= zone.frozen_low:
+                return ""
+        elif zone.direction == "SELL":
+            if zone.state not in ("PHASE2_SWEEPING_HIGH", "PHASE2_ABSORBING_ABOVE_HIGH"):
+                return ""
+            if zone.last_price <= zone.frozen_high:
+                return ""
+        else:
+            return ""
+
+        if zone.absorption_score < self.min_absorption_score:
+            return ""
+        if zone.phase2_total_score < self.min_below_zone_total_score:
+            return ""
+
+        if zone.relevant_book_depth_available and zone.book_absorption_score >= self.min_absorption_score:
+            zone.phase2_type = "BELOW_ZONE_ABSORPTION"
+            return "below_zone_book_absorption_with_relevant_depth"
+        if (
+            zone.relevant_book_depth_available
+            and self._directional_reload_score(zone) >= self.min_reload_score
+            and self._directional_reload_count(zone) > 0
+        ):
+            zone.phase2_type = "BELOW_ZONE_ABSORPTION"
+            return "below_zone_book_reload_with_relevant_depth"
+        if (
+            not zone.relevant_book_depth_available
+            and zone.pressure_decay_score >= self.min_absorption_score
+        ):
+            zone.phase2_type = "BELOW_ZONE_ABSORPTION"
+            return "below_zone_trade_flow_pressure_decay_without_book_depth"
         return ""
 
     def _clean_hold_confirm_reason(self, zone: Phase2TrackedZone) -> str:
