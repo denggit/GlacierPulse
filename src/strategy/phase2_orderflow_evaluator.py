@@ -11,7 +11,7 @@ import logging
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Iterable, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 
 from config.research_evaluator import (
     BOOK_NEAR_SWEEP_RANGE_USDT,
@@ -242,6 +242,8 @@ class Phase2OrderflowEvaluator:
         self.max_time_below_ms = max(0.0, float(PHASE2_MAX_TIME_BELOW_MS))
         self.max_time_above_ms = max(0.0, float(PHASE2_MAX_TIME_ABOVE_MS))
         self.active_zones: "OrderedDict[str, Phase2TrackedZone]" = OrderedDict()
+        self.confirmed_events: Deque[Dict[str, Any]] = deque()
+        self._confirmed_event_zone_ids: Set[str] = set()
 
     def register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
         """
@@ -346,6 +348,12 @@ class Phase2OrderflowEvaluator:
         except Exception:
             logger.exception("[PHASE2-SNAPSHOT-FAILED]")
             return None if zone_id is not None else []
+
+    def pop_confirmed_events(self) -> List[Dict[str, Any]]:
+        """Return and clear Phase2 confirmed snapshots for Phase3 consumers."""
+        events = list(self.confirmed_events)
+        self.confirmed_events.clear()
+        return events
 
     def _register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
         if not isinstance(zone, dict) or not zone.get("is_frozen"):
@@ -848,6 +856,7 @@ class Phase2OrderflowEvaluator:
                 reason=confirm_reason,
             )
             self._log_phase2_confirmed(zone=zone, now_ts=now_ts, reason=confirm_reason)
+            self._append_confirmed_event(zone=zone)
 
         zone.previous_break_depth_u = zone.break_depth_u
         zone.previous_pressure_notional_3s = self._pressure_notional_3s(zone)
@@ -1202,6 +1211,23 @@ class Phase2OrderflowEvaluator:
             zone.retest_score,
             zone.phase2_total_score,
         )
+
+    def _append_confirmed_event(self, zone: Phase2TrackedZone) -> None:
+        if zone.zone_id in self._confirmed_event_zone_ids:
+            return
+        event = zone.to_snapshot().copy()
+        suggested_stop = self._suggested_stop(zone)
+        risk_to_stop_u = abs(zone.last_price - suggested_stop) if suggested_stop > 0 and zone.last_price > 0 else 0.0
+        risk_to_stop_pct = risk_to_stop_u / zone.last_price if zone.last_price > 0 else 0.0
+        event.update(
+            {
+                "suggested_stop": suggested_stop,
+                "risk_to_stop_u": risk_to_stop_u,
+                "risk_to_stop_pct": risk_to_stop_pct,
+            }
+        )
+        self.confirmed_events.append(event)
+        self._confirmed_event_zone_ids.add(zone.zone_id)
 
     def _suggested_stop(self, zone: Phase2TrackedZone) -> float:
         if zone.direction == "BUY":

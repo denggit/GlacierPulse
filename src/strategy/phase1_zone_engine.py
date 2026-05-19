@@ -505,6 +505,7 @@ class Phase1Engine:
             enriched_trade.setdefault("price", price)
             enriched_trade.setdefault("ts", trade_ts)
             self.phase2_orderflow_evaluator.on_trade(enriched_trade)
+            self._drain_phase2_confirmed_events()
         except Exception:
             logger.exception("[PHASE2-ORDERFLOW-FAILED]")
 
@@ -520,8 +521,30 @@ class Phase1Engine:
             if ctx_asks:
                 phase2_book_data["asks"] = ctx_asks
             self.phase2_orderflow_evaluator.on_book_update(phase2_book_data)
+            self._drain_phase2_confirmed_events()
         except Exception:
             logger.exception("[PHASE2-BOOK-FAILED]")
+
+    def _drain_phase2_confirmed_events(self) -> None:
+        if not self.phase2_orderflow_evaluator or not self.phase3_candidate_evaluator:
+            return
+        try:
+            pop_events = getattr(self.phase2_orderflow_evaluator, "pop_confirmed_events", None)
+            if not callable(pop_events):
+                return
+            phase2_events = pop_events()
+        except Exception:
+            logger.exception("[PHASE3-CANDIDATE-FAILED] stage=pop_confirmed_events")
+            return
+
+        for event in phase2_events or []:
+            try:
+                self.phase3_candidate_evaluator.evaluate_phase2_confirmed(event)
+            except Exception:
+                logger.exception(
+                    "[PHASE3-CANDIDATE-FAILED] zone_id=%s",
+                    event.get("zone_id") if isinstance(event, dict) else None,
+                )
 
     def _build_iceberg_impact_event(
         self,
