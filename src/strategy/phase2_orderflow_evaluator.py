@@ -358,7 +358,7 @@ class Phase2OrderflowEvaluator:
         return bucket
 
     def _recompute_windows(self, zone: Phase2TrackedZone, now_ts: float) -> None:
-        oldest_bucket_ts = int(now_ts) - 10
+        oldest_bucket_ts = int(now_ts) - 9
         while zone.flow_buckets and zone.flow_buckets[0].bucket_ts < oldest_bucket_ts:
             zone.flow_buckets.popleft()
 
@@ -384,7 +384,7 @@ class Phase2OrderflowEvaluator:
         now_ts: float,
         window_seconds: int,
     ) -> Tuple[float, float, int]:
-        min_bucket_ts = int(now_ts) - int(window_seconds)
+        min_bucket_ts = int(now_ts) - int(window_seconds) + 1
         buy_notional = 0.0
         sell_notional = 0.0
         tick_count = 0
@@ -407,18 +407,19 @@ class Phase2OrderflowEvaluator:
             for zone_id in expired_ids:
                 zone = self.active_zones.pop(zone_id, None)
                 if zone:
-                    self._log_zone_expired(zone=zone, now_ts=now)
+                    self._log_zone_expired(zone=zone, now_ts=now, expire_reason="TTL")
 
         target_size = max(0, self.max_active_zones - max(0, int(reserve_slots)))
         while len(self.active_zones) > target_size:
             _, zone = self.active_zones.popitem(last=False)
-            self._log_zone_expired(zone=zone, now_ts=now)
+            self._log_zone_expired(zone=zone, now_ts=now, expire_reason="CAPACITY_LIMIT")
 
-    def _log_zone_expired(self, zone: Phase2TrackedZone, now_ts: float) -> None:
+    def _log_zone_expired(self, zone: Phase2TrackedZone, now_ts: float, expire_reason: str) -> None:
         logger.info(
-            "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f",
+            "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s expire_reason=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f",
             zone.zone_id,
             zone.direction,
+            expire_reason,
             max(0.0, now_ts - zone.phase2_registered_ts),
             zone.state,
             zone.frozen_low,
