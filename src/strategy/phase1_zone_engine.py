@@ -78,6 +78,7 @@ class Phase1Engine:
             self.outcome_evaluator.on_price(price=price, ts=trade_ts)
         except Exception:
             logger.exception("[ICEBERG-ZONE-OUTCOME] evaluator_on_price_failed")
+        self._update_phase2_orderflow(trade_data=trade_data, price=price, trade_ts=trade_ts)
 
         active_notional = price * size
         if active_notional < self.min_event_merge_notional_usdt:
@@ -494,6 +495,17 @@ class Phase1Engine:
                 "[PHASE2-REGISTER-FAILED] zone_id=%s",
                 zone.get("zone_id"),
             )
+
+    def _update_phase2_orderflow(self, trade_data: Dict[str, Any], price: float, trade_ts: float) -> None:
+        if not self.phase2_orderflow_evaluator:
+            return
+        try:
+            enriched_trade = dict(trade_data)
+            enriched_trade.setdefault("price", price)
+            enriched_trade.setdefault("ts", trade_ts)
+            self.phase2_orderflow_evaluator.on_trade(enriched_trade)
+        except Exception:
+            logger.exception("[PHASE2-ORDERFLOW-FAILED]")
 
     def _build_iceberg_impact_event(
         self,
