@@ -1,0 +1,15 @@
+版本名：
+V6.2 - Phase2 / Phase3 Orderflow Research Evaluator
+
+目标：
+在 A1 frozen zone 之后，用 tick + books + orderflow 继续研究：
+1. 哪些 frozen zone 后续会形成有效承接/压制；
+2. 哪些位置可能产生低风险 entry candidate；
+3. 如果模拟开仓，止损、止盈、仓位、回撤、盈亏表现如何。
+
+绝对禁止：
+1. 不真实下单；
+2. 不修改当前 A1 iceberg 判断逻辑；
+3. 不用 1m K 线作为实时开仓条件；
+4. 不浮盈加仓；
+5. 不让 evaluator 阻塞主数据流。
