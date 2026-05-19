@@ -80,6 +80,7 @@ class Phase2TrackedZone:
     bid_reduction_1s: float = 0.0
     ask_reduction_1s: float = 0.0
     book_absorption_score: float = 0.0
+    relevant_book_depth_available: bool = False
     reload_score: float = 0.0
     last_book_ts: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict, repr=False)
@@ -134,6 +135,7 @@ class Phase2TrackedZone:
                 "bid_reduction_1s": self.bid_reduction_1s,
                 "ask_reduction_1s": self.ask_reduction_1s,
                 "book_absorption_score": self.book_absorption_score,
+                "relevant_book_depth_available": self.relevant_book_depth_available,
                 "reload_score": self.reload_score,
                 "last_book_ts": self.last_book_ts,
             }
@@ -514,6 +516,7 @@ class Phase2OrderflowEvaluator:
                 zone.ask_reload_recover_target = 0.0
 
     def _recompute_book_scores(self, zone: Phase2TrackedZone) -> None:
+        self._update_relevant_book_depth_available(zone)
         if zone.direction == "BUY":
             pressure_notional = zone.active_sell_notional_1s
             book_reduction = zone.bid_reduction_1s
@@ -528,11 +531,33 @@ class Phase2OrderflowEvaluator:
             reload_count = max(zone.bid_reload_count, zone.ask_reload_count)
 
         if pressure_notional > 0:
-            absorbed_notional = max(0.0, pressure_notional - max(0.0, book_reduction))
-            zone.book_absorption_score = min(1.0, absorbed_notional / pressure_notional)
+            if zone.relevant_book_depth_available:
+                absorbed_notional = max(0.0, pressure_notional - max(0.0, book_reduction))
+                zone.book_absorption_score = min(1.0, absorbed_notional / pressure_notional)
+            else:
+                zone.book_absorption_score = 0.0
         else:
             zone.book_absorption_score = 0.0
         zone.reload_score = min(1.0, max(0, reload_count) / 3.0)
+
+    def _update_relevant_book_depth_available(self, zone: Phase2TrackedZone) -> None:
+        if zone.direction == "BUY":
+            zone.relevant_book_depth_available = (
+                zone.bid_depth_near_zone > 0
+                or zone.bid_depth_near_sweep > 0
+            )
+        elif zone.direction == "SELL":
+            zone.relevant_book_depth_available = (
+                zone.ask_depth_near_zone > 0
+                or zone.ask_depth_near_sweep > 0
+            )
+        else:
+            zone.relevant_book_depth_available = (
+                zone.bid_depth_near_zone > 0
+                or zone.ask_depth_near_zone > 0
+                or zone.bid_depth_near_sweep > 0
+                or zone.ask_depth_near_sweep > 0
+            )
 
     def _update_zone_price(self, zone: Phase2TrackedZone, price: float) -> None:
         zone.last_price = price
@@ -648,7 +673,7 @@ class Phase2OrderflowEvaluator:
 
     def _log_zone_expired(self, zone: Phase2TrackedZone, now_ts: float, expire_reason: str) -> None:
         logger.info(
-            "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s expire_reason=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f bid_depth_near_zone=%.0f ask_depth_near_zone=%.0f bid_depth_near_sweep=%.0f ask_depth_near_sweep=%.0f bid_reload_count=%d ask_reload_count=%d book_absorption_score=%.4f reload_score=%.4f book_update_count=%d",
+            "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s expire_reason=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f bid_depth_near_zone=%.0f ask_depth_near_zone=%.0f bid_depth_near_sweep=%.0f ask_depth_near_sweep=%.0f bid_reload_count=%d ask_reload_count=%d book_absorption_score=%.4f relevant_book_depth_available=%s reload_score=%.4f book_update_count=%d",
             zone.zone_id,
             zone.direction,
             expire_reason,
@@ -665,6 +690,7 @@ class Phase2OrderflowEvaluator:
             zone.bid_reload_count,
             zone.ask_reload_count,
             zone.book_absorption_score,
+            zone.relevant_book_depth_available,
             zone.reload_score,
             zone.book_update_count,
         )

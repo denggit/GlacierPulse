@@ -68,6 +68,7 @@ def test_phase2_registers_frozen_zone_once(caplog):
         "bid_reduction_1s",
         "ask_reduction_1s",
         "book_absorption_score",
+        "relevant_book_depth_available",
         "reload_score",
         "last_book_ts",
     ):
@@ -162,6 +163,7 @@ def test_phase2_book_update_tracks_local_depth_reload_and_absorption_for_buy_zon
     assert snapshot_after_drop["bid_depth_near_zone"] == 3000.0 * 20.0 + 2999.2 * 5.0
     assert snapshot_after_drop["ask_depth_near_zone"] == 3000.5 * 3.0
     assert snapshot_after_drop["bid_reduction_1s"] > 0
+    assert snapshot_after_drop["relevant_book_depth_available"] is True
     assert 0.0 < snapshot_after_drop["book_absorption_score"] <= 1.0
 
     evaluator.on_book_update(
@@ -174,6 +176,60 @@ def test_phase2_book_update_tracks_local_depth_reload_and_absorption_for_buy_zon
     snapshot_after_reload = evaluator.get_active_zone("iz-book")
     assert snapshot_after_reload["bid_reload_count"] == 1
     assert snapshot_after_reload["reload_score"] > 0.0
+
+
+def test_phase2_buy_book_absorption_is_zero_when_bid_depth_is_unavailable():
+    evaluator = Phase2OrderflowEvaluator(
+        max_active_zones=20,
+        zone_ttl_seconds=1800,
+        book_near_zone_range_usdt=1.0,
+        book_near_sweep_range_usdt=1.0,
+    )
+
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-buy-no-depth", frozen_ts=100.0), now_ts=100.0) is True
+    evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.0})
+    evaluator.on_book_update(
+        {
+            "ts": 101.1,
+            "bids": {3100.0: 100.0},
+            "asks": {3101.0: 100.0},
+        }
+    )
+
+    snapshot = evaluator.get_active_zone("iz-buy-no-depth")
+    assert snapshot["active_sell_notional_1s"] > 0
+    assert snapshot["bid_depth_near_zone"] == 0.0
+    assert snapshot["bid_depth_near_sweep"] == 0.0
+    assert snapshot["relevant_book_depth_available"] is False
+    assert snapshot["book_absorption_score"] == 0.0
+
+
+def test_phase2_sell_book_absorption_is_zero_when_ask_depth_is_unavailable():
+    evaluator = Phase2OrderflowEvaluator(
+        max_active_zones=20,
+        zone_ttl_seconds=1800,
+        book_near_zone_range_usdt=1.0,
+        book_near_sweep_range_usdt=1.0,
+    )
+    zone = _frozen_zone("iz-sell-no-depth", frozen_ts=100.0)
+    zone["direction"] = "SELL"
+
+    assert evaluator.register_frozen_zone(zone, now_ts=100.0) is True
+    evaluator.on_trade({"price": 3003.0, "size": 50.0, "side": "buy", "ts": 101.0})
+    evaluator.on_book_update(
+        {
+            "ts": 101.1,
+            "bids": {3001.5: 100.0},
+            "asks": {3100.0: 100.0},
+        }
+    )
+
+    snapshot = evaluator.get_active_zone("iz-sell-no-depth")
+    assert snapshot["active_buy_notional_1s"] > 0
+    assert snapshot["ask_depth_near_zone"] == 0.0
+    assert snapshot["ask_depth_near_sweep"] == 0.0
+    assert snapshot["relevant_book_depth_available"] is False
+    assert snapshot["book_absorption_score"] == 0.0
 
 
 def test_phase2_book_update_skips_incomplete_book_data():
@@ -264,3 +320,4 @@ def test_phase2_expired_log_includes_expire_reason(caplog):
         "zone_id=iz-cap-1" in message and "expire_reason=CAPACITY_LIMIT" in message
         for message in expired_logs
     )
+    assert all("relevant_book_depth_available=" in message for message in expired_logs)
