@@ -386,15 +386,34 @@ class OKXDataLoader:
         bars_needed = int(total_seconds // bar_seconds) + 1
         return max(bars_needed, 0)
 
+    def _format_minute_time(self, value) -> str:
+        return pd.Timestamp(value).strftime("%Y-%m-%d %H:%M")
+
+    def _is_date_only_string(self, value) -> bool:
+        if not isinstance(value, str):
+            return False
+        value = value.strip()
+        return len(value) == 10 and value[4] == "-" and value[7] == "-"
+
+    def _normalize_date_range(self, start_date, end_date):
+        end_is_date_only = self._is_date_only_string(end_date)
+
+        if isinstance(start_date, str):
+            start_date = pd.Timestamp(start_date)
+        if isinstance(end_date, str):
+            end_date = pd.Timestamp(end_date)
+
+        if end_is_date_only:
+            end_date = end_date + pd.Timedelta(days=1) - pd.Timedelta(seconds=self._get_seconds(self.timeframe))
+
+        return start_date, end_date
+
     def fetch_data_by_date_range(self, start_date, end_date):
         """
         智能且精准获取指定日期范围内的数据 (狙击版)
         绝不多拉一根不必要的 K 线
         """
-        if isinstance(start_date, str):
-            start_date = pd.Timestamp(start_date)
-        if isinstance(end_date, str):
-            end_date = pd.Timestamp(end_date)
+        start_date, end_date = self._normalize_date_range(start_date, end_date)
 
         # 1. 首先加载本地数据
         local_df = self.load_local_data()
@@ -408,7 +427,9 @@ class OKXDataLoader:
                 # 容错 5% 的缺失，如果够了直接返回
                 if len(local_in_range) >= expected_bars * 0.95:
                     logger.debug(
-                        f"✅ 本地数据库已覆盖 {start_date.date()} 到 {end_date.date()}，共 {len(local_in_range)} 根")
+                        f"✅ 本地数据库已覆盖 {self._format_minute_time(start_date)} 到 "
+                        f"{self._format_minute_time(end_date)}，共 {len(local_in_range)} 根"
+                    )
                     return local_in_range
 
         # 2. 本地数据不足，进行精准【定向拉取】
@@ -417,7 +438,10 @@ class OKXDataLoader:
             return pd.DataFrame()
 
         buffer_bars = int(bars_needed * 1.05) + 10  # 只需要 5% 的极小缓冲
-        logger.debug(f"🔄 准备【定向拉取】约 {buffer_bars} 根 K 线 (目标区间: {start_date.date()} -> {end_date.date()})")
+        logger.debug(
+            f"🔄 准备【定向拉取】约 {buffer_bars} 根 K 线 "
+            f"(目标区间: {self._format_minute_time(start_date)} -> {self._format_minute_time(end_date)})"
+        )
 
         # 核心修复：把 end_date 转换为 OKX 认识的 UTC 毫秒时间戳，作为拉取起点！
         end_utc = end_date
@@ -452,7 +476,9 @@ class OKXDataLoader:
 
         if not result_df.empty:
             logger.debug(
-                f"✅ 成功获取并合并 {start_date.date()} 到 {end_date.date()} 的数据，共 {len(result_df)} 根 K 线")
+                f"✅ 成功获取并合并 {self._format_minute_time(start_date)} 到 "
+                f"{self._format_minute_time(end_date)} 的数据，共 {len(result_df)} 根 K 线"
+            )
 
         return result_df
 
