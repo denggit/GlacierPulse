@@ -144,7 +144,7 @@ class Phase3CandidateEvaluator:
             risk_distance_u = abs(candidate_price - suggested_stop)
             risk_distance_pct = risk_distance_u / candidate_price
 
-        if decision == "ACCEPT_RESEARCH_CANDIDATE" or decision == "WAIT_RECLAIM_OR_MORE_FLOW":
+        if decision == "ACCEPT_RESEARCH_CANDIDATE":
             if not stop_valid:
                 decision = "REJECT_INVALID_STOP"
                 decision_reason = "candidate_price_stop_direction_invalid"

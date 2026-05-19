@@ -672,6 +672,24 @@ def test_phase3_below_zone_absorption_accepts_with_relevant_book_depth():
     assert result["decision"] == "ACCEPT_RESEARCH_CANDIDATE"
 
 
+def test_phase3_below_zone_with_relevant_book_depth_still_uses_risk_gate():
+    evaluator = Phase3CandidateEvaluator()
+    event = _phase2_confirmed_event(
+        zone_id="p3-below-depth-too-far",
+        phase2_type="BELOW_ZONE_ABSORPTION",
+        last_price=2999.0,
+        suggested_stop=0.0,
+        phase2_total_score=0.75,
+        absorption_score=0.8,
+        relevant_book_depth_available=True,
+    )
+    event["sweep_extreme"] = 2900.0
+
+    result = evaluator.evaluate_phase2_confirmed(event)
+
+    assert result["decision"] == "REJECT_TOO_FAR_FROM_STOP"
+
+
 def test_phase3_below_zone_absorption_waits_without_relevant_book_depth_by_default():
     evaluator = Phase3CandidateEvaluator()
     event = _phase2_confirmed_event(
@@ -687,6 +705,39 @@ def test_phase3_below_zone_absorption_waits_without_relevant_book_depth_by_defau
     result = evaluator.evaluate_phase2_confirmed(event)
 
     assert result["decision"] == "WAIT_RECLAIM_OR_MORE_FLOW"
+
+
+def test_phase3_below_zone_wait_decision_is_not_overwritten_by_risk_gate():
+    evaluator = Phase3CandidateEvaluator()
+    invalid_stop_event = _phase2_confirmed_event(
+        zone_id="p3-below-wait-invalid-stop",
+        phase2_type="BELOW_ZONE_ABSORPTION",
+        last_price=2999.0,
+        suggested_stop=0.0,
+        phase2_total_score=0.75,
+        absorption_score=0.8,
+        relevant_book_depth_available=False,
+    )
+    invalid_stop_event["sweep_extreme"] = 3000.0
+    too_far_event = _phase2_confirmed_event(
+        zone_id="p3-below-wait-too-far",
+        phase2_type="BELOW_ZONE_ABSORPTION",
+        last_price=2999.0,
+        suggested_stop=0.0,
+        phase2_total_score=0.75,
+        absorption_score=0.8,
+        relevant_book_depth_available=False,
+    )
+    too_far_event["sweep_extreme"] = 2900.0
+
+    invalid_result = evaluator.evaluate_phase2_confirmed(invalid_stop_event)
+    too_far_result = evaluator.evaluate_phase2_confirmed(too_far_event)
+
+    assert invalid_result["decision"] == "WAIT_RECLAIM_OR_MORE_FLOW"
+    assert invalid_result["decision_reason"] == "below_zone_without_relevant_book_depth_wait_reclaim_or_more_flow"
+    assert too_far_result["decision"] == "WAIT_RECLAIM_OR_MORE_FLOW"
+    assert too_far_result["decision_reason"] == "below_zone_without_relevant_book_depth_wait_reclaim_or_more_flow"
+    assert too_far_result["risk_distance_pct"] > research_config.PHASE3_MAX_RISK_DISTANCE_PCT
 
 
 def test_phase3_rejects_invalid_buy_and_sell_stops():

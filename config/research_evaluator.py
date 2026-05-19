@@ -77,6 +77,8 @@ PHASE3_CLEAN_HOLD_STOP_BUFFER_USDT = _float_config("PHASE3_CLEAN_HOLD_STOP_BUFFE
 PHASE3_BELOW_ZONE_STOP_BUFFER_USDT = _float_config("PHASE3_BELOW_ZONE_STOP_BUFFER_USDT", 0.5)
 
 PHASE3_MAX_RISK_DISTANCE_PCT = _float_config("PHASE3_MAX_RISK_DISTANCE_PCT", 0.006)
+# Reserved for future target/outcome-aware reward-risk evaluation.
+# V6.2.5 has no target price, virtual position, or outcome yet, so this is not used.
 PHASE3_MIN_REWARD_RISK_PROXY = _float_config("PHASE3_MIN_REWARD_RISK_PROXY", 1.0)
 
 PHASE3_MIN_SWEEP_RECLAIM_PHASE2_SCORE = _float_config("PHASE3_MIN_SWEEP_RECLAIM_PHASE2_SCORE", 0.65)
