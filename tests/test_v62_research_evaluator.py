@@ -8,6 +8,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.strategy.phase2_orderflow_evaluator import Phase2OrderflowEvaluator
+from src.strategy.phase1_zone_engine import Phase1Engine
 from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
 from src.strategy.phase3_trade_outcome_evaluator import Phase3OutcomeEvaluator
 from src.strategy.virtual_position_manager import VirtualPositionManager
@@ -54,6 +55,23 @@ def test_phase2_registers_frozen_zone_once(caplog):
     assert len(phase2_logs) == 1
     assert "zone_id=iz-1" in phase2_logs[0]
     assert "frozen_reason=HIGH_ICEBERG" in phase2_logs[0]
+
+    snapshot = evaluator.get_active_zone("iz-1")
+    for field in (
+        "book_update_count",
+        "bid_depth_near_zone",
+        "ask_depth_near_zone",
+        "bid_depth_near_sweep",
+        "ask_depth_near_sweep",
+        "bid_reload_count",
+        "ask_reload_count",
+        "bid_reduction_1s",
+        "ask_reduction_1s",
+        "book_absorption_score",
+        "reload_score",
+        "last_book_ts",
+    ):
+        assert field in snapshot
 
 
 def test_phase2_limits_active_zones_by_oldest():
@@ -112,6 +130,91 @@ def test_phase2_sell_zone_tracks_upside_break_depth_from_price_updates():
     assert snapshot["sweep_extreme"] == 3003.0
     assert snapshot["break_depth_u"] == 1.5
     assert snapshot["break_depth_pct"] == 1.5 / 3001.5
+
+
+def test_phase2_book_update_tracks_local_depth_reload_and_absorption_for_buy_zone():
+    evaluator = Phase2OrderflowEvaluator(
+        max_active_zones=20,
+        zone_ttl_seconds=1800,
+        book_near_zone_range_usdt=1.0,
+        book_near_sweep_range_usdt=1.0,
+    )
+
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-book", frozen_ts=100.0), now_ts=100.0) is True
+    evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.0})
+    evaluator.on_book_update(
+        {
+            "ts": 101.1,
+            "bids": {3000.0: 40.0, 2999.2: 5.0, 2998.0: 100.0},
+            "asks": {3000.5: 3.0, 3002.0: 100.0},
+        }
+    )
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3000.0: 20.0, 2999.2: 5.0, 2998.0: 100.0},
+            "asks": {3000.5: 3.0, 3002.0: 100.0},
+        }
+    )
+
+    snapshot_after_drop = evaluator.get_active_zone("iz-book")
+    assert snapshot_after_drop["book_update_count"] == 2
+    assert snapshot_after_drop["bid_depth_near_zone"] == 3000.0 * 20.0 + 2999.2 * 5.0
+    assert snapshot_after_drop["ask_depth_near_zone"] == 3000.5 * 3.0
+    assert snapshot_after_drop["bid_reduction_1s"] > 0
+    assert 0.0 < snapshot_after_drop["book_absorption_score"] <= 1.0
+
+    evaluator.on_book_update(
+        {
+            "ts": 101.4,
+            "bids": {3000.0: 38.0, 2999.2: 5.0, 2998.0: 100.0},
+            "asks": {3000.5: 3.0, 3002.0: 100.0},
+        }
+    )
+    snapshot_after_reload = evaluator.get_active_zone("iz-book")
+    assert snapshot_after_reload["bid_reload_count"] == 1
+    assert snapshot_after_reload["reload_score"] > 0.0
+
+
+def test_phase2_book_update_skips_incomplete_book_data():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-skip", frozen_ts=100.0), now_ts=100.0) is True
+    evaluator.on_book_update({"ts": 101.0, "bids": [[3000.0, 10.0]]})
+
+    snapshot = evaluator.get_active_zone("iz-skip")
+    assert snapshot["book_update_count"] == 0
+
+
+def test_phase1_book_update_bypasses_phase2_and_catches_failures(caplog):
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+
+    class _Phase2Spy:
+        def __init__(self):
+            self.payload = None
+
+        def on_book_update(self, book_data):
+            self.payload = book_data
+
+    class _Phase2Boom:
+        def on_book_update(self, book_data):
+            raise RuntimeError("book failed")
+
+    engine = Phase1Engine(_Ctx(), iceberg_detector=None)
+    spy = _Phase2Spy()
+    engine.phase2_orderflow_evaluator = spy
+    assert engine.on_book_update({"ts": 101.0, "recv_ts": 101.0, "bids": [], "asks": []}) is None
+    assert spy.payload["bids"] is engine.ctx.bids
+    assert spy.payload["asks"] is engine.ctx.asks
+
+    engine.phase2_orderflow_evaluator = _Phase2Boom()
+    with caplog.at_level(logging.ERROR):
+        assert engine.on_book_update({"ts": 102.0, "recv_ts": 102.0, "bids": [], "asks": []}) is None
+
+    assert any("[PHASE2-BOOK-FAILED]" in record.getMessage() for record in caplog.records)
 
 
 def test_phase2_bucket_window_boundaries_use_exact_second_count():

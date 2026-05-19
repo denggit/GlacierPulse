@@ -214,6 +214,7 @@ class Phase1Engine:
         book_recv_ts = float(book_data.get("recv_ts") or time.time())
         current_price = float(getattr(self.ctx, "current_price", 0.0) or 0.0)
         self.zone_tracker.expire_old_zones(book_recv_ts)
+        self._update_phase2_book(book_data=book_data)
 
         remaining_events = []
         candidate_signals = []
@@ -506,6 +507,21 @@ class Phase1Engine:
             self.phase2_orderflow_evaluator.on_trade(enriched_trade)
         except Exception:
             logger.exception("[PHASE2-ORDERFLOW-FAILED]")
+
+    def _update_phase2_book(self, book_data: Dict[str, Any]) -> None:
+        if not self.phase2_orderflow_evaluator:
+            return
+        try:
+            phase2_book_data = dict(book_data) if isinstance(book_data, dict) else {}
+            ctx_bids = getattr(self.ctx, "bids", None)
+            ctx_asks = getattr(self.ctx, "asks", None)
+            if ctx_bids:
+                phase2_book_data["bids"] = ctx_bids
+            if ctx_asks:
+                phase2_book_data["asks"] = ctx_asks
+            self.phase2_orderflow_evaluator.on_book_update(phase2_book_data)
+        except Exception:
+            logger.exception("[PHASE2-BOOK-FAILED]")
 
     def _build_iceberg_impact_event(
         self,

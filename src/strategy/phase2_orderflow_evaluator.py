@@ -11,9 +11,14 @@ import logging
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, Optional, Tuple
 
-from config.research_evaluator import MAX_ACTIVE_PHASE2_ZONES, PHASE2_ZONE_TTL_SECONDS
+from config.research_evaluator import (
+    BOOK_NEAR_SWEEP_RANGE_USDT,
+    BOOK_NEAR_ZONE_RANGE_USDT,
+    MAX_ACTIVE_PHASE2_ZONES,
+    PHASE2_ZONE_TTL_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,15 @@ class Phase2FlowBucket:
     active_buy_notional: float = 0.0
     active_sell_notional: float = 0.0
     tick_count: int = 0
+
+
+@dataclass
+class Phase2BookSample:
+    ts: float
+    bid_depth_near_zone: float = 0.0
+    ask_depth_near_zone: float = 0.0
+    bid_depth_near_sweep: float = 0.0
+    ask_depth_near_sweep: float = 0.0
 
 
 @dataclass
@@ -56,8 +70,27 @@ class Phase2TrackedZone:
     break_depth_u: float = 0.0
     break_depth_pct: float = 0.0
     phase2_registered_ts: float = 0.0
+    book_update_count: int = 0
+    bid_depth_near_zone: float = 0.0
+    ask_depth_near_zone: float = 0.0
+    bid_depth_near_sweep: float = 0.0
+    ask_depth_near_sweep: float = 0.0
+    bid_reload_count: int = 0
+    ask_reload_count: int = 0
+    bid_reduction_1s: float = 0.0
+    ask_reduction_1s: float = 0.0
+    book_absorption_score: float = 0.0
+    reload_score: float = 0.0
+    last_book_ts: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict, repr=False)
     flow_buckets: Deque[Phase2FlowBucket] = field(default_factory=deque, repr=False)
+    book_samples: Deque[Phase2BookSample] = field(default_factory=deque, repr=False)
+    bid_reload_watch_active: bool = field(default=False, repr=False)
+    bid_reload_low: float = field(default=0.0, repr=False)
+    bid_reload_recover_target: float = field(default=0.0, repr=False)
+    ask_reload_watch_active: bool = field(default=False, repr=False)
+    ask_reload_low: float = field(default=0.0, repr=False)
+    ask_reload_recover_target: float = field(default=0.0, repr=False)
 
     def to_snapshot(self) -> Dict[str, Any]:
         snapshot = dict(self.metadata)
@@ -91,19 +124,39 @@ class Phase2TrackedZone:
                 "break_depth_u": self.break_depth_u,
                 "break_depth_pct": self.break_depth_pct,
                 "phase2_registered_ts": self.phase2_registered_ts,
+                "book_update_count": self.book_update_count,
+                "bid_depth_near_zone": self.bid_depth_near_zone,
+                "ask_depth_near_zone": self.ask_depth_near_zone,
+                "bid_depth_near_sweep": self.bid_depth_near_sweep,
+                "ask_depth_near_sweep": self.ask_depth_near_sweep,
+                "bid_reload_count": self.bid_reload_count,
+                "ask_reload_count": self.ask_reload_count,
+                "bid_reduction_1s": self.bid_reduction_1s,
+                "ask_reduction_1s": self.ask_reduction_1s,
+                "book_absorption_score": self.book_absorption_score,
+                "reload_score": self.reload_score,
+                "last_book_ts": self.last_book_ts,
             }
         )
         return snapshot
 
 
 class Phase2OrderflowEvaluator:
+    RELOAD_MIN_DEPTH_USDT = 10_000.0
+    RELOAD_MIN_DEPTH_PCT = 0.10
+    RELOAD_RECOVER_PCT = 0.70
+
     def __init__(
         self,
         max_active_zones: int = MAX_ACTIVE_PHASE2_ZONES,
         zone_ttl_seconds: float = PHASE2_ZONE_TTL_SECONDS,
+        book_near_zone_range_usdt: float = BOOK_NEAR_ZONE_RANGE_USDT,
+        book_near_sweep_range_usdt: float = BOOK_NEAR_SWEEP_RANGE_USDT,
     ):
         self.max_active_zones = max(1, int(max_active_zones))
         self.zone_ttl_seconds = max(0.0, float(zone_ttl_seconds))
+        self.book_near_zone_range_usdt = max(0.0, float(book_near_zone_range_usdt))
+        self.book_near_sweep_range_usdt = max(0.0, float(book_near_sweep_range_usdt))
         self.active_zones: "OrderedDict[str, Phase2TrackedZone]" = OrderedDict()
 
     def register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
@@ -143,6 +196,13 @@ class Phase2OrderflowEvaluator:
                     self._recompute_windows(zone=zone, now_ts=now)
         except Exception:
             logger.exception("[PHASE2-PRICE-FAILED]")
+
+    def on_book_update(self, book_data: Dict[str, Any]) -> None:
+        """Update active zone local book aggregates from one book snapshot."""
+        try:
+            self._on_book_update(book_data)
+        except Exception:
+            logger.exception("[PHASE2-BOOK-FAILED]")
 
     def on_orderflow(self, data: Dict[str, Any]) -> None:
         """Update from trade-like or pre-aggregated orderflow data."""
@@ -264,6 +324,59 @@ class Phase2OrderflowEvaluator:
             metadata=dict(zone),
         )
 
+    def _on_book_update(self, book_data: Dict[str, Any]) -> None:
+        if not self.active_zones or not isinstance(book_data, dict):
+            return
+
+        bids = self._extract_book_levels(book_data.get("bids"))
+        asks = self._extract_book_levels(book_data.get("asks"))
+        if bids is None or asks is None:
+            return
+
+        now = self._extract_ts(book_data)
+        self._prune(now_ts=now)
+        if not self.active_zones:
+            return
+
+        for zone in list(self.active_zones.values()):
+            if now < zone.frozen_ts:
+                continue
+
+            zone_anchor = self._zone_book_anchor(zone)
+            if zone_anchor <= 0:
+                continue
+            sweep_anchor = zone.sweep_extreme if zone.sweep_extreme > 0 else zone_anchor
+
+            bid_depth_near_zone = self._sum_depth_near_anchor(
+                bids,
+                zone_anchor,
+                self.book_near_zone_range_usdt,
+            )
+            ask_depth_near_zone = self._sum_depth_near_anchor(
+                asks,
+                zone_anchor,
+                self.book_near_zone_range_usdt,
+            )
+            bid_depth_near_sweep = self._sum_depth_near_anchor(
+                bids,
+                sweep_anchor,
+                self.book_near_sweep_range_usdt,
+            )
+            ask_depth_near_sweep = self._sum_depth_near_anchor(
+                asks,
+                sweep_anchor,
+                self.book_near_sweep_range_usdt,
+            )
+
+            self._update_zone_book_metrics(
+                zone=zone,
+                ts=now,
+                bid_depth_near_zone=bid_depth_near_zone,
+                ask_depth_near_zone=ask_depth_near_zone,
+                bid_depth_near_sweep=bid_depth_near_sweep,
+                ask_depth_near_sweep=ask_depth_near_sweep,
+            )
+
     def _on_trade(self, trade_data: Dict[str, Any]) -> None:
         if not self.active_zones or not isinstance(trade_data, dict):
             return
@@ -302,6 +415,124 @@ class Phase2OrderflowEvaluator:
                     active_sell_notional=active_sell_notional,
                     tick_count=tick_count,
                 )
+
+    def _update_zone_book_metrics(
+        self,
+        zone: Phase2TrackedZone,
+        ts: float,
+        bid_depth_near_zone: float,
+        ask_depth_near_zone: float,
+        bid_depth_near_sweep: float,
+        ask_depth_near_sweep: float,
+    ) -> None:
+        previous_bid_depth = zone.bid_depth_near_zone
+        previous_ask_depth = zone.ask_depth_near_zone
+
+        zone.book_update_count += 1
+        zone.bid_depth_near_zone = bid_depth_near_zone
+        zone.ask_depth_near_zone = ask_depth_near_zone
+        zone.bid_depth_near_sweep = bid_depth_near_sweep
+        zone.ask_depth_near_sweep = ask_depth_near_sweep
+        zone.last_book_ts = ts
+
+        zone.book_samples.append(
+            Phase2BookSample(
+                ts=ts,
+                bid_depth_near_zone=bid_depth_near_zone,
+                ask_depth_near_zone=ask_depth_near_zone,
+                bid_depth_near_sweep=bid_depth_near_sweep,
+                ask_depth_near_sweep=ask_depth_near_sweep,
+            )
+        )
+        self._prune_book_samples(zone=zone, now_ts=ts)
+
+        zone.bid_reduction_1s = max(
+            0.0,
+            self._max_sample_depth(zone.book_samples, "bid_depth_near_zone") - bid_depth_near_zone,
+        )
+        zone.ask_reduction_1s = max(
+            0.0,
+            self._max_sample_depth(zone.book_samples, "ask_depth_near_zone") - ask_depth_near_zone,
+        )
+
+        self._update_reload_state(
+            zone=zone,
+            side="bid",
+            previous_depth=previous_bid_depth,
+            current_depth=bid_depth_near_zone,
+        )
+        self._update_reload_state(
+            zone=zone,
+            side="ask",
+            previous_depth=previous_ask_depth,
+            current_depth=ask_depth_near_zone,
+        )
+        self._recompute_book_scores(zone)
+
+    def _prune_book_samples(self, zone: Phase2TrackedZone, now_ts: float) -> None:
+        cutoff_ts = now_ts - 1.0
+        while zone.book_samples and zone.book_samples[0].ts < cutoff_ts:
+            zone.book_samples.popleft()
+
+    def _update_reload_state(
+        self,
+        zone: Phase2TrackedZone,
+        side: str,
+        previous_depth: float,
+        current_depth: float,
+    ) -> None:
+        if previous_depth <= 0:
+            return
+
+        depth_drop = max(0.0, previous_depth - current_depth)
+        reload_threshold = max(self.RELOAD_MIN_DEPTH_USDT, previous_depth * self.RELOAD_MIN_DEPTH_PCT)
+        if depth_drop >= reload_threshold:
+            recover_target = current_depth + depth_drop * self.RELOAD_RECOVER_PCT
+            if side == "bid":
+                zone.bid_reload_watch_active = True
+                zone.bid_reload_low = current_depth
+                zone.bid_reload_recover_target = recover_target
+            else:
+                zone.ask_reload_watch_active = True
+                zone.ask_reload_low = current_depth
+                zone.ask_reload_recover_target = recover_target
+            return
+
+        if side == "bid" and zone.bid_reload_watch_active:
+            zone.bid_reload_low = min(zone.bid_reload_low, current_depth)
+            if current_depth >= zone.bid_reload_recover_target:
+                zone.bid_reload_count += 1
+                zone.bid_reload_watch_active = False
+                zone.bid_reload_low = 0.0
+                zone.bid_reload_recover_target = 0.0
+        elif side == "ask" and zone.ask_reload_watch_active:
+            zone.ask_reload_low = min(zone.ask_reload_low, current_depth)
+            if current_depth >= zone.ask_reload_recover_target:
+                zone.ask_reload_count += 1
+                zone.ask_reload_watch_active = False
+                zone.ask_reload_low = 0.0
+                zone.ask_reload_recover_target = 0.0
+
+    def _recompute_book_scores(self, zone: Phase2TrackedZone) -> None:
+        if zone.direction == "BUY":
+            pressure_notional = zone.active_sell_notional_1s
+            book_reduction = zone.bid_reduction_1s
+            reload_count = zone.bid_reload_count
+        elif zone.direction == "SELL":
+            pressure_notional = zone.active_buy_notional_1s
+            book_reduction = zone.ask_reduction_1s
+            reload_count = zone.ask_reload_count
+        else:
+            pressure_notional = max(zone.active_buy_notional_1s, zone.active_sell_notional_1s)
+            book_reduction = max(zone.bid_reduction_1s, zone.ask_reduction_1s)
+            reload_count = max(zone.bid_reload_count, zone.ask_reload_count)
+
+        if pressure_notional > 0:
+            absorbed_notional = max(0.0, pressure_notional - max(0.0, book_reduction))
+            zone.book_absorption_score = min(1.0, absorbed_notional / pressure_notional)
+        else:
+            zone.book_absorption_score = 0.0
+        zone.reload_score = min(1.0, max(0, reload_count) / 3.0)
 
     def _update_zone_price(self, zone: Phase2TrackedZone, price: float) -> None:
         zone.last_price = price
@@ -377,6 +608,7 @@ class Phase2OrderflowEvaluator:
         zone.tick_count_1s = ticks_1s
         zone.tick_count_3s = ticks_3s
         zone.tick_count_10s = ticks_10s
+        self._recompute_book_scores(zone)
 
     def _sum_buckets(
         self,
@@ -416,7 +648,7 @@ class Phase2OrderflowEvaluator:
 
     def _log_zone_expired(self, zone: Phase2TrackedZone, now_ts: float, expire_reason: str) -> None:
         logger.info(
-            "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s expire_reason=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f",
+            "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s expire_reason=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f bid_depth_near_zone=%.0f ask_depth_near_zone=%.0f bid_depth_near_sweep=%.0f ask_depth_near_sweep=%.0f bid_reload_count=%d ask_reload_count=%d book_absorption_score=%.4f reload_score=%.4f book_update_count=%d",
             zone.zone_id,
             zone.direction,
             expire_reason,
@@ -426,6 +658,15 @@ class Phase2OrderflowEvaluator:
             zone.frozen_high,
             zone.min_price_seen_after_frozen,
             zone.max_price_seen_after_frozen,
+            zone.bid_depth_near_zone,
+            zone.ask_depth_near_zone,
+            zone.bid_depth_near_sweep,
+            zone.ask_depth_near_sweep,
+            zone.bid_reload_count,
+            zone.ask_reload_count,
+            zone.book_absorption_score,
+            zone.reload_score,
+            zone.book_update_count,
         )
 
     def _has_trade_fields(self, data: Dict[str, Any]) -> bool:
@@ -449,6 +690,62 @@ class Phase2OrderflowEvaluator:
             data.get("price", data.get("px", data.get("last_price", data.get("current_price")))),
             0.0,
         )
+
+    def _extract_book_levels(self, levels: Any) -> Optional[Tuple[Tuple[float, float], ...]]:
+        if levels is None:
+            return None
+        items: Iterable[Any]
+        if isinstance(levels, dict):
+            items = levels.items()
+        elif isinstance(levels, (list, tuple)):
+            items = levels
+        else:
+            return None
+
+        parsed_levels = []
+        for item in items:
+            if isinstance(item, dict):
+                price = self._safe_float(item.get("price", item.get("px")), 0.0)
+                size = self._safe_float(item.get("size", item.get("sz", item.get("qty"))), 0.0)
+            else:
+                try:
+                    price = self._safe_float(item[0], 0.0)
+                    size = self._safe_float(item[1], 0.0)
+                except (TypeError, IndexError, KeyError):
+                    continue
+            if price > 0 and size > 0:
+                parsed_levels.append((price, size))
+        return tuple(parsed_levels)
+
+    def _zone_book_anchor(self, zone: Phase2TrackedZone) -> float:
+        if zone.direction == "BUY":
+            return zone.frozen_low
+        if zone.direction == "SELL":
+            return zone.frozen_high
+        return zone.zone_mid
+
+    @staticmethod
+    def _sum_depth_near_anchor(
+        levels: Tuple[Tuple[float, float], ...],
+        anchor: float,
+        price_range: float,
+    ) -> float:
+        if anchor <= 0:
+            return 0.0
+        lower = anchor - price_range
+        upper = anchor + price_range
+        depth = 0.0
+        for price, size in levels:
+            if lower <= price <= upper:
+                depth += price * size
+        return depth
+
+    @staticmethod
+    def _max_sample_depth(samples: Deque[Phase2BookSample], attr_name: str) -> float:
+        max_depth = 0.0
+        for sample in samples:
+            max_depth = max(max_depth, float(getattr(sample, attr_name, 0.0)))
+        return max_depth
 
     @staticmethod
     def _safe_int(value: Any, default: int = 0) -> int:
