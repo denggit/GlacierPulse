@@ -30,6 +30,12 @@ def _frozen_zone(zone_id="iz-1", frozen_ts=100.0):
     }
 
 
+def _sell_frozen_zone(zone_id="iz-sell", frozen_ts=100.0):
+    zone = _frozen_zone(zone_id=zone_id, frozen_ts=frozen_ts)
+    zone["direction"] = "SELL"
+    return zone
+
+
 def test_v62_skeleton_imports():
     assert Phase2OrderflowEvaluator()
     assert Phase3CandidateEvaluator()
@@ -58,6 +64,24 @@ def test_phase2_registers_frozen_zone_once(caplog):
 
     snapshot = evaluator.get_active_zone("iz-1")
     for field in (
+        "previous_state",
+        "state_updated_ts",
+        "state_entered_ts",
+        "has_tested_zone",
+        "has_swept_boundary",
+        "has_absorbed_after_sweep",
+        "has_reclaimed_boundary",
+        "has_retested_inside_zone",
+        "has_failed",
+        "has_confirmed",
+        "time_below_boundary_ms",
+        "time_above_boundary_ms",
+        "absorption_score",
+        "pressure_decay_score",
+        "reclaim_score",
+        "retest_score",
+        "phase2_total_score",
+        "phase2_type",
         "book_update_count",
         "bid_depth_near_zone",
         "ask_depth_near_zone",
@@ -321,3 +345,152 @@ def test_phase2_expired_log_includes_expire_reason(caplog):
         for message in expired_logs
     )
     assert all("relevant_book_depth_available=" in message for message in expired_logs)
+
+
+def test_phase2_buy_clean_sweep_reclaim_path_confirms(caplog):
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-buy-clean", frozen_ts=100.0), now_ts=100.0) is True
+
+    with caplog.at_level(logging.INFO):
+        evaluator.on_price(price=3000.2, ts=101.0)
+        evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
+        evaluator.on_book_update(
+            {
+                "ts": 101.2,
+                "bids": {3000.0: 80.0, 2999.2: 20.0},
+                "asks": {3000.5: 5.0, 3002.0: 100.0},
+            }
+        )
+        evaluator.on_trade({"price": 3000.1, "size": 50.0, "side": "buy", "ts": 102.2})
+        evaluator.on_price(price=3000.3, ts=103.0)
+
+    snapshot = evaluator.get_active_zone("iz-buy-clean")
+    assert snapshot["state"] == "PHASE2_CONFIRMED"
+    assert snapshot["phase2_type"] == "SWEEP_RECLAIM"
+    assert snapshot["has_tested_zone"] is True
+    assert snapshot["has_swept_boundary"] is True
+    assert snapshot["has_absorbed_after_sweep"] is True
+    assert snapshot["has_reclaimed_boundary"] is True
+    assert snapshot["has_retested_inside_zone"] is True
+    assert snapshot["phase2_total_score"] >= evaluator.min_total_score
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("[PHASE2-STATE]" in message and "state=PHASE2_CONFIRMED" in message for message in messages)
+    assert any("[PHASE2-CONFIRMED]" in message and "phase2_type=SWEEP_RECLAIM" in message for message in messages)
+
+
+def test_phase2_sell_clean_sweep_reclaim_path_confirms():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_sell_frozen_zone("iz-sell-clean", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_trade({"price": 3002.0, "size": 50.0, "side": "buy", "ts": 101.1})
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3001.0: 5.0, 2999.0: 100.0},
+            "asks": {3001.5: 80.0, 3002.0: 20.0},
+        }
+    )
+    evaluator.on_trade({"price": 3001.4, "size": 50.0, "side": "sell", "ts": 102.2})
+    evaluator.on_price(price=3001.2, ts=103.0)
+
+    snapshot = evaluator.get_active_zone("iz-sell-clean")
+    assert snapshot["state"] == "PHASE2_CONFIRMED"
+    assert snapshot["phase2_type"] == "SWEEP_RECLAIM"
+    assert snapshot["has_swept_boundary"] is True
+    assert snapshot["has_absorbed_after_sweep"] is True
+    assert snapshot["has_reclaimed_boundary"] is True
+    assert snapshot["has_retested_inside_zone"] is True
+
+
+def test_phase2_buy_without_relevant_book_depth_does_not_absorb_from_book_score():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-no-depth-state", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3100.0: 100.0},
+            "asks": {3101.0: 100.0},
+        }
+    )
+
+    snapshot = evaluator.get_active_zone("iz-no-depth-state")
+    assert snapshot["relevant_book_depth_available"] is False
+    assert snapshot["book_absorption_score"] == 0.0
+    assert snapshot["state"] == "PHASE2_SWEEPING_LOW"
+    assert snapshot["has_absorbed_after_sweep"] is False
+
+
+def test_phase2_break_depth_soft_does_not_fail():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-soft-depth", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_price(price=2988.0, ts=101.0)
+
+    snapshot = evaluator.get_active_zone("iz-soft-depth")
+    assert snapshot["break_depth_pct"] > evaluator.max_sweep_depth_pct_soft
+    assert snapshot["break_depth_pct"] < evaluator.max_sweep_depth_pct_hard
+    assert snapshot["state"] == "PHASE2_SWEEPING_LOW"
+    assert snapshot["has_failed"] is False
+
+
+def test_phase2_break_depth_hard_fails():
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-hard-depth", frozen_ts=100.0), now_ts=100.0) is True
+
+    evaluator.on_price(price=2975.9, ts=101.0)
+
+    snapshot = evaluator.get_active_zone("iz-hard-depth")
+    assert snapshot["break_depth_pct"] >= evaluator.max_sweep_depth_pct_hard
+    assert snapshot["state"] == "PHASE2_FAILED"
+    assert snapshot["has_failed"] is True
+    assert snapshot["phase2_reason"] == "hard_sweep_depth_exceeded"
+
+
+def test_phase2_timeout_transitions_before_prune(caplog):
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=10)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-timeout-state", frozen_ts=100.0), now_ts=100.0) is True
+
+    with caplog.at_level(logging.INFO):
+        evaluator.on_price(price=3000.0, ts=111.1)
+
+    assert evaluator.get_active_zone("iz-timeout-state") is None
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("[PHASE2-STATE]" in message and "state=PHASE2_TIMEOUT" in message for message in messages)
+    assert any("[PHASE2-ZONE-EXPIRED]" in message and "expire_reason=TTL" in message for message in messages)
+
+
+def test_phase2_state_machine_does_not_call_trader(monkeypatch):
+    from src.execution.trader import IcebergTrader
+
+    called = {"process_signal": 0, "request": 0}
+
+    async def _boom_process_signal(self, signal, current_price):
+        called["process_signal"] += 1
+        raise AssertionError("real trader must not be called")
+
+    async def _boom_request(self, method, endpoint, payload=None):
+        called["request"] += 1
+        raise AssertionError("order API must not be called")
+
+    monkeypatch.setattr(IcebergTrader, "process_signal", _boom_process_signal)
+    monkeypatch.setattr(IcebergTrader, "_request", _boom_request)
+
+    evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
+    assert evaluator.register_frozen_zone(_frozen_zone("iz-no-trade", frozen_ts=100.0), now_ts=100.0) is True
+    evaluator.on_price(price=3000.2, ts=101.0)
+    evaluator.on_trade({"price": 2999.0, "size": 50.0, "side": "sell", "ts": 101.1})
+    evaluator.on_book_update(
+        {
+            "ts": 101.2,
+            "bids": {3000.0: 80.0},
+            "asks": {3000.5: 5.0},
+        }
+    )
+    evaluator.on_trade({"price": 3000.1, "size": 50.0, "side": "buy", "ts": 102.2})
+    evaluator.on_price(price=3000.3, ts=103.0)
+
+    assert evaluator.get_active_zone("iz-no-trade")["state"] == "PHASE2_CONFIRMED"
+    assert called == {"process_signal": 0, "request": 0}
