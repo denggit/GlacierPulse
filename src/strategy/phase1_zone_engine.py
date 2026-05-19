@@ -3,7 +3,7 @@
 """
 @Author     : Zijun Deng
 @Date       : 4/28/2026
-@File       : phase1_engine.py
+@File       : phase1_zone_engine.py
 @Description: 机构级扫损与冰山点火引擎 (V3 Pending Event Manager)
 """
 
@@ -12,8 +12,17 @@ import logging
 import time
 from typing import Dict, Any, Optional
 
-from src.strategy.iceberg_zone_tracker import IcebergZoneTracker
-from src.strategy.iceberg_outcome_evaluator import IcebergOutcomeEvaluator
+from config.research_evaluator import (
+    PHASE2_ORDERFLOW_EVALUATOR_ENABLED,
+    PHASE3_CANDIDATE_EVALUATOR_ENABLED,
+    VIRTUAL_POSITION_MANAGER_ENABLED,
+)
+from src.strategy.iceberg.zone_tracker import IcebergZoneTracker
+from src.strategy.iceberg.outcome_evaluator import IcebergOutcomeEvaluator
+from src.strategy.phase2_orderflow_evaluator import Phase2OrderflowEvaluator
+from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
+from src.strategy.phase3_trade_outcome_evaluator import Phase3OutcomeEvaluator
+from src.strategy.virtual_position_manager import VirtualPositionManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +47,22 @@ class Phase1Engine:
         self._event_seq = 0
         self.zone_tracker = IcebergZoneTracker()
         self.outcome_evaluator = IcebergOutcomeEvaluator()
+        self.phase2_orderflow_evaluator = (
+            Phase2OrderflowEvaluator()
+            if PHASE2_ORDERFLOW_EVALUATOR_ENABLED
+            else None
+        )
+        self.phase3_candidate_evaluator = (
+            Phase3CandidateEvaluator()
+            if PHASE3_CANDIDATE_EVALUATOR_ENABLED
+            else None
+        )
+        self.phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        self.virtual_position_manager = (
+            VirtualPositionManager()
+            if VIRTUAL_POSITION_MANAGER_ENABLED
+            else None
+        )
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
         return self.on_trade(trade_data)
@@ -455,7 +480,20 @@ class Phase1Engine:
                     "[ICEBERG-ZONE-OUTCOME] evaluator_upsert_failed id=%s",
                     zone.get("zone_id"),
                 )
+            self._register_phase2_frozen_zone(zone)
         return zone
+
+    def _register_phase2_frozen_zone(self, zone: Dict[str, Any]) -> None:
+        if not self.phase2_orderflow_evaluator or not zone.get("is_frozen"):
+            return
+        try:
+            public_zone = IcebergZoneTracker._public_zone(zone)
+            self.phase2_orderflow_evaluator.register_frozen_zone(public_zone)
+        except Exception:
+            logger.exception(
+                "[PHASE2-REGISTER-FAILED] zone_id=%s",
+                zone.get("zone_id"),
+            )
 
     def _build_iceberg_impact_event(
         self,

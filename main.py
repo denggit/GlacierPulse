@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.utils.log import get_logger
 from src.context.market_context import MarketContext
 from src.detectors.iceberg_detector import IcebergDetector
-from src.strategy.phase1_engine import Phase1Engine
+from src.strategy.phase1_zone_engine import Phase1Engine
 from src.execution.trader import IcebergTrader
 from src.data_feed.okx_books_stream import OKXBooksStreamer
 from src.data_feed.okx_stream import OKXTickStreamer

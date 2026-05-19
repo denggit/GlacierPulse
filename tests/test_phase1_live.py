@@ -16,7 +16,7 @@ from src.data_feed.okx_stream import OKXTickStreamer
 from src.data_feed.okx_books_stream import OKXBooksStreamer
 from src.context.market_context import MarketContext
 from src.detectors.iceberg_detector import IcebergDetector
-from src.strategy.phase1_engine import Phase1Engine
+from src.strategy.phase1_zone_engine import Phase1Engine
 
 # ==========================================
 # 极简日志配置：只看 Info (业务日志) 和 Error (报错)
