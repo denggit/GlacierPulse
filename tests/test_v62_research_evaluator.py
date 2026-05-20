@@ -925,3 +925,77 @@ def test_phase2_state_machine_does_not_call_trader(monkeypatch):
     assert evaluator.get_active_zone("iz-no-trade")["state"] == "PHASE2_CONFIRMED"
     assert evaluator.get_active_zone("iz-no-trade")["phase2_type"] == "BELOW_ZONE_ABSORPTION"
     assert called == {"process_signal": 0, "request": 0}
+
+
+def _candidate(decision="ACCEPT_RESEARCH_CANDIDATE", direction="BUY", price=3000.0, stop=2998.5, zone_id="z1"):
+    return {
+        "decision": decision,
+        "zone_id": zone_id,
+        "direction": direction,
+        "candidate_price": price,
+        "suggested_stop": stop,
+        "risk_distance_u": abs(price-stop),
+        "risk_distance_pct": abs(price-stop)/price,
+        "final_margin_usage_pct": 0.1,
+        "leverage": 10,
+        "phase2_type": "SWEEP_RECLAIM",
+        "candidate_type": "RESEARCH",
+    }
+
+
+def test_virtual_accept_opens_wait_reject_block_and_single_position(caplog):
+    m = VirtualPositionManager()
+    with caplog.at_level(logging.INFO):
+        assert m.on_candidate(_candidate())
+        assert m.get_active_position() is not None
+        assert m.get_active_position()["direction"] == "LONG"
+        assert m.get_active_position()["virtual_size_eth"] > 0
+        assert m.on_candidate(_candidate(zone_id="z2")) is None
+    assert any("[VIRTUAL-POSITION-OPEN]" in r.message for r in caplog.records)
+    assert any("[VIRTUAL-POSITION-SKIP]" in r.message for r in caplog.records)
+    assert VirtualPositionManager().on_candidate(_candidate(decision="WAIT_RECLAIM_OR_MORE_FLOW")) is None
+    assert VirtualPositionManager().on_candidate(_candidate(decision="REJECT_TOO_FAR_FROM_STOP")) is None
+
+
+def test_virtual_long_short_stop_and_take_profit_and_maxlen():
+    m = VirtualPositionManager()
+    m.closed_positions = __import__('collections').deque(maxlen=2)
+    m.on_candidate(_candidate(zone_id="a")); m.on_price(2998.5, ts=1)
+    c1 = m.get_closed_positions()[-1]; assert c1["close_reason"] == "STOP_LOSS" and c1["realized_pnl_u"] < 0
+    m.on_candidate(_candidate(zone_id="b")); tp = m.get_active_position()["take_profit_price"]; m.on_price(tp, ts=2)
+    c2 = m.get_closed_positions()[-1]; assert c2["close_reason"] == "TAKE_PROFIT_R_MULTIPLE" and c2["realized_pnl_u"] > 0
+    assert c2["realized_r_multiple"] >= research_config.VIRTUAL_TAKE_PROFIT_R_MULTIPLE - 1e-9
+    m.on_candidate(_candidate(direction="SELL", price=3000, stop=3001.5, zone_id="c")); m.on_price(3001.5, ts=3)
+    assert m.get_closed_positions()[-1]["close_reason"] == "STOP_LOSS"
+    m.on_candidate(_candidate(direction="SELL", price=3000, stop=3001.5, zone_id="d")); tp2 = m.get_active_position()["take_profit_price"]; m.on_price(tp2, ts=4)
+    assert m.get_closed_positions()[-1]["close_reason"] == "TAKE_PROFIT_R_MULTIPLE"
+    m.on_candidate(_candidate(zone_id="e")); m.on_price(2998.5, ts=5)
+    assert len(m.get_closed_positions()) == 2
+
+
+def test_phase1_virtual_integration_and_execution_modes(monkeypatch):
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+    class _P2:
+        def pop_confirmed_events(self): return [{"zone_id":"x"}]
+        def on_trade(self, t): pass
+        def on_book_update(self, b): pass
+    class _P3:
+        def __init__(self): self.called=False
+        def evaluate_phase2_confirmed(self, e): self.called=True; return _candidate()
+    class _V:
+        def __init__(self): self.c=[]; self.p=[]
+        def on_candidate(self, r): self.c.append(r)
+        def on_price(self, **kw): self.p.append(kw)
+    eng=Phase1Engine(_Ctx(), iceberg_detector=None)
+    eng.phase2_orderflow_evaluator=_P2(); eng.phase3_candidate_evaluator=_P3(); eng.virtual_position_manager=_V()
+    eng._drain_phase2_confirmed_events(); assert len(eng.virtual_position_manager.c)==1
+    eng.on_trade({"price":3000,"size":200,"side":"sell","ts":10}); assert eng.virtual_position_manager.p
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.REAL_EXECUTION_ENABLED", True)
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_POSITION_MANAGER_ENABLED", True)
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_SHADOW_MODE", False)
+    assert Phase1Engine(_Ctx(), iceberg_detector=None).virtual_position_manager is None
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_SHADOW_MODE", True)
+    assert Phase1Engine(_Ctx(), iceberg_detector=None).virtual_position_manager is not None
