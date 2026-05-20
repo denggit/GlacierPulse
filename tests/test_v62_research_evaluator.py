@@ -12,6 +12,7 @@ from src.strategy.phase1_zone_engine import Phase1Engine
 from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
 from config import research_evaluator as research_config
 from src.strategy.phase3_trade_outcome_evaluator import Phase3OutcomeEvaluator
+from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
 from src.strategy.virtual_position_manager import VirtualPositionManager
 
 
@@ -1854,3 +1855,261 @@ def test_phase1_virtual_integration_and_execution_modes(monkeypatch):
     assert Phase1Engine(_Ctx(), iceberg_detector=None).virtual_position_manager is None
     monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_SHADOW_MODE", True)
     assert Phase1Engine(_Ctx(), iceberg_detector=None).virtual_position_manager is not None
+
+
+def test_v62_startup_safety_check_passes_in_research_mode(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "REAL_EXECUTION_ENABLED", False)
+    monkeypatch.setattr(research_config, "PHASE3_REAL_TRADING_ENABLED", False)
+    monkeypatch.setattr(research_config, "V62_REQUIRE_RESEARCH_ONLY_MODE", True)
+
+    class _Engine:
+        phase2_orderflow_evaluator = object()
+        phase3_candidate_evaluator = object()
+        phase3_trade_outcome_evaluator = object()
+        virtual_position_manager = object()
+        zone_tracker = object()
+        outcome_evaluator = object()
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-research")
+    with caplog.at_level(logging.INFO):
+        result = monitor.run_startup_safety_check()
+
+    assert result["virtual_manager_active"] is True
+    assert monitor.safety_check_passed is True
+    assert any("[V62-SAFETY-CHECK-PASSED]" in r.message for r in caplog.records)
+
+
+def test_v62_startup_safety_check_fails_if_real_execution_enabled(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "REAL_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(research_config, "PHASE3_REAL_TRADING_ENABLED", False)
+    monkeypatch.setattr(research_config, "V62_REQUIRE_RESEARCH_ONLY_MODE", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_SHADOW_MODE", False)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        phase3_trade_outcome_evaluator = None
+        virtual_position_manager = None
+        zone_tracker = None
+        outcome_evaluator = None
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-fail")
+    with caplog.at_level(logging.ERROR):
+        result = monitor.run_startup_safety_check()
+
+    assert result["issues"]
+    assert monitor.safety_check_passed is False
+    assert monitor.safety_issues
+    assert any("[V62-SAFETY-CHECK-FAILED]" in r.message for r in caplog.records)
+
+
+def test_v62_component_status_logs(caplog):
+    class _Engine:
+        phase2_orderflow_evaluator = object()
+        phase3_candidate_evaluator = object()
+        phase3_trade_outcome_evaluator = object()
+        virtual_position_manager = object()
+        zone_tracker = object()
+        outcome_evaluator = object()
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-components")
+    with caplog.at_level(logging.INFO):
+        result = monitor.log_component_status()
+
+    assert result["phase2_orderflow_evaluator_active"] is True
+    assert result["virtual_position_manager_active"] is True
+    assert any("[V62-COMPONENT-STATUS]" in r.message for r in caplog.records)
+
+
+def test_v62_config_snapshot_logs(caplog):
+    class _Engine:
+        pass
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-config")
+    with caplog.at_level(logging.INFO):
+        result = monitor.log_config_snapshot()
+
+    assert "PHASE2_ORDERFLOW_EVALUATOR_ENABLED" in result
+    assert "V62_SHADOW_RUN_LABEL" in result
+    assert any("[V62-CONFIG-SNAPSHOT]" in r.message for r in caplog.records)
+
+
+def test_v62_heartbeat_throttled(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 999999.0)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        phase3_trade_outcome_evaluator = None
+        virtual_position_manager = None
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-heartbeat")
+    with caplog.at_level(logging.INFO):
+        assert monitor.maybe_log_heartbeat(now_ts=100.0) is not None
+        assert monitor.maybe_log_heartbeat(now_ts=101.0) is None
+
+    logs = [r.message for r in caplog.records if "[V62-HEARTBEAT]" in r.message]
+    assert len(logs) == 1
+
+
+def test_v62_heartbeat_includes_virtual_and_outcome_summary(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 0.0)
+
+    class _Virtual:
+        def summary(self):
+            return {
+                "active_position_exists": True,
+                "virtual_equity_usdt": 1001.0,
+                "total_opened": 2,
+                "total_closed": 1,
+                "total_skipped": 3,
+                "total_rejected": 4,
+                "active_dynamic_stop": 2999.0,
+                "active_breakeven_activated": True,
+                "active_trailing_activated": False,
+                "active_support_update_count": 1,
+            }
+
+    class _Outcome:
+        def summary(self):
+            return {
+                "global": {
+                    "total_closed": 1,
+                    "win_rate": 1.0,
+                    "avg_realized_r": 1.25,
+                    "total_realized_pnl_u": 10.0,
+                    "profit_factor_r": 999.0,
+                    "avg_mfe_r": 1.5,
+                    "avg_mae_r": -0.2,
+                    "avg_mae_abs_r": 0.2,
+                },
+                "total_duplicate_skipped": 0,
+            }
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        virtual_position_manager = _Virtual()
+        phase3_trade_outcome_evaluator = _Outcome()
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-summary")
+    with caplog.at_level(logging.INFO):
+        result = monitor.maybe_log_heartbeat(now_ts=100.0)
+
+    assert result["virtual_total_opened"] == 2
+    assert result["virtual_total_closed"] == 1
+    assert result["outcome_total_closed"] == 1
+    assert result["outcome_avg_realized_r"] == 1.25
+    assert result["outcome_avg_mae_abs_r"] == 0.2
+    log = "\n".join(r.message for r in caplog.records)
+    assert "virtual_total_opened=2" in log
+    assert "outcome_avg_mae_abs_r=0.200000" in log
+
+
+def test_phase1_creates_v62_monitor_when_enabled(monkeypatch):
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+
+    eng = Phase1Engine(_Ctx(), iceberg_detector=None)
+    assert eng.v62_integration_monitor is not None
+
+
+def test_phase1_v62_heartbeat_does_not_break_early_return():
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+
+    class _Monitor:
+        def __init__(self):
+            self.calls = []
+
+        def maybe_log_heartbeat(self, now_ts):
+            self.calls.append(now_ts)
+            return {"ok": True}
+
+    eng = Phase1Engine(_Ctx(), iceberg_detector=None)
+    monitor = _Monitor()
+    eng.v62_integration_monitor = monitor
+
+    result = eng.on_trade({"price": 3000.0, "size": 1.0, "side": "sell", "ts": 10.0})
+
+    assert result is None
+    assert monitor.calls == [10.0]
+
+
+def test_v62_final_summary_logs(caplog):
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        virtual_position_manager = VirtualPositionManager()
+        phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        zone_tracker = object()
+        outcome_evaluator = object()
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-final")
+    with caplog.at_level(logging.INFO):
+        result = monitor.log_final_summary()
+
+    assert isinstance(result, dict)
+    assert result["virtual_total_opened"] == 0
+    assert result["outcome_total_closed"] == 0
+    assert any("[V62-FINAL-SUMMARY]" in r.message for r in caplog.records)
+
+
+def test_phase1_log_v62_final_summary_logs(monkeypatch, caplog):
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+
+    eng = Phase1Engine(_Ctx(), iceberg_detector=None)
+    with caplog.at_level(logging.INFO):
+        result = eng.log_v62_final_summary()
+
+    assert isinstance(result, dict)
+    assert any("[V62-FINAL-SUMMARY]" in r.message for r in caplog.records)
+
+
+def test_v62_monitor_does_not_call_trader_or_order_api(monkeypatch):
+    from src.execution.trader import IcebergTrader
+
+    called = {"process_signal": 0, "request": 0}
+
+    async def _boom_process_signal(self, signal, current_price):
+        called["process_signal"] += 1
+        raise AssertionError("real trader must not be called")
+
+    async def _boom_request(self, method, endpoint, payload=None):
+        called["request"] += 1
+        raise AssertionError("order API must not be called")
+
+    monkeypatch.setattr(IcebergTrader, "process_signal", _boom_process_signal)
+    monkeypatch.setattr(IcebergTrader, "_request", _boom_request)
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 0.0)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        virtual_position_manager = VirtualPositionManager()
+        zone_tracker = object()
+        outcome_evaluator = object()
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-no-trader")
+    monitor.run_startup_safety_check()
+    monitor.maybe_log_heartbeat(now_ts=100.0)
+    monitor.log_final_summary()
+
+    assert called == {"process_signal": 0, "request": 0}

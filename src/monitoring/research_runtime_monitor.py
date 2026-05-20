@@ -1,0 +1,389 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+V6.2 integration monitor for research/shadow-run readiness.
+
+This module only observes existing research components. It must not call trader
+APIs, create orders, or alter strategy decisions.
+"""
+
+import logging
+import time
+from typing import Any, Dict, List, Optional
+
+from config import research_evaluator as cfg
+
+logger = logging.getLogger(__name__)
+
+
+class ResearchRuntimeMonitor:
+    def __init__(
+        self,
+        phase1_engine: Any,
+        label: str = "",
+    ):
+        self.phase1_engine = phase1_engine
+        self.label = label
+        self.started_ts = time.time()
+        self.last_heartbeat_ts = 0.0
+        self.heartbeat_count = 0
+        self.safety_check_passed = False
+        self.safety_issues: List[str] = []
+
+    def run_startup_safety_check(self) -> Dict[str, Any]:
+        status = self._collect_component_status()
+        issues: List[str] = []
+        research_only_required = bool(getattr(cfg, "V62_REQUIRE_RESEARCH_ONLY_MODE", True))
+        real_execution_enabled = bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False))
+        phase3_real_trading_enabled = bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False))
+        virtual_shadow_mode = bool(getattr(cfg, "VIRTUAL_SHADOW_MODE", False))
+        virtual_manager_active = bool(status.get("virtual_position_manager_active"))
+
+        if research_only_required:
+            if real_execution_enabled:
+                issues.append("REAL_EXECUTION_ENABLED=True")
+            if phase3_real_trading_enabled:
+                issues.append("PHASE3_REAL_TRADING_ENABLED=True")
+        if real_execution_enabled and not virtual_shadow_mode and virtual_manager_active:
+            issues.append("virtual_position_manager_active_with_real_execution_without_shadow")
+
+        self.safety_issues = issues
+        self.safety_check_passed = not issues
+
+        result = {
+            "label": self.label,
+            "research_only_required": research_only_required,
+            "real_execution_enabled": real_execution_enabled,
+            "phase3_real_trading_enabled": phase3_real_trading_enabled,
+            "virtual_position_manager_enabled": bool(getattr(cfg, "VIRTUAL_POSITION_MANAGER_ENABLED", False)),
+            "virtual_shadow_mode": virtual_shadow_mode,
+            "virtual_manager_active": virtual_manager_active,
+            "phase2_enabled": bool(getattr(cfg, "PHASE2_ORDERFLOW_EVALUATOR_ENABLED", False)),
+            "phase3_candidate_enabled": bool(getattr(cfg, "PHASE3_CANDIDATE_EVALUATOR_ENABLED", False)),
+            "phase3_outcome_enabled": bool(getattr(cfg, "PHASE3_OUTCOME_EVALUATOR_ENABLED", False)),
+            "issues": list(issues),
+        }
+
+        if issues:
+            logger.error(
+                "[V62-SAFETY-CHECK-FAILED] %s",
+                self._format_kv(
+                    {
+                        "label": self.label,
+                        "issues": ",".join(issues),
+                        "real_execution_enabled": real_execution_enabled,
+                        "phase3_real_trading_enabled": phase3_real_trading_enabled,
+                        "virtual_shadow_mode": virtual_shadow_mode,
+                        "virtual_manager_active": virtual_manager_active,
+                    }
+                ),
+            )
+        else:
+            logger.info(
+                "[V62-SAFETY-CHECK-PASSED] %s",
+                self._format_kv(
+                    {
+                        "label": self.label,
+                        "research_only_required": research_only_required,
+                        "real_execution_enabled": real_execution_enabled,
+                        "phase3_real_trading_enabled": phase3_real_trading_enabled,
+                        "virtual_position_manager_enabled": result["virtual_position_manager_enabled"],
+                        "virtual_shadow_mode": virtual_shadow_mode,
+                        "virtual_manager_active": virtual_manager_active,
+                        "phase2_enabled": result["phase2_enabled"],
+                        "phase3_candidate_enabled": result["phase3_candidate_enabled"],
+                        "phase3_outcome_enabled": result["phase3_outcome_enabled"],
+                    }
+                ),
+            )
+        return result
+
+    def log_component_status(self) -> Dict[str, Any]:
+        status = self._collect_component_status()
+        logger.info("[V62-COMPONENT-STATUS] %s", self._format_kv(status))
+        return status
+
+    def log_config_snapshot(self) -> Dict[str, Any]:
+        snapshot = self._collect_config_snapshot()
+        logger.info("[V62-CONFIG-SNAPSHOT] %s", self._format_kv(snapshot))
+        return snapshot
+
+    def maybe_log_heartbeat(self, now_ts: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        if not bool(getattr(cfg, "V62_INTEGRATION_HEARTBEAT_ENABLED", True)):
+            return None
+        now = self._safe_float(now_ts, time.time()) if now_ts is not None else time.time()
+        interval = max(0.0, self._safe_float(getattr(cfg, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 300.0), 300.0))
+        if self.last_heartbeat_ts and now - self.last_heartbeat_ts < interval:
+            return None
+
+        try:
+            self.heartbeat_count += 1
+            self.last_heartbeat_ts = now
+            summary = self._heartbeat_summary(now)
+            logger.info("[V62-HEARTBEAT] %s", self._format_kv(summary))
+            return summary
+        except Exception:
+            logger.exception("[V62-HEARTBEAT-FAILED] label=%s", self.label)
+            return None
+
+    def summary(self) -> Dict[str, Any]:
+        now = time.time()
+        return {
+            "label": self.label,
+            "started_ts": self.started_ts,
+            "uptime_sec": max(0.0, now - self.started_ts),
+            "heartbeat_count": self.heartbeat_count,
+            "safety_check_passed": self.safety_check_passed,
+            "safety_issues": list(self.safety_issues),
+            "component_status": self._safe_collect(self._collect_component_status),
+            "config_snapshot": self._safe_collect(self._collect_config_snapshot),
+            "phase2_summary": self._phase2_summary(),
+            "phase3_candidate_summary": self._phase3_candidate_summary(),
+            "virtual_position_summary": self._virtual_position_summary(),
+            "outcome_summary": self._outcome_summary(),
+        }
+
+    def log_final_summary(self) -> Dict[str, Any]:
+        summary = self.summary()
+        virtual_summary = summary.get("virtual_position_summary") or {}
+        outcome_summary = self._flatten_outcome_summary(summary.get("outcome_summary") or {})
+        final = {
+            "label": self.label,
+            "uptime_sec": summary.get("uptime_sec", 0.0),
+            "heartbeat_count": self.heartbeat_count,
+            "safety_check_passed": self.safety_check_passed,
+            "safety_issues_count": len(self.safety_issues),
+            "virtual_total_opened": virtual_summary.get("total_opened", 0),
+            "virtual_total_closed": virtual_summary.get("total_closed", 0),
+            "virtual_equity_usdt": virtual_summary.get("virtual_equity_usdt", 0.0),
+            "outcome_total_closed": outcome_summary.get("total_closed", 0),
+            "outcome_win_rate": outcome_summary.get("win_rate", 0.0),
+            "outcome_avg_realized_r": outcome_summary.get("avg_realized_r", 0.0),
+            "outcome_profit_factor_r": outcome_summary.get("profit_factor_r", 0.0),
+            "outcome_total_realized_pnl_u": outcome_summary.get("total_realized_pnl_u", 0.0),
+            "real_execution_enabled": bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False)),
+            "phase3_real_trading_enabled": bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False)),
+        }
+        logger.info("[V62-FINAL-SUMMARY] %s", self._format_kv(final))
+        return final
+
+    def _heartbeat_summary(self, now_ts: float) -> Dict[str, Any]:
+        phase2_summary = self._phase2_summary()
+        candidate_summary = self._phase3_candidate_summary()
+        virtual_summary = self._virtual_position_summary()
+        outcome_summary = self._flatten_outcome_summary(self._outcome_summary())
+
+        summary = {
+            "label": self.label,
+            "uptime_sec": max(0.0, now_ts - self.started_ts),
+            "heartbeat_count": self.heartbeat_count,
+            "safety_check_passed": self.safety_check_passed,
+            "phase2_active_zones": phase2_summary.get("active_zones_count", 0),
+            "phase2_confirmed_queue": phase2_summary.get("confirmed_events_queue_count", 0),
+            "phase2_total_registered_zones": phase2_summary.get("total_registered_zones", 0),
+            "phase2_total_confirmed_zones": phase2_summary.get("total_confirmed_zones", 0),
+            "phase2_total_failed_zones": phase2_summary.get("total_failed_zones", 0),
+            "phase2_total_timeout_zones": phase2_summary.get("total_timeout_zones", 0),
+            "phase3_total_candidates": candidate_summary.get("total_candidates", 0),
+            "phase3_accepted_candidates": candidate_summary.get("accepted_candidates", 0),
+            "phase3_wait_candidates": candidate_summary.get("wait_candidates", 0),
+            "phase3_rejected_candidates": candidate_summary.get("rejected_candidates", 0),
+            "virtual_active_position_exists": virtual_summary.get("active_position_exists", False),
+            "virtual_equity_usdt": virtual_summary.get("virtual_equity_usdt", 0.0),
+            "virtual_total_opened": virtual_summary.get("total_opened", 0),
+            "virtual_total_closed": virtual_summary.get("total_closed", 0),
+            "virtual_total_skipped": virtual_summary.get("total_skipped", 0),
+            "virtual_total_rejected": virtual_summary.get("total_rejected", 0),
+            "virtual_active_dynamic_stop": virtual_summary.get("active_dynamic_stop", 0.0),
+            "virtual_active_breakeven_activated": virtual_summary.get("active_breakeven_activated", False),
+            "virtual_active_trailing_activated": virtual_summary.get("active_trailing_activated", False),
+            "virtual_active_support_update_count": virtual_summary.get("active_support_update_count", 0),
+            "outcome_total_closed": outcome_summary.get("total_closed", 0),
+            "outcome_win_rate": outcome_summary.get("win_rate", 0.0),
+            "outcome_avg_realized_r": outcome_summary.get("avg_realized_r", 0.0),
+            "outcome_total_realized_pnl_u": outcome_summary.get("total_realized_pnl_u", 0.0),
+            "outcome_profit_factor_r": outcome_summary.get("profit_factor_r", 0.0),
+            "outcome_avg_mfe_r": outcome_summary.get("avg_mfe_r", 0.0),
+            "outcome_avg_mae_r": outcome_summary.get("avg_mae_r", 0.0),
+            "outcome_avg_mae_abs_r": outcome_summary.get("avg_mae_abs_r", 0.0),
+            "outcome_total_duplicate_skipped": outcome_summary.get("total_duplicate_skipped", 0),
+            "real_execution_enabled": bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False)),
+            "phase3_real_trading_enabled": bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False)),
+        }
+
+        if bool(getattr(cfg, "V62_HEARTBEAT_INCLUDE_GROUP_SUMMARY", True)):
+            summary.update(self._outcome_group_highlights(self._outcome_summary()))
+        return summary
+
+    def _collect_component_status(self) -> Dict[str, Any]:
+        engine = self.phase1_engine
+        return {
+            "label": self.label,
+            "phase2_orderflow_evaluator_active": getattr(engine, "phase2_orderflow_evaluator", None) is not None,
+            "phase3_candidate_evaluator_active": getattr(engine, "phase3_candidate_evaluator", None) is not None,
+            "virtual_position_manager_active": getattr(engine, "virtual_position_manager", None) is not None,
+            "phase3_outcome_evaluator_active": getattr(engine, "phase3_trade_outcome_evaluator", None) is not None,
+            "iceberg_zone_tracker_active": getattr(engine, "zone_tracker", None) is not None,
+            "iceberg_outcome_evaluator_active": getattr(engine, "outcome_evaluator", None) is not None,
+            "real_execution_enabled": bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False)),
+            "phase3_real_trading_enabled": bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False)),
+            "virtual_shadow_mode": bool(getattr(cfg, "VIRTUAL_SHADOW_MODE", False)),
+        }
+
+    def _collect_config_snapshot(self) -> Dict[str, Any]:
+        keys = (
+            "PHASE2_ORDERFLOW_EVALUATOR_ENABLED",
+            "PHASE3_CANDIDATE_EVALUATOR_ENABLED",
+            "PHASE3_OUTCOME_EVALUATOR_ENABLED",
+            "VIRTUAL_POSITION_MANAGER_ENABLED",
+            "REAL_EXECUTION_ENABLED",
+            "PHASE3_REAL_TRADING_ENABLED",
+            "VIRTUAL_SHADOW_MODE",
+            "PHASE2_ZONE_TTL_SECONDS",
+            "MAX_ACTIVE_PHASE2_ZONES",
+            "PHASE3_MAX_ACCOUNT_LOSS_PCT",
+            "PHASE3_LEVERAGE",
+            "PHASE3_MAX_MARGIN_USAGE_PCT",
+            "VIRTUAL_INITIAL_EQUITY_USDT",
+            "VIRTUAL_TAKE_PROFIT_R_MULTIPLE",
+            "VIRTUAL_BREAKEVEN_ENABLED",
+            "VIRTUAL_TRAILING_ENABLED",
+            "VIRTUAL_SUPPORT_UPDATE_ENABLED",
+            "PHASE3_OUTCOME_MAX_CLOSED_POSITIONS",
+            "PHASE3_OUTCOME_SUMMARY_LOG_INTERVAL_SEC",
+            "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC",
+            "V62_SHADOW_RUN_LABEL",
+        )
+        return {key: getattr(cfg, key, None) for key in keys}
+
+    def _phase2_summary(self) -> Dict[str, Any]:
+        evaluator = getattr(self.phase1_engine, "phase2_orderflow_evaluator", None)
+        if evaluator is None:
+            return {}
+        try:
+            active_zones = getattr(evaluator, "active_zones", None)
+            confirmed_events = getattr(evaluator, "confirmed_events", None)
+            return {
+                "active": True,
+                "active_zones_count": len(active_zones) if active_zones is not None else None,
+                "confirmed_events_queue_count": len(confirmed_events) if confirmed_events is not None else None,
+                "total_registered_zones": self._first_attr(evaluator, ("total_registered_zones", "total_registered"), 0),
+                "total_confirmed_zones": self._first_attr(evaluator, ("total_confirmed_zones", "total_confirmed"), 0),
+                "total_failed_zones": self._first_attr(evaluator, ("total_failed_zones", "total_failed"), 0),
+                "total_timeout_zones": self._first_attr(evaluator, ("total_timeout_zones", "total_timeout"), 0),
+            }
+        except Exception:
+            logger.exception("[V62-SUMMARY-FAILED] component=phase2")
+            return {}
+
+    def _phase3_candidate_summary(self) -> Dict[str, Any]:
+        evaluator = getattr(self.phase1_engine, "phase3_candidate_evaluator", None)
+        if evaluator is None:
+            return {}
+        try:
+            summary_fn = getattr(evaluator, "summary", None)
+            if callable(summary_fn):
+                summary = summary_fn()
+                return dict(summary) if isinstance(summary, dict) else {"active": True}
+            return {
+                "active": True,
+                "total_candidates": self._first_attr(evaluator, ("total_candidates",), 0),
+                "accepted_candidates": self._first_attr(evaluator, ("accepted_candidates",), 0),
+                "wait_candidates": self._first_attr(evaluator, ("wait_candidates",), 0),
+                "rejected_candidates": self._first_attr(evaluator, ("rejected_candidates",), 0),
+            }
+        except Exception:
+            logger.exception("[V62-SUMMARY-FAILED] component=phase3_candidate")
+            return {}
+
+    def _virtual_position_summary(self) -> Dict[str, Any]:
+        manager = getattr(self.phase1_engine, "virtual_position_manager", None)
+        if manager is None:
+            return {}
+        try:
+            summary_fn = getattr(manager, "summary", None)
+            if callable(summary_fn):
+                summary = summary_fn()
+                return dict(summary) if isinstance(summary, dict) else {"active": True}
+            return {"active": True}
+        except Exception:
+            logger.exception("[V62-SUMMARY-FAILED] component=virtual_position")
+            return {}
+
+    def _outcome_summary(self) -> Dict[str, Any]:
+        evaluator = getattr(self.phase1_engine, "phase3_trade_outcome_evaluator", None)
+        if evaluator is None:
+            return {}
+        try:
+            summary_fn = getattr(evaluator, "summary", None)
+            if callable(summary_fn):
+                summary = summary_fn()
+                return dict(summary) if isinstance(summary, dict) else {"active": True}
+            return {"active": True}
+        except Exception:
+            logger.exception("[V62-SUMMARY-FAILED] component=outcome")
+            return {}
+
+    def _flatten_outcome_summary(self, summary: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(summary, dict):
+            return {}
+        global_summary = summary.get("global")
+        if isinstance(global_summary, dict):
+            flattened = dict(global_summary)
+            flattened.setdefault("total_duplicate_skipped", summary.get("total_duplicate_skipped", 0))
+            return flattened
+        return dict(summary)
+
+    def _outcome_group_highlights(self, outcome_summary: Dict[str, Any]) -> Dict[str, Any]:
+        groups = outcome_summary.get("groups") if isinstance(outcome_summary, dict) else None
+        if not isinstance(groups, dict):
+            return {}
+        candidates = []
+        phase2_candidates = []
+        for key, group in groups.items():
+            if not isinstance(group, dict) or group.get("sample_size_too_small"):
+                continue
+            avg_r = self._safe_float(group.get("avg_realized_r"), 0.0)
+            candidates.append((str(key), avg_r))
+            if str(key).startswith("phase2_type="):
+                phase2_candidates.append((str(key), avg_r))
+        result: Dict[str, Any] = {}
+        if phase2_candidates:
+            result["outcome_best_phase2_type"] = max(phase2_candidates, key=lambda x: x[1])[0]
+            result["outcome_worst_phase2_type"] = min(phase2_candidates, key=lambda x: x[1])[0]
+        if candidates:
+            result["outcome_best_group_by_avg_r"] = max(candidates, key=lambda x: x[1])[0]
+            result["outcome_worst_group_by_avg_r"] = min(candidates, key=lambda x: x[1])[0]
+        return result
+
+    def _safe_collect(self, fn: Any) -> Dict[str, Any]:
+        try:
+            result = fn()
+            return result if isinstance(result, dict) else {}
+        except Exception:
+            logger.exception("[V62-SUMMARY-FAILED]")
+            return {}
+
+    @staticmethod
+    def _first_attr(obj: Any, names: Any, default: Any = None) -> Any:
+        for name in names:
+            if hasattr(obj, name):
+                return getattr(obj, name)
+        return default
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    @staticmethod
+    def _format_kv(data: Dict[str, Any]) -> str:
+        parts = []
+        for key, value in data.items():
+            if isinstance(value, float):
+                parts.append(f"{key}={value:.6f}")
+            else:
+                parts.append(f"{key}={value}")
+        return " ".join(parts)

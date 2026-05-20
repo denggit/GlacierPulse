@@ -158,3 +158,40 @@ PHASE2_MAX_TIME_ABOVE_MS = _float_config("PHASE2_MAX_TIME_ABOVE_MS", 180000.0)
 # Reserved for future non-transition summary logs.
 # Current [PHASE2-STATE] is transition-only and does not require throttling.
 PHASE2_STATE_LOG_MIN_INTERVAL_SEC = _float_config("PHASE2_STATE_LOG_MIN_INTERVAL_SEC", 1.0)
+
+V62_INTEGRATION_HEARTBEAT_ENABLED = _bool_config(
+    "V62_INTEGRATION_HEARTBEAT_ENABLED",
+    True,
+)
+V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC = _float_config(
+    "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC",
+    300.0,
+)
+V62_STARTUP_SAFETY_CHECK_ENABLED = _bool_config(
+    "V62_STARTUP_SAFETY_CHECK_ENABLED",
+    True,
+)
+V62_REQUIRE_RESEARCH_ONLY_MODE = _bool_config(
+    "V62_REQUIRE_RESEARCH_ONLY_MODE",
+    True,
+)
+V62_SHADOW_RUN_LABEL = _str_config(
+    "V62_SHADOW_RUN_LABEL",
+    "V6.2-research-shadow",
+)
+V62_ENABLE_FINAL_RUN_SUMMARY = _bool_config(
+    "V62_ENABLE_FINAL_RUN_SUMMARY",
+    True,
+)
+V62_LOG_COMPONENT_STATUS_ON_START = _bool_config(
+    "V62_LOG_COMPONENT_STATUS_ON_START",
+    True,
+)
+V62_LOG_CONFIG_SNAPSHOT_ON_START = _bool_config(
+    "V62_LOG_CONFIG_SNAPSHOT_ON_START",
+    True,
+)
+V62_HEARTBEAT_INCLUDE_GROUP_SUMMARY = _bool_config(
+    "V62_HEARTBEAT_INCLUDE_GROUP_SUMMARY",
+    True,
+)
