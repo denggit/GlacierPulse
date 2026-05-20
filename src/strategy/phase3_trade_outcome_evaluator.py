@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""V6.2.8 Phase3 research-only virtual position outcome evaluator."""
+"""V6.2 Phase3 research-only virtual position outcome evaluator."""
 
 import logging
 import time
@@ -28,7 +28,6 @@ class Phase3OutcomeEvaluator:
         "zone_id",
         "direction",
         "phase2_type",
-        "candidate_type",
         "close_reason",
         "realized_pnl_u",
         "realized_r_multiple",

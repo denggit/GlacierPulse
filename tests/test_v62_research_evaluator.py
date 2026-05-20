@@ -1551,6 +1551,42 @@ def test_phase3_outcome_non_canonical_candidate_type_warns(caplog):
     )
 
 
+def test_phase3_outcome_missing_candidate_type_inferred_from_phase2_type():
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(
+        position_id="missing-candidate-type",
+        phase2_type="SWEEP_RECLAIM",
+    )
+    del closed["candidate_type"]
+
+    outcome = evaluator.on_virtual_position_closed(closed)
+
+    assert outcome is not None
+    assert outcome["candidate_type"] == "SWEEP_RECLAIM_RETEST_ENTRY"
+    assert evaluator.total_closed == 1
+    assert "candidate_type=SWEEP_RECLAIM_RETEST_ENTRY" in evaluator.summary()["groups"]
+
+
+def test_phase3_outcome_missing_candidate_type_unknown_phase2_warns(caplog):
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(
+        position_id="missing-candidate-type-unknown",
+        phase2_type="UNKNOWN_PHASE2",
+    )
+    del closed["candidate_type"]
+
+    with caplog.at_level(logging.WARNING):
+        outcome = evaluator.on_virtual_position_closed(closed)
+
+    assert outcome is not None
+    assert outcome["candidate_type"] == research_config.PHASE3_OUTCOME_UNKNOWN_CANDIDATE_TYPE
+    assert any(
+        "[PHASE3-OUTCOME-WARN]" in r.message
+        and "reason=non_canonical_candidate_type" in r.message
+        for r in caplog.records
+    )
+
+
 def test_phase3_outcome_avg_mae_abs_r_global_and_group():
     evaluator = Phase3OutcomeEvaluator()
     evaluator.on_virtual_position_closed(
@@ -1662,6 +1698,44 @@ def test_virtual_stop_loss_uses_old_dynamic_stop_before_updates(monkeypatch):
     assert closed["trailing_activated"] is False
 
 
+def test_virtual_long_stop_tick_updates_mae_before_close(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(2997.0, ts=1.0)
+
+    closed = m.get_closed_positions()[-1]
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert abs(closed["realized_r_multiple"] - (-1.5)) < 1e-9
+    assert abs(closed["max_adverse_r"] - (-1.5)) < 1e-9
+    assert closed["max_adverse_u"] < 0
+    assert closed["exit_stop_used"] == 2998.0
+    assert closed["breakeven_activated"] is False
+    assert closed["trailing_activated"] is False
+    assert closed["stop_update_count"] == 0
+
+
+def test_virtual_short_stop_tick_updates_mae_before_close(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0))
+    m.on_price(3003.0, ts=1.0)
+
+    closed = m.get_closed_positions()[-1]
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert abs(closed["realized_r_multiple"] - (-1.5)) < 1e-9
+    assert abs(closed["max_adverse_r"] - (-1.5)) < 1e-9
+    assert closed["max_adverse_u"] < 0
+    assert closed["exit_stop_used"] == 3002.0
+    assert closed["breakeven_activated"] is False
+    assert closed["trailing_activated"] is False
+    assert closed["stop_update_count"] == 0
+
+
 def test_virtual_long_jump_through_stop_does_not_update_trailing_on_stop_tick(monkeypatch):
     monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
     monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
@@ -1683,6 +1757,31 @@ def test_virtual_long_jump_through_stop_does_not_update_trailing_on_stop_tick(mo
     assert closed["last_stop_update_reason"] == "TRAILING"
 
 
+def test_virtual_long_jump_through_trailing_stop_updates_close_tick_r(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_TRIGGER_R", 1.5)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_DISTANCE_R", 0.8)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3004.0, ts=1.0)
+    old_dynamic_stop = m.get_active_position()["dynamic_stop"]
+    old_stop_update_count = m.get_active_position()["stop_update_count"]
+    close_price = old_dynamic_stop - 2.0
+    m.on_price(close_price, ts=2.0)
+
+    closed = m.get_closed_positions()[-1]
+    expected_r = (close_price - 3000.0) / 2.0
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert closed["exit_stop_used"] == old_dynamic_stop
+    assert closed["stop_update_count"] == old_stop_update_count
+    assert closed["last_stop_update_reason"] == "TRAILING"
+    assert abs(closed["realized_r_multiple"] - expected_r) < 1e-9
+    assert closed["max_adverse_r"] <= closed["realized_r_multiple"]
+
+
 def test_virtual_short_jump_through_stop_uses_old_dynamic_stop(monkeypatch):
     monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
     monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
@@ -1702,6 +1801,31 @@ def test_virtual_short_jump_through_stop_uses_old_dynamic_stop(monkeypatch):
     assert closed["exit_stop_used"] == stop_before_jump
     assert closed["stop_update_count"] == updates_before_jump
     assert closed["last_stop_update_reason"] == "TRAILING"
+
+
+def test_virtual_short_jump_through_trailing_stop_updates_close_tick_r(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_TRIGGER_R", 1.5)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_DISTANCE_R", 0.8)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0))
+    m.on_price(2996.0, ts=1.0)
+    old_dynamic_stop = m.get_active_position()["dynamic_stop"]
+    old_stop_update_count = m.get_active_position()["stop_update_count"]
+    close_price = old_dynamic_stop + 2.0
+    m.on_price(close_price, ts=2.0)
+
+    closed = m.get_closed_positions()[-1]
+    expected_r = (3000.0 - close_price) / 2.0
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert closed["exit_stop_used"] == old_dynamic_stop
+    assert closed["stop_update_count"] == old_stop_update_count
+    assert closed["last_stop_update_reason"] == "TRAILING"
+    assert abs(closed["realized_r_multiple"] - expected_r) < 1e-9
+    assert closed["max_adverse_r"] <= closed["realized_r_multiple"]
 
 
 def test_phase1_virtual_integration_and_execution_modes(monkeypatch):

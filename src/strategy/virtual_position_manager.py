@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""V6.2.6 research-only virtual position manager."""
+"""V6.2 research-only virtual position manager with conservative stop handling."""
 
 import logging
 import time
@@ -179,6 +179,7 @@ class VirtualPositionManager:
         now_ts = self._as_float(ts, time.time())
         old_dynamic_stop = pos.dynamic_stop
         pos.current_price = float(price)
+        self._update_unrealized_stats(pos)
 
         if pos.direction == "LONG" and pos.current_price <= old_dynamic_stop:
             return self._close_position(pos.current_price, now_ts, "STOP_LOSS", exit_stop_used_override=old_dynamic_stop)
@@ -187,17 +188,8 @@ class VirtualPositionManager:
 
         if pos.direction == "LONG":
             pos.best_price = max(pos.best_price, pos.current_price)
-            pos.unrealized_pnl_u = pos.virtual_size_eth * (pos.current_price - pos.open_price)
-            pos.unrealized_r_multiple = (pos.current_price - pos.open_price) / pos.risk_distance_u
         else:
             pos.best_price = min(pos.best_price, pos.current_price)
-            pos.unrealized_pnl_u = pos.virtual_size_eth * (pos.open_price - pos.current_price)
-            pos.unrealized_r_multiple = (pos.open_price - pos.current_price) / pos.risk_distance_u
-        pos.unrealized_pnl_pct_on_equity = pos.unrealized_pnl_u / pos.virtual_equity_at_open if pos.virtual_equity_at_open else 0.0
-        pos.max_favorable_u = max(pos.max_favorable_u, pos.unrealized_pnl_u)
-        pos.max_adverse_u = min(pos.max_adverse_u, pos.unrealized_pnl_u)
-        pos.max_favorable_r = max(pos.max_favorable_r, pos.unrealized_r_multiple)
-        pos.max_adverse_r = min(pos.max_adverse_r, pos.unrealized_r_multiple)
 
         self._maybe_apply_breakeven(pos, now_ts)
         self._maybe_apply_trailing(pos, now_ts)
@@ -214,6 +206,27 @@ class VirtualPositionManager:
             self.last_update_log_ts = now_ts
             logger.info("[VIRTUAL-POSITION-UPDATE] position_id=%s zone_id=%s direction=%s ts=%.3f current_price=%.6f open_price=%.6f suggested_stop=%.6f initial_stop=%.6f dynamic_stop=%.6f best_price=%.6f breakeven_activated=%s trailing_activated=%s stop_update_count=%d support_update_count=%d take_profit_price=%.6f unrealized_pnl_u=%.6f unrealized_pnl_pct_on_equity=%.6f unrealized_r_multiple=%.6f max_favorable_u=%.6f max_adverse_u=%.6f max_favorable_r=%.6f max_adverse_r=%.6f virtual_equity_usdt=%.6f", pos.position_id, pos.zone_id, pos.direction, now_ts, pos.current_price, pos.open_price, pos.suggested_stop, pos.initial_stop, pos.dynamic_stop, pos.best_price, pos.breakeven_activated, pos.trailing_activated, pos.stop_update_count, pos.support_update_count, pos.take_profit_price, pos.unrealized_pnl_u, pos.unrealized_pnl_pct_on_equity, pos.unrealized_r_multiple, pos.max_favorable_u, pos.max_adverse_u, pos.max_favorable_r, pos.max_adverse_r, self.virtual_equity_usdt)
         return asdict(pos)
+
+    def _update_unrealized_stats(self, pos: VirtualPosition) -> None:
+        if pos.direction == "LONG":
+            pos.unrealized_pnl_u = pos.virtual_size_eth * (pos.current_price - pos.open_price)
+            pos.unrealized_r_multiple = (
+                (pos.current_price - pos.open_price) / pos.risk_distance_u
+                if pos.risk_distance_u
+                else 0.0
+            )
+        else:
+            pos.unrealized_pnl_u = pos.virtual_size_eth * (pos.open_price - pos.current_price)
+            pos.unrealized_r_multiple = (
+                (pos.open_price - pos.current_price) / pos.risk_distance_u
+                if pos.risk_distance_u
+                else 0.0
+            )
+        pos.unrealized_pnl_pct_on_equity = pos.unrealized_pnl_u / pos.virtual_equity_at_open if pos.virtual_equity_at_open else 0.0
+        pos.max_favorable_u = max(pos.max_favorable_u, pos.unrealized_pnl_u)
+        pos.max_adverse_u = min(pos.max_adverse_u, pos.unrealized_pnl_u)
+        pos.max_favorable_r = max(pos.max_favorable_r, pos.unrealized_r_multiple)
+        pos.max_adverse_r = min(pos.max_adverse_r, pos.unrealized_r_multiple)
 
     def _maybe_apply_breakeven(self, pos: VirtualPosition, now_ts: float) -> bool:
         if not bool(cfg.VIRTUAL_BREAKEVEN_ENABLED):
