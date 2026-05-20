@@ -72,6 +72,14 @@ class VirtualPositionManager:
         self.total_opened = 0
         self.total_closed = 0
         self.total_rejected = 0
+        self.total_skipped = 0
+        self.cumulative_realized_pnl_u = 0.0
+        self.cumulative_win_count = 0
+        self.cumulative_loss_count = 0
+        self.cumulative_realized_r_sum = 0.0
+        self.cumulative_realized_r_count = 0
+        self.cumulative_max_win_r = 0.0
+        self.cumulative_max_loss_r = 0.0
         self.last_update_log_ts = 0.0
 
     def on_candidate(self, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -80,6 +88,7 @@ class VirtualPositionManager:
         if candidate.get("decision") != "ACCEPT_RESEARCH_CANDIDATE":
             return None
         if self.active_position is not None:
+            self.total_skipped += 1
             logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=active_position_exists active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), self.active_position.position_id)
             return None
 
@@ -92,9 +101,11 @@ class VirtualPositionManager:
         leverage = self._as_float(candidate.get("leverage"), 1.0)
         if not direction or open_price <= 0 or suggested_stop <= 0 or risk_distance_u <= 0 or final_margin_usage_pct <= 0:
             self.total_rejected += 1
+            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=invalid_candidate_fields active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), None)
             return None
         if (direction == "LONG" and open_price <= suggested_stop) or (direction == "SHORT" and open_price >= suggested_stop):
             self.total_rejected += 1
+            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=invalid_stop_direction active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), None)
             return None
 
         virtual_margin_usdt = self.virtual_equity_usdt * final_margin_usage_pct
@@ -102,11 +113,13 @@ class VirtualPositionManager:
         virtual_size_eth = virtual_notional_usdt / open_price
         take_profit_price = open_price + risk_distance_u * cfg.VIRTUAL_TAKE_PROFIT_R_MULTIPLE if direction == "LONG" else open_price - risk_distance_u * cfg.VIRTUAL_TAKE_PROFIT_R_MULTIPLE
 
+        candidate_ts = self._as_float(candidate.get("candidate_ts", candidate.get("ts")), time.time())
+
         self.total_opened += 1
         position = VirtualPosition(
             position_id=f"vp-{self.total_opened}", zone_id=str(candidate.get("zone_id", "")), direction=direction,
             phase2_type=str(candidate.get("phase2_type", "")), candidate_type=str(candidate.get("candidate_type", "")), status="OPEN",
-            open_ts=self._as_float(candidate.get("ts"), time.time()), open_price=open_price, current_price=open_price,
+            open_ts=candidate_ts, open_price=open_price, current_price=open_price,
             suggested_stop=suggested_stop, take_profit_price=take_profit_price, risk_distance_u=risk_distance_u,
             risk_distance_pct=self._as_float(candidate.get("risk_distance_pct", candidate.get("risk_to_stop_pct"))),
             total_loss_pct=self._as_float(candidate.get("total_loss_pct")), leverage=leverage,
@@ -181,6 +194,15 @@ class VirtualPositionManager:
         self.closed_positions.append(snapshot)
         self.active_position = None
         self.total_closed += 1
+        self.cumulative_realized_pnl_u += pos.realized_pnl_u
+        if pos.realized_pnl_u > 0:
+            self.cumulative_win_count += 1
+        elif pos.realized_pnl_u < 0:
+            self.cumulative_loss_count += 1
+        self.cumulative_realized_r_sum += pos.realized_r_multiple
+        self.cumulative_realized_r_count += 1
+        self.cumulative_max_win_r = max(self.cumulative_max_win_r, pos.realized_r_multiple)
+        self.cumulative_max_loss_r = min(self.cumulative_max_loss_r, pos.realized_r_multiple)
         logger.info("[VIRTUAL-POSITION-CLOSE] position_id=%s zone_id=%s direction=%s phase2_type=%s candidate_type=%s open_ts=%.3f close_ts=%.3f open_price=%.6f close_price=%.6f close_reason=%s suggested_stop=%.6f take_profit_price=%.6f realized_pnl_u=%.6f realized_pnl_pct_on_equity=%.6f realized_r_multiple=%.6f max_favorable_u=%.6f max_adverse_u=%.6f max_favorable_r=%.6f max_adverse_r=%.6f virtual_equity_before=%.6f virtual_equity_after=%.6f virtual_margin_usdt=%.6f virtual_notional_usdt=%.6f virtual_size_eth=%.12f", pos.position_id, pos.zone_id, pos.direction, pos.phase2_type, pos.candidate_type, pos.open_ts, pos.close_ts, pos.open_price, pos.close_price, pos.close_reason, pos.suggested_stop, pos.take_profit_price, pos.realized_pnl_u, pos.realized_pnl_pct_on_equity, pos.realized_r_multiple, pos.max_favorable_u, pos.max_adverse_u, pos.max_favorable_r, pos.max_adverse_r, before, self.virtual_equity_usdt, pos.virtual_margin_usdt, pos.virtual_notional_usdt, pos.virtual_size_eth)
         return snapshot
 
@@ -192,24 +214,27 @@ class VirtualPositionManager:
 
     def summary(self) -> Dict[str, Any]:
         closed = list(self.closed_positions)
-        realized = [float(x.get("realized_pnl_u", 0.0)) for x in closed]
-        rs = [float(x.get("realized_r_multiple", 0.0)) for x in closed]
-        win = sum(1 for x in realized if x > 0)
-        loss = sum(1 for x in realized if x < 0)
+        closed_total = self.cumulative_win_count + self.cumulative_loss_count
+        avg_realized_r = (self.cumulative_realized_r_sum / self.cumulative_realized_r_count) if self.cumulative_realized_r_count > 0 else 0.0
+        max_win_r = self.cumulative_max_win_r if self.total_closed > 0 else 0.0
+        max_loss_r = self.cumulative_max_loss_r if self.total_closed > 0 else 0.0
         return {
             "virtual_equity_usdt": self.virtual_equity_usdt,
             "total_opened": self.total_opened,
             "total_closed": self.total_closed,
             "total_rejected": self.total_rejected,
+            "total_skipped": self.total_skipped,
             "active_position_exists": self.active_position is not None,
             "closed_positions_count": len(closed),
-            "total_realized_pnl_u": sum(realized),
-            "win_count": win,
-            "loss_count": loss,
-            "win_rate": (win / len(closed)) if closed else 0.0,
-            "avg_realized_r": (sum(rs) / len(rs)) if rs else 0.0,
-            "max_win_r": max(rs) if rs else 0.0,
-            "max_loss_r": min(rs) if rs else 0.0,
+            "closed_positions_maxlen": self.closed_positions.maxlen,
+            "cumulative_realized_pnl_u": self.cumulative_realized_pnl_u,
+            "total_realized_pnl_u": self.cumulative_realized_pnl_u,
+            "win_count": self.cumulative_win_count,
+            "loss_count": self.cumulative_loss_count,
+            "win_rate": (self.cumulative_win_count / closed_total) if closed_total > 0 else 0.0,
+            "avg_realized_r": avg_realized_r,
+            "max_win_r": max_win_r,
+            "max_loss_r": max_loss_r,
         }
 
     @staticmethod

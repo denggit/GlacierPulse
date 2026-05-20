@@ -957,6 +957,64 @@ def test_virtual_accept_opens_wait_reject_block_and_single_position(caplog):
     assert VirtualPositionManager().on_candidate(_candidate(decision="REJECT_TOO_FAR_FROM_STOP")) is None
 
 
+
+
+def test_virtual_open_ts_prefers_candidate_ts_and_fallback_to_ts():
+    m1 = VirtualPositionManager()
+    c1 = _candidate()
+    c1["candidate_ts"] = 12345.6
+    c1["ts"] = 99999.0
+    m1.on_candidate(c1)
+    assert m1.get_active_position()["open_ts"] == 12345.6
+
+    m2 = VirtualPositionManager()
+    c2 = _candidate()
+    c2["ts"] = 888.0
+    m2.on_candidate(c2)
+    assert m2.get_active_position()["open_ts"] == 888.0
+
+
+def test_virtual_skip_and_reject_counters_and_logs(caplog):
+    m = VirtualPositionManager()
+    with caplog.at_level(logging.INFO):
+        assert m.on_candidate(_candidate(zone_id="z1"))
+        assert m.on_candidate(_candidate(zone_id="z2")) is None
+    assert m.total_skipped == 1
+    assert m.total_rejected == 0
+    assert any("[VIRTUAL-POSITION-SKIP]" in r.message and "reason=active_position_exists" in r.message for r in caplog.records)
+
+    m2 = VirtualPositionManager()
+    assert m2.on_candidate(_candidate(direction="BUY", price=3000.0, stop=3001.0)) is None
+    assert m2.total_rejected == 1
+    assert m2.total_skipped == 0
+
+    m3 = VirtualPositionManager()
+    assert m3.on_candidate(_candidate(decision="WAIT_RECLAIM_OR_MORE_FLOW")) is None
+    assert m3.total_rejected == 0
+    assert m3.total_skipped == 0
+
+
+def test_virtual_summary_uses_cumulative_stats_not_closed_window():
+    m = VirtualPositionManager()
+    m.closed_positions = __import__('collections').deque(maxlen=2)
+
+    m.on_candidate(_candidate(zone_id="a")); m.on_price(2998.5, ts=1)
+    m.on_candidate(_candidate(zone_id="b")); tp = m.get_active_position()["take_profit_price"]; m.on_price(tp, ts=2)
+    m.on_candidate(_candidate(zone_id="c")); tp2 = m.get_active_position()["take_profit_price"]; m.on_price(tp2, ts=3)
+
+    summary = m.summary()
+    assert len(m.get_closed_positions()) == 2
+    assert summary["closed_positions_count"] == 2
+    assert summary["closed_positions_maxlen"] == 2
+    assert summary["total_closed"] == 3
+    assert summary["cumulative_realized_pnl_u"] == summary["total_realized_pnl_u"]
+
+    assert summary["win_count"] + summary["loss_count"] == 3
+    assert summary["win_count"] == 2
+    assert summary["loss_count"] == 1
+    expected_avg_r = (-1.0 + research_config.VIRTUAL_TAKE_PROFIT_R_MULTIPLE + research_config.VIRTUAL_TAKE_PROFIT_R_MULTIPLE) / 3.0
+    assert abs(summary["avg_realized_r"] - expected_avg_r) < 1e-9
+
 def test_virtual_long_short_stop_and_take_profit_and_maxlen():
     m = VirtualPositionManager()
     m.closed_positions = __import__('collections').deque(maxlen=2)
