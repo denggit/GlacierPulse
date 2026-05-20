@@ -4,11 +4,14 @@
 import importlib
 import logging
 import sys
+from collections import deque
+from types import SimpleNamespace
 
 import pytest
 
 from config import research_evaluator as research_config
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
+from src.strategy.phase1_zone_engine import Phase1Engine
 from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
 from src.strategy.virtual_position_manager import VirtualPositionManager
 from src.utils.log_noise import suppressed_log_counter
@@ -74,6 +77,75 @@ def _candidate(zone_id="z-log-control"):
     }
 
 
+def _phase1_engine_for_quality_signal():
+    class _Detector:
+        def detect_buy_iceberg(self, active_notional, book_reduction):
+            return {
+                "is_iceberg": True,
+                "hidden_volume": 2_500_000.0,
+                "absorption_rate": 0.9,
+                "active_volume": 2_500_000.0,
+                "confidence": 0.9,
+                "behavior": "ICEBERG_ABSORPTION",
+            }
+
+        def detect_sell_iceberg(self, active_notional, book_reduction):
+            return self.detect_buy_iceberg(active_notional, book_reduction)
+
+    class _ZoneTracker:
+        def expire_old_zones(self, now_ts):
+            return []
+
+        def update(self, event, current_price=0.0):
+            return None
+
+        def drain_finalized_zones(self):
+            return []
+
+    engine = Phase1Engine.__new__(Phase1Engine)
+    engine.ctx = SimpleNamespace(
+        current_price=3000.0,
+        bids={2999.0: 100.0, 3000.0: 100.0},
+        asks={3000.0: 100.0, 3001.0: 100.0},
+    )
+    engine.iceberg_radar = _Detector()
+    engine.pending_events = deque(
+        [
+            {
+                "event_id": "pie-quality",
+                "direction": "BUY",
+                "trigger_price": 3000.0,
+                "trigger_ts": 0.1,
+                "trigger_recv_ts": 0.1,
+                "active_notional": 2_500_000.0,
+                "active_size": 833.0,
+                "side": "sell",
+                "zone_lower": 2999.0,
+                "zone_upper": 3000.0,
+                "start_thickness_usdt": 600_000.0,
+                "book_updates_after_cutoff": 1,
+                "trade_count": 3,
+                "min_trade_price": 2999.5,
+                "max_trade_price": 3000.0,
+                "last_trade_ts": 0.1,
+                "last_trade_recv_ts": 0.1,
+                "status": "WAITING_BOOK",
+            }
+        ]
+    )
+    engine.max_wait_ms = 1000
+    engine.max_price_deviation = 2.0
+    engine.min_book_updates_after_cutoff = 2
+    engine.zone_tracker = _ZoneTracker()
+    engine.outcome_evaluator = SimpleNamespace(finalize_zone=lambda *args, **kwargs: None)
+    engine.phase2_orderflow_evaluator = None
+    engine.phase3_candidate_evaluator = None
+    engine.phase3_trade_outcome_evaluator = None
+    engine.virtual_position_manager = None
+    engine.research_runtime_monitor = None
+    return engine
+
+
 def test_research_log_profile_defaults_detailed(monkeypatch):
     cfg = _reload_config_with_profile(monkeypatch, "RESEARCH_DETAILED")
 
@@ -100,6 +172,17 @@ def test_research_log_profile_key_events(monkeypatch):
     assert cfg.V62_LOG_PHASE3_OUTCOME_ENABLED is True
 
 
+def test_research_log_profile_key_events_extended(monkeypatch):
+    cfg = _reload_config_with_profile(monkeypatch, "RESEARCH_KEY_EVENTS")
+
+    assert cfg.V62_LOG_SETTLED_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_PHASE1_QUALITY_ENABLED is True
+    assert cfg.V62_LOG_CANCEL_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_A1_ZONE_STRESSED_ENABLED is False
+    assert cfg.V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED is True
+    assert cfg.V62_LOG_PENDING_DROP_ENABLED is True
+
+
 def test_research_log_profile_production_safe(monkeypatch):
     cfg = _reload_config_with_profile(monkeypatch, "PRODUCTION_SAFE")
 
@@ -113,6 +196,17 @@ def test_research_log_profile_production_safe(monkeypatch):
     assert cfg.V62_LOG_PHASE3_CANDIDATE_ENABLED is True
     assert cfg.V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED is False
     assert cfg.V62_LOG_PHASE3_OUTCOME_ENABLED is True
+
+
+def test_research_log_profile_production_safe_extended(monkeypatch):
+    cfg = _reload_config_with_profile(monkeypatch, "PRODUCTION_SAFE")
+
+    assert cfg.V62_LOG_SETTLED_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_PHASE1_QUALITY_ENABLED is False
+    assert cfg.V62_LOG_CANCEL_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_A1_ZONE_STRESSED_ENABLED is False
+    assert cfg.V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED is True
+    assert cfg.V62_LOG_PENDING_DROP_ENABLED is True
 
 
 def test_log_to_console_false_does_not_add_stream_handler(monkeypatch, tmp_path):
@@ -217,3 +311,59 @@ def test_heartbeat_includes_suppressed_log_counts(monkeypatch):
     assert summary["suppressed_spoofing_withdrawal_count"] == 0
     assert summary["suppressed_zone_new_count"] == 1
     assert summary["suppressed_virtual_update_count"] == 0
+
+
+def test_suppressed_log_summary_extended_keys(monkeypatch):
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    suppressed_log_counter.snapshot_and_reset()
+    suppressed_log_counter.inc("suppressed_settled_iceberg_count", 2)
+    suppressed_log_counter.inc("suppressed_phase1_quality_count", 3)
+    suppressed_log_counter.inc("suppressed_cancel_iceberg_count", 4)
+    suppressed_log_counter.inc("suppressed_zone_stressed_count", 5)
+    suppressed_log_counter.inc("suppressed_virtual_skip_count", 6)
+    suppressed_log_counter.inc("suppressed_pending_drop_count", 7)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        phase3_trade_outcome_evaluator = None
+        virtual_position_manager = None
+        zone_tracker = None
+        outcome_evaluator = None
+
+    summary = ResearchRuntimeMonitor(_Engine(), label="test-suppressed-extended").maybe_log_heartbeat(2000.0)
+
+    assert summary["suppressed_settled_iceberg_count"] == 2
+    assert summary["suppressed_phase1_quality_count"] == 3
+    assert summary["suppressed_cancel_iceberg_count"] == 4
+    assert summary["suppressed_zone_stressed_count"] == 5
+    assert summary["suppressed_virtual_skip_count"] == 6
+    assert summary["suppressed_pending_drop_count"] == 7
+
+
+def test_virtual_skip_logging_can_be_suppressed_without_changing_counts(monkeypatch):
+    monkeypatch.setattr(research_config, "V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED", False)
+    suppressed_log_counter.snapshot_and_reset()
+
+    manager = VirtualPositionManager()
+    assert manager.on_candidate(_candidate("vp-skip-open"))
+    assert manager.on_candidate({**_candidate("vp-skip-opposite"), "direction": "SELL"}) is None
+
+    assert manager.total_skipped == 1
+    assert manager.get_active_position() is not None
+    snapshot = suppressed_log_counter.snapshot_and_reset()
+    assert snapshot["suppressed_virtual_skip_count"] == 1
+
+
+def test_phase1_quality_logging_switch_does_not_change_signal(monkeypatch):
+    monkeypatch.setattr(research_config, "V62_LOG_PHASE1_QUALITY_ENABLED", True)
+    detailed = _phase1_engine_for_quality_signal().on_book_update({"ts": 0.3, "recv_ts": 0.3})
+
+    monkeypatch.setattr(research_config, "V62_LOG_PHASE1_QUALITY_ENABLED", False)
+    suppressed_log_counter.snapshot_and_reset()
+    suppressed = _phase1_engine_for_quality_signal().on_book_update({"ts": 0.3, "recv_ts": 0.3})
+
+    for key in ("event_type", "direction", "phase1_quality", "hidden_volume", "absorption_rate", "min_price"):
+        assert suppressed[key] == detailed[key]
+    snapshot = suppressed_log_counter.snapshot_and_reset()
+    assert snapshot["suppressed_phase1_quality_count"] == 1

@@ -372,16 +372,19 @@ class IcebergZoneTracker:
             zone["reload_count"] = int(zone.get("reload_count", 0)) + 1
         if new_state == "STRESSED" and old_state != "STRESSED":
             zone["stress_count"] = int(zone.get("stress_count", 0)) + 1
-            logger.info(
-                "[ICEBERG-ZONE-STRESSED] id=%s direction=%s result=%s event=%s reason=negative_pressure pos=%.2f neg=%.2f net=%.2f",
-                zone.get("zone_id"),
-                direction,
-                result,
-                event.get("event_id"),
-                positive_score,
-                negative_score,
-                float(zone.get("net_score", 0.0)),
-            )
+            if bool(getattr(cfg, "V62_LOG_A1_ZONE_STRESSED_ENABLED", True)):
+                logger.info(
+                    "[ICEBERG-ZONE-STRESSED] id=%s direction=%s result=%s event=%s reason=negative_pressure pos=%.2f neg=%.2f net=%.2f",
+                    zone.get("zone_id"),
+                    direction,
+                    result,
+                    event.get("event_id"),
+                    positive_score,
+                    negative_score,
+                    float(zone.get("net_score", 0.0)),
+                )
+            else:
+                suppressed_log_counter.inc("suppressed_zone_stressed_count")
 
         zone["state"] = new_state
 

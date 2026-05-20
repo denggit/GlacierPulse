@@ -86,6 +86,22 @@ V62_LOG_SPOOFING_WITHDRAWAL_ENABLED = _bool_config(
     "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED",
     _log_default_for_profile(True, False, False),
 )
+V62_LOG_SETTLED_ICEBERG_ENABLED = _bool_config(
+    "V62_LOG_SETTLED_ICEBERG_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_PHASE1_QUALITY_ENABLED = _bool_config(
+    "V62_LOG_PHASE1_QUALITY_ENABLED",
+    _log_default_for_profile(True, True, False),
+)
+V62_LOG_CANCEL_ICEBERG_ENABLED = _bool_config(
+    "V62_LOG_CANCEL_ICEBERG_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_PENDING_DROP_ENABLED = _bool_config(
+    "V62_LOG_PENDING_DROP_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
 V62_LOG_A1_ICEBERG_EVENT_ENABLED = _bool_config(
     "V62_LOG_A1_ICEBERG_EVENT_ENABLED",
     _log_default_for_profile(True, True, False),
@@ -104,6 +120,10 @@ V62_LOG_A1_ZONE_BROKEN_ENABLED = _bool_config(
 )
 V62_LOG_A1_ZONE_EXPIRED_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_EXPIRED_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_A1_ZONE_STRESSED_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_STRESSED_ENABLED",
     _log_default_for_profile(True, False, False),
 )
 V62_LOG_A1_ZONE_FROZEN_ENABLED = _bool_config(
@@ -140,6 +160,10 @@ V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED = _bool_config(
 )
 V62_LOG_VIRTUAL_POSITION_CLOSE_ENABLED = _bool_config(
     "V62_LOG_VIRTUAL_POSITION_CLOSE_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED = _bool_config(
+    "V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED",
     _log_default_for_profile(True, True, True),
 )
 V62_LOG_VIRTUAL_SUPPORT_UPDATE_ENABLED = _bool_config(

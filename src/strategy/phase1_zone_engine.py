@@ -246,10 +246,13 @@ class Phase1Engine:
     def _append_pending_event(self, event: Dict[str, Any]):
         if len(self.pending_events) >= self.max_pending_events:
             dropped = self.pending_events.popleft()
-            logger.warning(
-                "[PENDING-DROP] reason=max_pending_events dropped_event_id=%s",
-                dropped.get('event_id', 'unknown'),
-            )
+            if bool(getattr(cfg, "V62_LOG_PENDING_DROP_ENABLED", True)):
+                logger.warning(
+                    "[PENDING-DROP] reason=max_pending_events dropped_event_id=%s",
+                    dropped.get('event_id', 'unknown'),
+                )
+            else:
+                suppressed_log_counter.inc("suppressed_pending_drop_count")
         self.pending_events.append(event)
 
     def on_book_update(self, book_data: Dict[str, Any]) -> Optional[Dict]:
@@ -286,11 +289,14 @@ class Phase1Engine:
 
             wait_ms = (book_recv_ts - float(event.get("trigger_recv_ts", book_recv_ts))) * 1000.0
             if wait_ms > self.max_wait_ms:
-                logger.info(
-                    "[CANCEL-ICEBERG] id=%s reason=TIMEOUT wait=%.1fms",
-                    event.get("event_id"),
-                    wait_ms,
-                )
+                if bool(getattr(cfg, "V62_LOG_CANCEL_ICEBERG_ENABLED", True)):
+                    logger.info(
+                        "[CANCEL-ICEBERG] id=%s reason=TIMEOUT wait=%.1fms",
+                        event.get("event_id"),
+                        wait_ms,
+                    )
+                else:
+                    suppressed_log_counter.inc("suppressed_cancel_iceberg_count")
                 self._update_iceberg_zone(
                     event=event,
                     result="CANCEL",
@@ -306,12 +312,15 @@ class Phase1Engine:
             trigger_price = float(event.get("trigger_price", 0.0))
             if direction == "BUY":
                 if current_price > 0 and current_price < trigger_price - self.max_price_deviation:
-                    logger.info(
-                        "[CANCEL-ICEBERG] id=%s reason=PRICE_BROKE_DOWN current=%.2f trigger=%.2f",
-                        event.get("event_id"),
-                        current_price,
-                        trigger_price,
-                    )
+                    if bool(getattr(cfg, "V62_LOG_CANCEL_ICEBERG_ENABLED", True)):
+                        logger.info(
+                            "[CANCEL-ICEBERG] id=%s reason=PRICE_BROKE_DOWN current=%.2f trigger=%.2f",
+                            event.get("event_id"),
+                            current_price,
+                            trigger_price,
+                        )
+                    else:
+                        suppressed_log_counter.inc("suppressed_cancel_iceberg_count")
                     self._update_iceberg_zone(
                         event=event,
                         result="CANCEL",
@@ -324,12 +333,15 @@ class Phase1Engine:
                     continue
             elif direction == "SELL":
                 if current_price > trigger_price + self.max_price_deviation:
-                    logger.info(
-                        "[CANCEL-ICEBERG] id=%s reason=PRICE_BROKE_UP current=%.2f trigger=%.2f",
-                        event.get("event_id"),
-                        current_price,
-                        trigger_price,
-                    )
+                    if bool(getattr(cfg, "V62_LOG_CANCEL_ICEBERG_ENABLED", True)):
+                        logger.info(
+                            "[CANCEL-ICEBERG] id=%s reason=PRICE_BROKE_UP current=%.2f trigger=%.2f",
+                            event.get("event_id"),
+                            current_price,
+                            trigger_price,
+                        )
+                    else:
+                        suppressed_log_counter.inc("suppressed_cancel_iceberg_count")
                     self._update_iceberg_zone(
                         event=event,
                         result="CANCEL",
@@ -401,9 +413,15 @@ class Phase1Engine:
                     settle_recv_ts=book_recv_ts,
                 )
             else:
-                log_tag = "[SETTLED-ICEBERG]" if signal.get("is_iceberg") else "[IGNORE-ICEBERG]"
-                should_log_settled = bool(signal.get("is_iceberg")) or bool(getattr(cfg, "V62_LOG_IGNORE_ICEBERG_ENABLED", True))
-                if should_log_settled:
+                is_iceberg = bool(signal.get("is_iceberg"))
+                log_tag = "[SETTLED-ICEBERG]" if is_iceberg else "[IGNORE-ICEBERG]"
+                if is_iceberg:
+                    should_log_event = bool(getattr(cfg, "V62_LOG_SETTLED_ICEBERG_ENABLED", True))
+                    suppressed_key = "suppressed_settled_iceberg_count"
+                else:
+                    should_log_event = bool(getattr(cfg, "V62_LOG_IGNORE_ICEBERG_ENABLED", True))
+                    suppressed_key = "suppressed_ignore_iceberg_count"
+                if should_log_event:
                     logger.info(
                         "%s id=%s direction=%s wait=%.1fms updates=%d active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% trades=%d behavior=%s",
                         log_tag,
@@ -418,8 +436,8 @@ class Phase1Engine:
                         int(event.get("trade_count", 0)),
                         signal.get("behavior"),
                     )
-                elif not signal.get("is_iceberg"):
-                    suppressed_log_counter.inc("suppressed_ignore_iceberg_count")
+                else:
+                    suppressed_log_counter.inc(suppressed_key)
                 self._update_iceberg_zone(
                     event=event,
                     result="ICEBERG" if signal.get("is_iceberg") else "IGNORE",
@@ -461,15 +479,18 @@ class Phase1Engine:
                 )
                 enriched_signal["hidden_volume"] = hidden_volume
                 enriched_signal["absorption_rate"] = absorption_rate
-                logger.info(
-                    "[PHASE1-QUALITY] id=%s quality=%s hidden=%.0fU absorption=%.1f%% active=%.0fU confidence=%.2f",
-                    event.get("event_id"),
-                    phase1_quality,
-                    hidden_volume,
-                    absorption_rate * 100.0,
-                    active_volume,
-                    confidence,
-                )
+                if bool(getattr(cfg, "V62_LOG_PHASE1_QUALITY_ENABLED", True)):
+                    logger.info(
+                        "[PHASE1-QUALITY] id=%s quality=%s hidden=%.0fU absorption=%.1f%% active=%.0fU confidence=%.2f",
+                        event.get("event_id"),
+                        phase1_quality,
+                        hidden_volume,
+                        absorption_rate * 100.0,
+                        active_volume,
+                        confidence,
+                    )
+                else:
+                    suppressed_log_counter.inc("suppressed_phase1_quality_count")
                 if direction == "BUY":
                     enriched_signal["min_price"] = float(event.get("zone_lower", 0.0))
                 elif direction == "SELL":

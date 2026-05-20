@@ -134,7 +134,13 @@ class VirtualPositionManager:
             if candidate_direction == self.active_position.direction:
                 return self._apply_support_update(candidate)
             self.total_skipped += 1
-            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=opposite_direction_active_position_exists active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), self.active_position.position_id)
+            self._log_virtual_skip(
+                zone_id=candidate.get("zone_id"),
+                direction=candidate.get("direction"),
+                candidate_type=candidate.get("candidate_type"),
+                reason="opposite_direction_active_position_exists",
+                active_position_id=self.active_position.position_id,
+            )
             return None
         if candidate.get("decision") != "ACCEPT_RESEARCH_CANDIDATE":
             return None
@@ -147,11 +153,23 @@ class VirtualPositionManager:
         leverage = self._as_float(candidate.get("leverage"), 1.0)
         if not direction or open_price <= 0 or suggested_stop <= 0 or risk_distance_u <= 0 or final_margin_usage_pct <= 0:
             self.total_rejected += 1
-            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=invalid_candidate_fields active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), None)
+            self._log_virtual_skip(
+                zone_id=candidate.get("zone_id"),
+                direction=candidate.get("direction"),
+                candidate_type=candidate.get("candidate_type"),
+                reason="invalid_candidate_fields",
+                active_position_id=None,
+            )
             return None
         if (direction == "LONG" and open_price <= suggested_stop) or (direction == "SHORT" and open_price >= suggested_stop):
             self.total_rejected += 1
-            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=invalid_stop_direction active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), None)
+            self._log_virtual_skip(
+                zone_id=candidate.get("zone_id"),
+                direction=candidate.get("direction"),
+                candidate_type=candidate.get("candidate_type"),
+                reason="invalid_stop_direction",
+                active_position_id=None,
+            )
             return None
 
         virtual_margin_usdt = self.virtual_equity_usdt * final_margin_usage_pct
@@ -307,17 +325,37 @@ class VirtualPositionManager:
             return None
         if not bool(cfg.VIRTUAL_SUPPORT_UPDATE_ENABLED):
             self.total_skipped += 1
-            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=support_update_disabled active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), pos.position_id)
+            self._log_virtual_skip(
+                zone_id=candidate.get("zone_id"),
+                direction=candidate.get("direction"),
+                candidate_type=candidate.get("candidate_type"),
+                reason="support_update_disabled",
+                active_position_id=pos.position_id,
+            )
             return None
         if bool(cfg.VIRTUAL_SUPPORT_REQUIRE_SAME_DIRECTION) and self._candidate_direction(candidate) != pos.direction:
             self.total_skipped += 1
-            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=support_direction_mismatch active_position_id=%s", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), pos.position_id)
+            self._log_virtual_skip(
+                zone_id=candidate.get("zone_id"),
+                direction=candidate.get("direction"),
+                candidate_type=candidate.get("candidate_type"),
+                reason="support_direction_mismatch",
+                active_position_id=pos.position_id,
+            )
             return None
 
         phase2_total_score = self._as_float(candidate.get("phase2_total_score"))
         if phase2_total_score < float(cfg.VIRTUAL_SUPPORT_MIN_PHASE2_SCORE):
             self.total_skipped += 1
-            logger.info("[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s reason=support_phase2_score_too_low active_position_id=%s phase2_total_score=%.6f min_phase2_score=%.6f", candidate.get("zone_id"), candidate.get("direction"), candidate.get("candidate_type"), pos.position_id, phase2_total_score, float(cfg.VIRTUAL_SUPPORT_MIN_PHASE2_SCORE))
+            self._log_virtual_skip(
+                zone_id=candidate.get("zone_id"),
+                direction=candidate.get("direction"),
+                candidate_type=candidate.get("candidate_type"),
+                reason="support_phase2_score_too_low",
+                active_position_id=pos.position_id,
+                phase2_total_score=phase2_total_score,
+                min_phase2_score=float(cfg.VIRTUAL_SUPPORT_MIN_PHASE2_SCORE),
+            )
             return None
 
         candidate_ts = self._as_float(candidate.get("candidate_ts", candidate.get("ts")), time.time())
@@ -353,6 +391,27 @@ class VirtualPositionManager:
         if pos.direction == "LONG":
             return new_stop > pos.dynamic_stop + min_improvement
         return new_stop < pos.dynamic_stop - min_improvement
+
+    def _log_virtual_skip(
+        self,
+        zone_id: Any,
+        direction: Any,
+        candidate_type: Any,
+        reason: str,
+        active_position_id: Any = None,
+        **extra: Any,
+    ) -> None:
+        if not bool(getattr(cfg, "V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED", True)):
+            suppressed_log_counter.inc("suppressed_virtual_skip_count")
+            return
+        extra_text = " ".join(f"{key}={value}" for key, value in extra.items())
+        message = (
+            "[VIRTUAL-POSITION-SKIP] zone_id=%s direction=%s candidate_type=%s "
+            "reason=%s active_position_id=%s"
+        )
+        if extra_text:
+            message = f"{message} {extra_text}"
+        logger.info(message, zone_id, direction, candidate_type, reason, active_position_id)
 
     def _log_stop_update(self, pos: VirtualPosition, now_ts: float, reason: str, old_stop: float, new_stop: float, zone_id: str) -> None:
         if not bool(getattr(cfg, "V62_LOG_VIRTUAL_STOP_UPDATE_ENABLED", True)):

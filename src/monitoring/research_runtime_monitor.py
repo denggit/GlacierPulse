@@ -269,11 +269,17 @@ class ResearchRuntimeMonitor:
             "V62_LOG_PENDING_ICEBERG_ENABLED",
             "V62_LOG_IGNORE_ICEBERG_ENABLED",
             "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED",
+            "V62_LOG_SETTLED_ICEBERG_ENABLED",
+            "V62_LOG_PHASE1_QUALITY_ENABLED",
+            "V62_LOG_CANCEL_ICEBERG_ENABLED",
+            "V62_LOG_PENDING_DROP_ENABLED",
             "V62_LOG_A1_ZONE_NEW_ENABLED",
+            "V62_LOG_A1_ZONE_STRESSED_ENABLED",
             "V62_LOG_A1_ZONE_FROZEN_ENABLED",
             "V62_LOG_PHASE2_STATE_ENABLED",
             "V62_LOG_PHASE3_CANDIDATE_ENABLED",
             "V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED",
+            "V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED",
             "V62_LOG_PHASE3_OUTCOME_ENABLED",
         )
         snapshot = {key: getattr(cfg, key, None) for key in keys}
@@ -295,6 +301,12 @@ class ResearchRuntimeMonitor:
             "suppressed_spoofing_withdrawal_count",
             "suppressed_zone_new_count",
             "suppressed_virtual_update_count",
+            "suppressed_settled_iceberg_count",
+            "suppressed_phase1_quality_count",
+            "suppressed_cancel_iceberg_count",
+            "suppressed_zone_stressed_count",
+            "suppressed_virtual_skip_count",
+            "suppressed_pending_drop_count",
         )
         return {key: int(snapshot.get(key, 0)) for key in keys}
 
