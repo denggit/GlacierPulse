@@ -4,6 +4,8 @@
 import logging
 from typing import Any, Dict, List
 
+from config import research_evaluator as cfg
+
 logger = logging.getLogger(__name__)
 
 
@@ -182,6 +184,8 @@ class IcebergOutcomeEvaluator:
         return "MIXED"
 
     def _log_outcome(self, s: dict) -> None:
+        if not bool(getattr(cfg, "V62_LOG_A1_ZONE_OUTCOME_ENABLED", True)):
+            return
         direction = s.get("direction")
         if direction == "BUY":
             reclaimed_frozen_low = bool(s.get("reclaimed_frozen_iceberg_low"))

@@ -1,0 +1,219 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import importlib
+import logging
+import sys
+
+import pytest
+
+from config import research_evaluator as research_config
+from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
+from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
+from src.strategy.virtual_position_manager import VirtualPositionManager
+from src.utils.log_noise import suppressed_log_counter
+
+
+@pytest.fixture(autouse=True)
+def restore_research_config():
+    yield
+    importlib.reload(research_config)
+
+
+def _reload_config_with_profile(monkeypatch, profile):
+    monkeypatch.setenv("V62_LOG_PROFILE", profile)
+    return importlib.reload(research_config)
+
+
+def _phase2_event(zone_id="p3-log-control"):
+    return {
+        "zone_id": zone_id,
+        "direction": "BUY",
+        "state": "PHASE2_CONFIRMED",
+        "phase2_type": "SWEEP_RECLAIM",
+        "confirmed_ts": 103.0,
+        "last_price": 3000.3,
+        "frozen_low": 3000.0,
+        "frozen_high": 3001.5,
+        "live_low": 3000.0,
+        "live_high": 3001.5,
+        "sweep_extreme": 2999.0,
+        "suggested_stop": 2998.5,
+        "risk_to_stop_u": 1.8,
+        "risk_to_stop_pct": 1.8 / 3000.3,
+        "phase2_total_score": 0.83,
+        "absorption_score": 0.9,
+        "pressure_decay_score": 0.8,
+        "reclaim_score": 0.9,
+        "retest_score": 0.85,
+        "book_absorption_score": 0.4,
+        "relevant_book_depth_available": True,
+        "reload_score": 0.3,
+        "has_swept_boundary": True,
+        "has_absorbed_after_sweep": True,
+        "has_reclaimed_boundary": True,
+        "has_retested_inside_zone": True,
+    }
+
+
+def _candidate(zone_id="z-log-control"):
+    return {
+        "decision": "ACCEPT_RESEARCH_CANDIDATE",
+        "zone_id": zone_id,
+        "direction": "BUY",
+        "candidate_ts": 100.0,
+        "candidate_price": 3000.0,
+        "suggested_stop": 2998.0,
+        "risk_distance_u": 2.0,
+        "risk_distance_pct": 2.0 / 3000.0,
+        "total_loss_pct": 0.002,
+        "final_margin_usage_pct": 0.1,
+        "leverage": 10.0,
+        "phase2_type": "SWEEP_RECLAIM",
+        "candidate_type": "SWEEP_RECLAIM_RETEST_ENTRY",
+    }
+
+
+def test_research_log_profile_defaults_detailed(monkeypatch):
+    cfg = _reload_config_with_profile(monkeypatch, "RESEARCH_DETAILED")
+
+    assert cfg.V62_LOG_PENDING_ICEBERG_ENABLED is True
+    assert cfg.V62_LOG_IGNORE_ICEBERG_ENABLED is True
+    assert cfg.V62_LOG_SPOOFING_WITHDRAWAL_ENABLED is True
+    assert cfg.V62_LOG_A1_ZONE_NEW_ENABLED is True
+    assert cfg.V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED is True
+
+
+def test_research_log_profile_key_events(monkeypatch):
+    cfg = _reload_config_with_profile(monkeypatch, "RESEARCH_KEY_EVENTS")
+
+    assert cfg.V62_LOG_PENDING_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_IGNORE_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_SPOOFING_WITHDRAWAL_ENABLED is False
+    assert cfg.V62_LOG_A1_ZONE_NEW_ENABLED is False
+    assert cfg.V62_LOG_A1_ZONE_FROZEN_ENABLED is True
+    assert cfg.V62_LOG_PHASE2_CONFIRMED_ENABLED is True
+    assert cfg.V62_LOG_PHASE3_CANDIDATE_ENABLED is True
+    assert cfg.V62_LOG_VIRTUAL_POSITION_OPEN_ENABLED is True
+    assert cfg.V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED is False
+    assert cfg.V62_LOG_VIRTUAL_POSITION_CLOSE_ENABLED is True
+    assert cfg.V62_LOG_PHASE3_OUTCOME_ENABLED is True
+
+
+def test_research_log_profile_production_safe(monkeypatch):
+    cfg = _reload_config_with_profile(monkeypatch, "PRODUCTION_SAFE")
+
+    assert cfg.V62_LOG_PENDING_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_IGNORE_ICEBERG_ENABLED is False
+    assert cfg.V62_LOG_SPOOFING_WITHDRAWAL_ENABLED is False
+    assert cfg.V62_LOG_A1_ZONE_NEW_ENABLED is False
+    assert cfg.V62_LOG_A1_ZONE_FROZEN_ENABLED is True
+    assert cfg.V62_LOG_PHASE2_STATE_ENABLED is False
+    assert cfg.V62_LOG_PHASE2_CONFIRMED_ENABLED is True
+    assert cfg.V62_LOG_PHASE3_CANDIDATE_ENABLED is True
+    assert cfg.V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED is False
+    assert cfg.V62_LOG_PHASE3_OUTCOME_ENABLED is True
+
+
+def test_log_to_console_false_does_not_add_stream_handler(monkeypatch, tmp_path):
+    from src.utils import log as log_module
+
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    monkeypatch.setenv("LOG_TO_CONSOLE", "false")
+    monkeypatch.setenv("LOG_TO_FILE", "true")
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_FILE_NAME", "test.log")
+
+    log_module._setup_done = False
+    try:
+        log_module.setup_logging(logging.INFO)
+        handlers = list(root_logger.handlers)
+        assert not any(
+            isinstance(handler, logging.StreamHandler)
+            and getattr(handler, "stream", None) is sys.stdout
+            for handler in handlers
+        )
+        assert any(isinstance(handler, logging.FileHandler) for handler in handlers)
+    finally:
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
+        log_module._setup_done = True
+
+
+def test_logging_switch_does_not_change_phase3_result(monkeypatch):
+    _reload_config_with_profile(monkeypatch, "RESEARCH_DETAILED")
+    detailed = Phase3CandidateEvaluator().evaluate_phase2_confirmed(_phase2_event("p3-detailed"))
+
+    _reload_config_with_profile(monkeypatch, "RESEARCH_KEY_EVENTS")
+    key_events = Phase3CandidateEvaluator().evaluate_phase2_confirmed(_phase2_event("p3-key"))
+
+    for key in ("decision", "candidate_type", "suggested_stop", "risk_distance_u", "risk_distance_pct"):
+        assert key_events[key] == detailed[key]
+
+
+def test_logging_switch_does_not_change_virtual_position_behavior(monkeypatch):
+    _reload_config_with_profile(monkeypatch, "RESEARCH_DETAILED")
+    detailed_manager = VirtualPositionManager()
+    detailed_open = detailed_manager.on_candidate(_candidate("vp-detailed"))
+    detailed_close = detailed_manager.on_price(2998.0, ts=101.0)
+
+    _reload_config_with_profile(monkeypatch, "RESEARCH_KEY_EVENTS")
+    key_manager = VirtualPositionManager()
+    key_open = key_manager.on_candidate(_candidate("vp-key"))
+    key_close = key_manager.on_price(2998.0, ts=101.0)
+
+    for key in ("direction", "open_price", "initial_stop", "dynamic_stop", "take_profit_price"):
+        assert key_open[key] == detailed_open[key]
+    for key in ("close_reason", "close_price", "realized_r_multiple", "virtual_equity_at_open"):
+        assert key_close[key] == detailed_close[key]
+
+
+def test_safety_check_failed_always_logs(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", False)
+    monkeypatch.setattr(research_config, "REAL_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(research_config, "PHASE3_REAL_TRADING_ENABLED", False)
+    monkeypatch.setattr(research_config, "V62_REQUIRE_RESEARCH_ONLY_MODE", True)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        phase3_trade_outcome_evaluator = None
+        virtual_position_manager = None
+        zone_tracker = None
+        outcome_evaluator = None
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-fail-always")
+    with caplog.at_level(logging.ERROR):
+        monitor.run_startup_safety_check()
+
+    assert any("[V62-SAFETY-CHECK-FAILED]" in r.message for r in caplog.records)
+
+
+def test_heartbeat_includes_suppressed_log_counts(monkeypatch):
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 300.0)
+    suppressed_log_counter.snapshot_and_reset()
+    suppressed_log_counter.inc("suppressed_pending_iceberg_count", 2)
+    suppressed_log_counter.inc("suppressed_zone_new_count", 1)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        phase3_trade_outcome_evaluator = None
+        virtual_position_manager = None
+        zone_tracker = None
+        outcome_evaluator = None
+
+    summary = ResearchRuntimeMonitor(_Engine(), label="test-suppressed").maybe_log_heartbeat(1000.0)
+
+    assert summary["suppressed_pending_iceberg_count"] == 2
+    assert summary["suppressed_ignore_iceberg_count"] == 0
+    assert summary["suppressed_spoofing_withdrawal_count"] == 0
+    assert summary["suppressed_zone_new_count"] == 1
+    assert summary["suppressed_virtual_update_count"] == 0

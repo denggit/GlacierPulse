@@ -11,6 +11,9 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from config import research_evaluator as cfg
+from src.utils.log_noise import suppressed_log_counter
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,20 +88,21 @@ class IcebergZoneTracker:
             zone["state"] = "EXPIRED"
             expired.append(zone)
             self._append_finalized_zone(zone)
-            logger.info(
-                "[ICEBERG-ZONE-EXPIRED] id=%s direction=%s previous_state=%s final_state=%s events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f",
-                zone.get("zone_id"),
-                zone.get("direction"),
-                previous_state,
-                zone.get("state"),
-                int(zone.get("event_count", 0)),
-                int(zone.get("iceberg_count", 0)),
-                int(zone.get("ignore_count", 0)),
-                int(zone.get("spoof_count", 0)),
-                float(zone.get("positive_score", 0.0)),
-                float(zone.get("negative_score", 0.0)),
-                float(zone.get("net_score", 0.0)),
-            )
+            if bool(getattr(cfg, "V62_LOG_A1_ZONE_EXPIRED_ENABLED", True)):
+                logger.info(
+                    "[ICEBERG-ZONE-EXPIRED] id=%s direction=%s previous_state=%s final_state=%s events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f",
+                    zone.get("zone_id"),
+                    zone.get("direction"),
+                    previous_state,
+                    zone.get("state"),
+                    int(zone.get("event_count", 0)),
+                    int(zone.get("iceberg_count", 0)),
+                    int(zone.get("ignore_count", 0)),
+                    int(zone.get("spoof_count", 0)),
+                    float(zone.get("positive_score", 0.0)),
+                    float(zone.get("negative_score", 0.0)),
+                    float(zone.get("net_score", 0.0)),
+                )
         return expired
 
     def get_active_zones(self) -> List[Dict[str, Any]]:
@@ -323,16 +327,17 @@ class IcebergZoneTracker:
             zone["broken_count"] = int(zone.get("broken_count", 0)) + 1
             if old_state != "BROKEN":
                 self._append_finalized_zone(zone)
-                logger.info(
-                    "[ICEBERG-ZONE-BROKEN] id=%s direction=%s previous_state=%s event=%s current=%.2f old_zone=[%.2f,%.2f] reason=price_broke_zone",
-                    zone.get("zone_id"),
-                    direction,
-                    old_state,
-                    event.get("event_id"),
-                    current,
-                    check_lower,
-                    check_upper,
-                )
+                if bool(getattr(cfg, "V62_LOG_A1_ZONE_BROKEN_ENABLED", True)):
+                    logger.info(
+                        "[ICEBERG-ZONE-BROKEN] id=%s direction=%s previous_state=%s event=%s current=%.2f old_zone=[%.2f,%.2f] reason=price_broke_zone",
+                        zone.get("zone_id"),
+                        direction,
+                        old_state,
+                        event.get("event_id"),
+                        current,
+                        check_lower,
+                        check_upper,
+                    )
             return
 
         if zone.get("state") in ("BROKEN", "EXPIRED"):
@@ -393,21 +398,22 @@ class IcebergZoneTracker:
         zone["frozen_state"] = zone.get("state")
         zone["frozen_event_id"] = event.get("event_id")
         zone["is_frozen"] = True
-        logger.info(
-            "[ICEBERG-ZONE-FROZEN] id=%s direction=%s reason=%s state=%s event=%s frozen_zone=[%.2f,%.2f] live_zone=[%.2f,%.2f] pos=%.2f neg=%.2f net=%.2f",
-            zone.get("zone_id"),
-            zone.get("direction"),
-            reason,
-            zone.get("state"),
-            event.get("event_id"),
-            float(zone.get("frozen_zone_lower", 0.0)),
-            float(zone.get("frozen_zone_upper", 0.0)),
-            float(zone.get("zone_lower", 0.0)),
-            float(zone.get("zone_upper", 0.0)),
-            float(zone.get("positive_score", 0.0)),
-            float(zone.get("negative_score", 0.0)),
-            float(zone.get("net_score", 0.0)),
-        )
+        if bool(getattr(cfg, "V62_LOG_A1_ZONE_FROZEN_ENABLED", True)):
+            logger.info(
+                "[ICEBERG-ZONE-FROZEN] id=%s direction=%s reason=%s state=%s event=%s frozen_zone=[%.2f,%.2f] live_zone=[%.2f,%.2f] pos=%.2f neg=%.2f net=%.2f",
+                zone.get("zone_id"),
+                zone.get("direction"),
+                reason,
+                zone.get("state"),
+                event.get("event_id"),
+                float(zone.get("frozen_zone_lower", 0.0)),
+                float(zone.get("frozen_zone_upper", 0.0)),
+                float(zone.get("zone_lower", 0.0)),
+                float(zone.get("zone_upper", 0.0)),
+                float(zone.get("positive_score", 0.0)),
+                float(zone.get("negative_score", 0.0)),
+                float(zone.get("net_score", 0.0)),
+            )
 
     @staticmethod
     def _freeze_reason(zone: Dict[str, Any], event: Dict[str, Any]) -> Optional[str]:
@@ -424,39 +430,43 @@ class IcebergZoneTracker:
 
     def _log_zone_update(self, zone: Dict[str, Any], event: Dict[str, Any], action: str) -> None:
         if action == "NEW":
+            if bool(getattr(cfg, "V62_LOG_A1_ZONE_NEW_ENABLED", True)):
+                logger.info(
+                    "[ICEBERG-ZONE-NEW] id=%s direction=%s state=%s result=%s event=%s zone=[%.2f,%.2f] quality=%s score=%.2f",
+                    zone.get("zone_id"),
+                    zone.get("direction"),
+                    zone.get("state"),
+                    event.get("result"),
+                    event.get("event_id"),
+                    float(zone.get("zone_lower", 0.0)),
+                    float(zone.get("zone_upper", 0.0)),
+                    event.get("quality"),
+                    float(zone.get("net_score", 0.0)),
+                )
+            else:
+                suppressed_log_counter.inc("suppressed_zone_new_count")
+            return
+
+        if bool(getattr(cfg, "V62_LOG_A1_ZONE_UPDATE_ENABLED", True)):
             logger.info(
-                "[ICEBERG-ZONE-NEW] id=%s direction=%s state=%s result=%s event=%s zone=[%.2f,%.2f] quality=%s score=%.2f",
+                "[ICEBERG-ZONE-UPDATE] id=%s direction=%s state=%s result=%s event=%s events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f hidden=%.0fU capped_hidden=%.0fU zone=[%.2f,%.2f]",
                 zone.get("zone_id"),
                 zone.get("direction"),
                 zone.get("state"),
                 event.get("result"),
                 event.get("event_id"),
+                int(zone.get("event_count", 0)),
+                int(zone.get("iceberg_count", 0)),
+                int(zone.get("ignore_count", 0)),
+                int(zone.get("spoof_count", 0)),
+                float(zone.get("positive_score", 0.0)),
+                float(zone.get("negative_score", 0.0)),
+                float(zone.get("net_score", 0.0)),
+                float(zone.get("total_hidden_volume", 0.0)),
+                float(zone.get("total_capped_hidden_volume", 0.0)),
                 float(zone.get("zone_lower", 0.0)),
                 float(zone.get("zone_upper", 0.0)),
-                event.get("quality"),
-                float(zone.get("net_score", 0.0)),
             )
-            return
-
-        logger.info(
-            "[ICEBERG-ZONE-UPDATE] id=%s direction=%s state=%s result=%s event=%s events=%d icebergs=%d ignore=%d spoof=%d pos=%.2f neg=%.2f net=%.2f hidden=%.0fU capped_hidden=%.0fU zone=[%.2f,%.2f]",
-            zone.get("zone_id"),
-            zone.get("direction"),
-            zone.get("state"),
-            event.get("result"),
-            event.get("event_id"),
-            int(zone.get("event_count", 0)),
-            int(zone.get("iceberg_count", 0)),
-            int(zone.get("ignore_count", 0)),
-            int(zone.get("spoof_count", 0)),
-            float(zone.get("positive_score", 0.0)),
-            float(zone.get("negative_score", 0.0)),
-            float(zone.get("net_score", 0.0)),
-            float(zone.get("total_hidden_volume", 0.0)),
-            float(zone.get("total_capped_hidden_volume", 0.0)),
-            float(zone.get("zone_lower", 0.0)),
-            float(zone.get("zone_upper", 0.0)),
-        )
 
     def _normalize_event(self, event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(event, dict):

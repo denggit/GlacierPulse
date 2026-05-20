@@ -13,6 +13,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 
+from config import research_evaluator as cfg
 from config.research_evaluator import (
     BOOK_NEAR_SWEEP_RANGE_USDT,
     BOOK_NEAR_ZONE_RANGE_USDT,
@@ -370,19 +371,20 @@ class Phase2OrderflowEvaluator:
         self.active_zones[zone_id] = tracked_zone
         self.active_zones.move_to_end(zone_id)
 
-        logger.info(
-            "[PHASE2-REGISTERED] zone_id=%s direction=%s frozen_ts=%.3f frozen_reason=%s frozen_state=%s frozen_event_id=%s frozen_low=%.2f frozen_high=%.2f live_low=%.2f live_high=%.2f",
-            zone_id,
-            tracked_zone.direction,
-            tracked_zone.frozen_ts,
-            tracked_zone.metadata.get("frozen_reason"),
-            tracked_zone.metadata.get("frozen_state"),
-            tracked_zone.metadata.get("frozen_event_id"),
-            tracked_zone.frozen_low,
-            tracked_zone.frozen_high,
-            tracked_zone.live_low,
-            tracked_zone.live_high,
-        )
+        if bool(getattr(cfg, "V62_LOG_PHASE2_REGISTERED_ENABLED", True)):
+            logger.info(
+                "[PHASE2-REGISTERED] zone_id=%s direction=%s frozen_ts=%.3f frozen_reason=%s frozen_state=%s frozen_event_id=%s frozen_low=%.2f frozen_high=%.2f live_low=%.2f live_high=%.2f",
+                zone_id,
+                tracked_zone.direction,
+                tracked_zone.frozen_ts,
+                tracked_zone.metadata.get("frozen_reason"),
+                tracked_zone.metadata.get("frozen_state"),
+                tracked_zone.metadata.get("frozen_event_id"),
+                tracked_zone.frozen_low,
+                tracked_zone.frozen_high,
+                tracked_zone.live_low,
+                tracked_zone.live_high,
+            )
         return True
 
     def _build_tracked_zone(self, zone: Dict[str, Any], now_ts: float) -> Phase2TrackedZone:
@@ -1141,6 +1143,8 @@ class Phase2OrderflowEvaluator:
         now_ts: float,
         reason: str,
     ) -> None:
+        if not bool(getattr(cfg, "V62_LOG_PHASE2_STATE_ENABLED", True)):
+            return
         logger.info(
             "[PHASE2-STATE] zone_id=%s direction=%s previous_state=%s state=%s ts=%.3f price=%.2f frozen_low=%.2f frozen_high=%.2f live_low=%.2f live_high=%.2f sweep_extreme=%.2f break_depth_u=%.4f break_depth_pct=%.6f time_below_boundary_ms=%.1f time_above_boundary_ms=%.1f active_buy_notional_1s=%.2f active_sell_notional_1s=%.2f active_buy_notional_3s=%.2f active_sell_notional_3s=%.2f cvd_delta_3s=%.2f cvd_delta_10s=%.2f bid_depth_near_zone=%.2f ask_depth_near_zone=%.2f bid_depth_near_sweep=%.2f ask_depth_near_sweep=%.2f bid_reduction_1s=%.2f ask_reduction_1s=%.2f bid_reload_count=%d ask_reload_count=%d book_absorption_score=%.4f relevant_book_depth_available=%s reload_score=%.4f absorption_score=%.4f pressure_decay_score=%.4f reclaim_score=%.4f retest_score=%.4f phase2_total_score=%.4f reason=%s",
             zone.zone_id,
@@ -1184,6 +1188,8 @@ class Phase2OrderflowEvaluator:
         )
 
     def _log_phase2_confirmed(self, zone: Phase2TrackedZone, now_ts: float, reason: str) -> None:
+        if not bool(getattr(cfg, "V62_LOG_PHASE2_CONFIRMED_ENABLED", True)):
+            return
         suggested_stop = self._suggested_stop(zone)
         risk_to_stop_u = abs(zone.last_price - suggested_stop) if suggested_stop > 0 and zone.last_price > 0 else 0.0
         risk_to_stop_pct = risk_to_stop_u / zone.last_price if zone.last_price > 0 else 0.0

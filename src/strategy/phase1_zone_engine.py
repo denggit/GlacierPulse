@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Dict, Any, Optional
 
+from config import research_evaluator as cfg
 from config.research_evaluator import (
     PHASE2_ORDERFLOW_EVALUATOR_ENABLED,
     PHASE3_CANDIDATE_EVALUATOR_ENABLED,
@@ -32,6 +33,7 @@ from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
 from src.strategy.phase3_trade_outcome_evaluator import Phase3OutcomeEvaluator
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
 from src.strategy.virtual_position_manager import VirtualPositionManager
+from src.utils.log_noise import suppressed_log_counter
 
 logger = logging.getLogger(__name__)
 
@@ -175,19 +177,22 @@ class Phase1Engine:
         }
         self._append_pending_event(event)
 
-        logger.info(
-            "[PENDING-ICEBERG] id=%s direction=%s price=%.2f active=%.0fU trades=%d depth=%.0fU zone=[%.2f, %.2f] cutoff=%dms pending=%d",
-            event['event_id'],
-            direction,
-            price,
-            active_notional,
-            event['trade_count'],
-            start_thickness_usdt,
-            zone_lower,
-            zone_upper,
-            self.accumulate_window_ms,
-            len(self.pending_events),
-        )
+        if bool(getattr(cfg, "V62_LOG_PENDING_ICEBERG_ENABLED", True)):
+            logger.info(
+                "[PENDING-ICEBERG] id=%s direction=%s price=%.2f active=%.0fU trades=%d depth=%.0fU zone=[%.2f, %.2f] cutoff=%dms pending=%d",
+                event['event_id'],
+                direction,
+                price,
+                active_notional,
+                event['trade_count'],
+                start_thickness_usdt,
+                zone_lower,
+                zone_upper,
+                self.accumulate_window_ms,
+                len(self.pending_events),
+            )
+        else:
+            suppressed_log_counter.inc("suppressed_pending_iceberg_count")
         return None
 
     def _try_merge_accumulating_event(
@@ -372,16 +377,19 @@ class Phase1Engine:
                 phase1_quality = self._classify_phase1_quality(signal)
 
             if is_spoofing_withdrawal:
-                logger.info(
-                    "[SPOOFING-WITHDRAWAL] id=%s direction=%s active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% behavior=%s",
-                    event.get("event_id"),
-                    direction,
-                    float(event.get("active_notional", 0.0)),
-                    book_reduction,
-                    hidden_volume,
-                    absorption_rate * 100.0,
-                    signal.get("behavior"),
-                )
+                if bool(getattr(cfg, "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED", True)):
+                    logger.info(
+                        "[SPOOFING-WITHDRAWAL] id=%s direction=%s active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% behavior=%s",
+                        event.get("event_id"),
+                        direction,
+                        float(event.get("active_notional", 0.0)),
+                        book_reduction,
+                        hidden_volume,
+                        absorption_rate * 100.0,
+                        signal.get("behavior"),
+                    )
+                else:
+                    suppressed_log_counter.inc("suppressed_spoofing_withdrawal_count")
                 self._update_iceberg_zone(
                     event=event,
                     result="SPOOFING",
@@ -394,20 +402,24 @@ class Phase1Engine:
                 )
             else:
                 log_tag = "[SETTLED-ICEBERG]" if signal.get("is_iceberg") else "[IGNORE-ICEBERG]"
-                logger.info(
-                    "%s id=%s direction=%s wait=%.1fms updates=%d active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% trades=%d behavior=%s",
-                    log_tag,
-                    event.get("event_id"),
-                    direction,
-                    wait_ms,
-                    int(event.get("book_updates_after_cutoff", 0)),
-                    float(event.get("active_notional", 0.0)),
-                    book_reduction,
-                    hidden_volume,
-                    absorption_rate * 100.0,
-                    int(event.get("trade_count", 0)),
-                    signal.get("behavior"),
-                )
+                should_log_settled = bool(signal.get("is_iceberg")) or bool(getattr(cfg, "V62_LOG_IGNORE_ICEBERG_ENABLED", True))
+                if should_log_settled:
+                    logger.info(
+                        "%s id=%s direction=%s wait=%.1fms updates=%d active=%.0fU book_reduction=%.0fU hidden=%.0fU absorption=%.1f%% trades=%d behavior=%s",
+                        log_tag,
+                        event.get("event_id"),
+                        direction,
+                        wait_ms,
+                        int(event.get("book_updates_after_cutoff", 0)),
+                        float(event.get("active_notional", 0.0)),
+                        book_reduction,
+                        hidden_volume,
+                        absorption_rate * 100.0,
+                        int(event.get("trade_count", 0)),
+                        signal.get("behavior"),
+                    )
+                elif not signal.get("is_iceberg"):
+                    suppressed_log_counter.inc("suppressed_ignore_iceberg_count")
                 self._update_iceberg_zone(
                     event=event,
                     result="ICEBERG" if signal.get("is_iceberg") else "IGNORE",

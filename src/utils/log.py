@@ -12,6 +12,18 @@ import sys
 _setup_done = False
 
 
+def _bool_env(name, default=True):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'on'):
+        return True
+    if text in ('0', 'false', 'no', 'off'):
+        return False
+    return bool(default)
+
+
 def _get_log_level_from_env(default_level=logging.INFO):
     """
     从环境变量获取日志级别
@@ -45,7 +57,7 @@ def setup_logging(log_level=None, log_dir='logs'):
 
     Args:
         log_level: 日志级别，如果为None则从环境变量LOG_LEVEL读取，默认为INFO
-        log_dir: 日志文件存放目录，默认为 'logs'
+        log_dir: 日志文件存放目录，默认为 'logs'，可被 LOG_DIR 环境变量覆盖
     """
     global _setup_done
     if _setup_done:
@@ -62,8 +74,12 @@ def setup_logging(log_level=None, log_dir='logs'):
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # 创建日志目录
-    os.makedirs(log_dir, exist_ok=True)
+    log_to_console = _bool_env('LOG_TO_CONSOLE', True)
+    log_to_file = _bool_env('LOG_TO_FILE', True)
+    effective_log_dir = os.environ.get('LOG_DIR', log_dir)
+    log_file_name = os.environ.get('LOG_FILE_NAME', 'app.log')
+    if not log_to_console and not log_to_file:
+        log_to_console = True
 
     # 设置根日志器级别
     root_logger.setLevel(log_level)
@@ -75,24 +91,27 @@ def setup_logging(log_level=None, log_dir='logs'):
     )
 
     # 控制台处理器
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(formatter)
-    root_logger.addHandler(console_handler)
+    if log_to_console:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(log_level)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
 
     # 按日期轮转的文件处理器（每天一个文件）
-    log_file = os.path.join(log_dir, 'app.log')
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        filename=log_file,
-        when='midnight',  # 每天午夜轮转
-        interval=1,  # 间隔1天
-        backupCount=30,  # 保留最近30天的日志
-        encoding='utf-8'
-    )
-    file_handler.suffix = '%Y-%m-%d'  # 日志文件后缀格式
-    file_handler.setLevel(log_level)
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
+    if log_to_file:
+        os.makedirs(effective_log_dir, exist_ok=True)
+        log_file = os.path.join(effective_log_dir, log_file_name)
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            filename=log_file,
+            when='midnight',  # 每天午夜轮转
+            interval=1,  # 间隔1天
+            backupCount=30,  # 保留最近30天的日志
+            encoding='utf-8'
+        )
+        file_handler.suffix = '%Y-%m-%d'  # 日志文件后缀格式
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
     # 设置Numba日志级别，减少调试输出
     # 除非用户通过NUMBA_LOG_LEVEL环境变量明确指定
@@ -125,7 +144,16 @@ def setup_logging(log_level=None, log_dir='logs'):
         module_logger.setLevel(logging.WARNING)
 
     # 记录初始日志
-    root_logger.info(f'日志系统初始化完成，日志目录: {os.path.abspath(log_dir)}， 日志等级：{log_level}')
+    if not _bool_env('LOG_TO_CONSOLE', True) and not _bool_env('LOG_TO_FILE', True):
+        root_logger.warning('LOG_TO_CONSOLE=false and LOG_TO_FILE=false; forced console logging for safety')
+    root_logger.info(
+        '日志系统初始化完成，日志目录: %s，日志文件: %s，控制台: %s，文件: %s，日志等级：%s',
+        os.path.abspath(effective_log_dir),
+        log_file_name,
+        log_to_console,
+        log_to_file,
+        log_level,
+    )
     root_logger.debug(f'Numba日志级别: {numba_log_level}')
 
     _setup_done = True

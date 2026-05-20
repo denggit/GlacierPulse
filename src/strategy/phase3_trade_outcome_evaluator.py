@@ -330,6 +330,8 @@ class Phase3OutcomeEvaluator:
         }
 
     def _log_outcome(self, outcome: Dict[str, Any]) -> None:
+        if not bool(getattr(cfg, "V62_LOG_PHASE3_OUTCOME_ENABLED", True)):
+            return
         logger.info(
             "[PHASE3-OUTCOME] position_id=%s zone_id=%s direction=%s phase2_type=%s candidate_type=%s "
             "close_reason=%s open_ts=%.3f close_ts=%.3f holding_seconds=%.3f open_price=%.6f "
@@ -352,6 +354,8 @@ class Phase3OutcomeEvaluator:
         )
 
     def _maybe_log_summary(self, now_ts: float) -> None:
+        if not bool(getattr(cfg, "V62_LOG_PHASE3_OUTCOME_SUMMARY_ENABLED", True)):
+            return
         interval = max(0.0, float(cfg.PHASE3_OUTCOME_SUMMARY_LOG_INTERVAL_SEC))
         if self.last_summary_log_ts > 0 and now_ts - self.last_summary_log_ts < interval:
             return

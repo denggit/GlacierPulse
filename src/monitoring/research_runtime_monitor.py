@@ -7,10 +7,12 @@ chain, but the module itself is version-neutral and reusable.
 """
 
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
 from config import research_evaluator as cfg
+from src.utils.log_noise import suppressed_log_counter
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ class ResearchRuntimeMonitor:
                     }
                 ),
             )
-        else:
+        elif bool(getattr(cfg, "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", True)):
             logger.info(
                 "[V62-SAFETY-CHECK-PASSED] %s",
                 self._format_kv(
@@ -99,12 +101,14 @@ class ResearchRuntimeMonitor:
 
     def log_component_status(self) -> Dict[str, Any]:
         status = self._collect_component_status()
-        logger.info("[V62-COMPONENT-STATUS] %s", self._format_kv(status))
+        if bool(getattr(cfg, "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", True)):
+            logger.info("[V62-COMPONENT-STATUS] %s", self._format_kv(status))
         return status
 
     def log_config_snapshot(self) -> Dict[str, Any]:
         snapshot = self._collect_config_snapshot()
-        logger.info("[V62-CONFIG-SNAPSHOT] %s", self._format_kv(snapshot))
+        if bool(getattr(cfg, "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", True)):
+            logger.info("[V62-CONFIG-SNAPSHOT] %s", self._format_kv(snapshot))
         return snapshot
 
     def maybe_log_heartbeat(self, now_ts: Optional[float] = None) -> Optional[Dict[str, Any]]:
@@ -119,7 +123,8 @@ class ResearchRuntimeMonitor:
             self.heartbeat_count += 1
             self.last_heartbeat_ts = now
             summary = self._heartbeat_summary(now)
-            logger.info("[V62-HEARTBEAT] %s", self._format_kv(summary))
+            if bool(getattr(cfg, "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", True)):
+                logger.info("[V62-HEARTBEAT] %s", self._format_kv(summary))
             return summary
         except Exception:
             logger.exception("[V62-HEARTBEAT-FAILED] label=%s", self.label)
@@ -165,7 +170,8 @@ class ResearchRuntimeMonitor:
             "real_execution_enabled": bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False)),
             "phase3_real_trading_enabled": bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False)),
         }
-        logger.info("[V62-FINAL-SUMMARY] %s", self._format_kv(final))
+        if bool(getattr(cfg, "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", True)):
+            logger.info("[V62-FINAL-SUMMARY] %s", self._format_kv(final))
         return final
 
     def _heartbeat_summary(self, now_ts: float) -> Dict[str, Any]:
@@ -211,6 +217,7 @@ class ResearchRuntimeMonitor:
             "real_execution_enabled": bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False)),
             "phase3_real_trading_enabled": bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False)),
         }
+        summary.update(self._suppressed_log_summary())
 
         if bool(getattr(cfg, "V62_HEARTBEAT_INCLUDE_GROUP_SUMMARY", True)):
             summary.update(self._outcome_group_highlights(self._outcome_summary()))
@@ -254,8 +261,42 @@ class ResearchRuntimeMonitor:
             "PHASE3_OUTCOME_SUMMARY_LOG_INTERVAL_SEC",
             "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC",
             "V62_SHADOW_RUN_LABEL",
+            "V62_LOG_PROFILE",
+            "LOG_TO_CONSOLE",
+            "LOG_TO_FILE",
+            "LOG_DIR",
+            "LOG_FILE_NAME",
+            "V62_LOG_PENDING_ICEBERG_ENABLED",
+            "V62_LOG_IGNORE_ICEBERG_ENABLED",
+            "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED",
+            "V62_LOG_A1_ZONE_NEW_ENABLED",
+            "V62_LOG_A1_ZONE_FROZEN_ENABLED",
+            "V62_LOG_PHASE2_STATE_ENABLED",
+            "V62_LOG_PHASE3_CANDIDATE_ENABLED",
+            "V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED",
+            "V62_LOG_PHASE3_OUTCOME_ENABLED",
         )
-        return {key: getattr(cfg, key, None) for key in keys}
+        snapshot = {key: getattr(cfg, key, None) for key in keys}
+        snapshot.update(
+            {
+                "LOG_TO_CONSOLE": os.environ.get("LOG_TO_CONSOLE", "true"),
+                "LOG_TO_FILE": os.environ.get("LOG_TO_FILE", "true"),
+                "LOG_DIR": os.environ.get("LOG_DIR", "logs"),
+                "LOG_FILE_NAME": os.environ.get("LOG_FILE_NAME", "app.log"),
+            }
+        )
+        return snapshot
+
+    def _suppressed_log_summary(self) -> Dict[str, Any]:
+        snapshot = suppressed_log_counter.snapshot_and_reset()
+        keys = (
+            "suppressed_pending_iceberg_count",
+            "suppressed_ignore_iceberg_count",
+            "suppressed_spoofing_withdrawal_count",
+            "suppressed_zone_new_count",
+            "suppressed_virtual_update_count",
+        )
+        return {key: int(snapshot.get(key, 0)) for key in keys}
 
     def _phase2_summary(self) -> Dict[str, Any]:
         evaluator = getattr(self.phase1_engine, "phase2_orderflow_evaluator", None)

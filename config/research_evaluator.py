@@ -55,6 +55,115 @@ def _str_config(name: str, default: str) -> str:
     return str(value)
 
 
+V62_LOG_PROFILE = _str_config(
+    "V62_LOG_PROFILE",
+    "RESEARCH_DETAILED",
+).upper()
+
+
+def _log_default_for_profile(
+    detailed_default: bool,
+    key_events_default: bool,
+    production_default: bool,
+) -> bool:
+    profile = V62_LOG_PROFILE.upper()
+    if profile == "RESEARCH_KEY_EVENTS":
+        return bool(key_events_default)
+    if profile == "PRODUCTION_SAFE":
+        return bool(production_default)
+    return bool(detailed_default)
+
+
+V62_LOG_PENDING_ICEBERG_ENABLED = _bool_config(
+    "V62_LOG_PENDING_ICEBERG_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_IGNORE_ICEBERG_ENABLED = _bool_config(
+    "V62_LOG_IGNORE_ICEBERG_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_SPOOFING_WITHDRAWAL_ENABLED = _bool_config(
+    "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_A1_ICEBERG_EVENT_ENABLED = _bool_config(
+    "V62_LOG_A1_ICEBERG_EVENT_ENABLED",
+    _log_default_for_profile(True, True, False),
+)
+V62_LOG_A1_ZONE_NEW_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_NEW_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_A1_ZONE_UPDATE_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_UPDATE_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_A1_ZONE_BROKEN_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_BROKEN_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_A1_ZONE_EXPIRED_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_EXPIRED_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_A1_ZONE_FROZEN_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_FROZEN_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_A1_ZONE_OUTCOME_ENABLED = _bool_config(
+    "V62_LOG_A1_ZONE_OUTCOME_ENABLED",
+    _log_default_for_profile(True, True, False),
+)
+V62_LOG_PHASE2_REGISTERED_ENABLED = _bool_config(
+    "V62_LOG_PHASE2_REGISTERED_ENABLED",
+    _log_default_for_profile(True, True, False),
+)
+V62_LOG_PHASE2_STATE_ENABLED = _bool_config(
+    "V62_LOG_PHASE2_STATE_ENABLED",
+    _log_default_for_profile(True, True, False),
+)
+V62_LOG_PHASE2_CONFIRMED_ENABLED = _bool_config(
+    "V62_LOG_PHASE2_CONFIRMED_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_PHASE3_CANDIDATE_ENABLED = _bool_config(
+    "V62_LOG_PHASE3_CANDIDATE_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_VIRTUAL_POSITION_OPEN_ENABLED = _bool_config(
+    "V62_LOG_VIRTUAL_POSITION_OPEN_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED = _bool_config(
+    "V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED",
+    _log_default_for_profile(True, False, False),
+)
+V62_LOG_VIRTUAL_POSITION_CLOSE_ENABLED = _bool_config(
+    "V62_LOG_VIRTUAL_POSITION_CLOSE_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_VIRTUAL_SUPPORT_UPDATE_ENABLED = _bool_config(
+    "V62_LOG_VIRTUAL_SUPPORT_UPDATE_ENABLED",
+    _log_default_for_profile(True, True, False),
+)
+V62_LOG_VIRTUAL_STOP_UPDATE_ENABLED = _bool_config(
+    "V62_LOG_VIRTUAL_STOP_UPDATE_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_PHASE3_OUTCOME_ENABLED = _bool_config(
+    "V62_LOG_PHASE3_OUTCOME_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_PHASE3_OUTCOME_SUMMARY_ENABLED = _bool_config(
+    "V62_LOG_PHASE3_OUTCOME_SUMMARY_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED = _bool_config(
+    "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED",
+    _log_default_for_profile(True, True, True),
+)
+
+
 PHASE2_ORDERFLOW_EVALUATOR_ENABLED = _bool_config(
     "PHASE2_ORDERFLOW_EVALUATOR_ENABLED",
     True,

@@ -300,6 +300,8 @@ class Phase3CandidateEvaluator:
         return metadata
 
     def _log_candidate(self, result: Dict[str, Any]) -> None:
+        if not bool(getattr(research_config, "V62_LOG_PHASE3_CANDIDATE_ENABLED", True)):
+            return
         logger.info(
             "[PHASE3-CANDIDATE] zone_id=%s direction=%s phase2_type=%s candidate_type=%s decision=%s decision_reason=%s candidate_ts=%s candidate_price=%s suggested_stop=%s risk_distance_u=%s risk_distance_pct=%s total_loss_pct=%s leverage=%s max_account_loss_pct=%s roundtrip_fee_pct=%s slippage_buffer_pct=%s raw_margin_usage_pct=%s final_margin_usage_pct=%s notional_equity_multiple=%s expected_account_loss_if_sl=%s phase2_total_score=%s absorption_score=%s pressure_decay_score=%s reclaim_score=%s retest_score=%s book_absorption_score=%s relevant_book_depth_available=%s reload_score=%s has_swept_boundary=%s has_absorbed_after_sweep=%s has_reclaimed_boundary=%s has_retested_inside_zone=%s frozen_reason=%s frozen_state=%s iceberg_count=%s high_count=%s net_score=%s",
             result.get("zone_id"),

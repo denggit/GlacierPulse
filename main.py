@@ -13,6 +13,7 @@ import os
 # 确保能正确导入 src 模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from config import research_evaluator as research_config
 from src.utils.log import get_logger
 from src.context.market_context import MarketContext
 from src.detectors.iceberg_detector import IcebergDetector
@@ -69,21 +70,22 @@ async def main():
 
             if signal.get("event_type") == "ICEBERG_ABSORPTION":
                 phase1_quality = signal.get("phase1_quality", "LOW")
-                logger.info(
-                    "[A1-ICEBERG-EVENT] id=%s direction=%s quality=%s price=%.2f zone=[%.2f, %.2f] hidden=%.0fU absorption=%.1f%% active=%.0fU conf=%.2f wait=%.1fms trades=%s",
-                    signal.get("event_id"),
-                    direction,
-                    phase1_quality,
-                    float(signal.get("trigger_price", current_price or 0.0)),
-                    float(signal.get("zone_lower", 0.0)),
-                    float(signal.get("zone_upper", 0.0)),
-                    float(signal.get("hidden_volume", 0.0)),
-                    float(signal.get("absorption_rate", 0.0)) * 100.0,
-                    float(signal.get("active_volume", 0.0)),
-                    float(signal.get("confidence", 0.0)),
-                    float(signal.get("wait_ms", duration * 1000)),
-                    signal.get("trade_count", 0),
-                )
+                if bool(getattr(research_config, "V62_LOG_A1_ICEBERG_EVENT_ENABLED", True)):
+                    logger.info(
+                        "[A1-ICEBERG-EVENT] id=%s direction=%s quality=%s price=%.2f zone=[%.2f, %.2f] hidden=%.0fU absorption=%.1f%% active=%.0fU conf=%.2f wait=%.1fms trades=%s",
+                        signal.get("event_id"),
+                        direction,
+                        phase1_quality,
+                        float(signal.get("trigger_price", current_price or 0.0)),
+                        float(signal.get("zone_lower", 0.0)),
+                        float(signal.get("zone_upper", 0.0)),
+                        float(signal.get("hidden_volume", 0.0)),
+                        float(signal.get("absorption_rate", 0.0)) * 100.0,
+                        float(signal.get("active_volume", 0.0)),
+                        float(signal.get("confidence", 0.0)),
+                        float(signal.get("wait_ms", duration * 1000)),
+                        signal.get("trade_count", 0),
+                    )
                 return
 
             # 🌟 2. 插入防飞刀拦截器
