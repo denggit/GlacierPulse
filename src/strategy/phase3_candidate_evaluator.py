@@ -11,7 +11,7 @@ import time
 from typing import Any, Dict, Optional, Set
 
 from config import research_evaluator as research_config
-from src.strategy.a1_metadata import (
+from src.research.a1_frozen_metadata import (
     A1_COUNT_METADATA_FIELDS,
     A1_SCORE_METADATA_FIELDS,
     A1_STRING_METADATA_FIELDS,

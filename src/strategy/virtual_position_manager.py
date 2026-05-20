@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Deque, Dict, List, Optional
 
 from config import research_evaluator as cfg
-from src.strategy.a1_metadata import (
+from src.research.a1_frozen_metadata import (
     A1_COUNT_METADATA_FIELDS,
     A1_SCORE_METADATA_FIELDS,
     A1_STRING_METADATA_FIELDS,

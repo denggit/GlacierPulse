@@ -106,6 +106,26 @@ def test_v62_skeleton_imports():
     assert Phase3OutcomeEvaluator()
 
 
+def test_a1_frozen_metadata_field_schema_consistent():
+    from src.research.a1_frozen_metadata import (
+        A1_COUNT_METADATA_FIELDS,
+        A1_METADATA_FIELDS,
+        A1_SCORE_METADATA_FIELDS,
+        A1_STRING_METADATA_FIELDS,
+    )
+
+    assert set(A1_METADATA_FIELDS) == (
+        set(A1_STRING_METADATA_FIELDS)
+        | set(A1_COUNT_METADATA_FIELDS)
+        | set(A1_SCORE_METADATA_FIELDS)
+    )
+    assert "frozen_reason" in A1_STRING_METADATA_FIELDS
+    assert "frozen_state" in A1_STRING_METADATA_FIELDS
+    assert "iceberg_count" in A1_COUNT_METADATA_FIELDS
+    assert "high_count" in A1_COUNT_METADATA_FIELDS
+    assert "net_score" in A1_SCORE_METADATA_FIELDS
+
+
 def test_phase2_registers_frozen_zone_once(caplog):
     evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
     zone = _frozen_zone()
