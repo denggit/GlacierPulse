@@ -943,6 +943,12 @@ def _candidate(decision="ACCEPT_RESEARCH_CANDIDATE", direction="BUY", price=3000
     }
 
 
+def _accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1", phase2_total_score=0.8):
+    c = _candidate(direction=direction, price=price, stop=stop, zone_id=zone_id)
+    c["phase2_total_score"] = phase2_total_score
+    return c
+
+
 def test_virtual_accept_opens_wait_reject_block_and_single_position(caplog):
     m = VirtualPositionManager()
     with caplog.at_level(logging.INFO):
@@ -981,7 +987,7 @@ def test_virtual_skip_and_reject_counters_and_logs(caplog):
         assert m.on_candidate(_candidate(zone_id="z2")) is None
     assert m.total_skipped == 1
     assert m.total_rejected == 0
-    assert any("[VIRTUAL-POSITION-SKIP]" in r.message and "reason=active_position_exists" in r.message for r in caplog.records)
+    assert any("[VIRTUAL-POSITION-SKIP]" in r.message and "reason=support_phase2_score_too_low" in r.message for r in caplog.records)
 
     m2 = VirtualPositionManager()
     assert m2.on_candidate(_candidate(direction="BUY", price=3000.0, stop=3001.0)) is None
@@ -992,6 +998,209 @@ def test_virtual_skip_and_reject_counters_and_logs(caplog):
     assert m3.on_candidate(_candidate(decision="WAIT_RECLAIM_OR_MORE_FLOW")) is None
     assert m3.total_rejected == 0
     assert m3.total_skipped == 0
+
+
+def test_virtual_breakeven_moves_stop_for_long(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_TRIGGER_R", 1.0)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3002.0, ts=1.0)
+
+    pos = m.get_active_position()
+    assert pos["breakeven_activated"] is True
+    assert pos["dynamic_stop"] > pos["initial_stop"]
+    assert pos["dynamic_stop"] >= pos["open_price"]
+    assert pos["stop_update_count"] >= 1
+    summary = m.summary()
+    assert summary["active_dynamic_stop"] == pos["dynamic_stop"]
+    assert summary["active_initial_stop"] == pos["initial_stop"]
+    assert summary["active_best_price"] == pos["best_price"]
+    assert summary["active_breakeven_activated"] is True
+    assert summary["active_stop_update_count"] == pos["stop_update_count"]
+
+
+def test_virtual_breakeven_moves_stop_for_short(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_TRIGGER_R", 1.0)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0))
+    m.on_price(2998.0, ts=1.0)
+
+    pos = m.get_active_position()
+    assert pos["breakeven_activated"] is True
+    assert pos["dynamic_stop"] < pos["initial_stop"]
+    assert pos["dynamic_stop"] <= pos["open_price"]
+
+
+def test_virtual_trailing_moves_stop_after_favorable_move(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_TRIGGER_R", 1.5)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_DISTANCE_R", 0.8)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3004.0, ts=1.0)
+
+    pos = m.get_active_position()
+    assert pos["trailing_activated"] is True
+    assert pos["dynamic_stop"] > pos["initial_stop"]
+    assert pos["last_stop_update_reason"] == "TRAILING"
+
+
+def test_virtual_stop_cannot_move_backward_long_and_short(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_TRIGGER_R", 1.5)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_DISTANCE_R", 0.8)
+
+    long_m = VirtualPositionManager()
+    long_m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    long_m.on_price(3004.0, ts=1.0)
+    long_stop = long_m.get_active_position()["dynamic_stop"]
+    long_m.on_price(3003.0, ts=2.0)
+    assert long_m.get_active_position()["dynamic_stop"] == long_stop
+
+    short_m = VirtualPositionManager()
+    short_m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0))
+    short_m.on_price(2996.0, ts=1.0)
+    short_stop = short_m.get_active_position()["dynamic_stop"]
+    short_m.on_price(2997.0, ts=2.0)
+    assert short_m.get_active_position()["dynamic_stop"] == short_stop
+
+
+def test_virtual_dynamic_stop_used_for_stop_loss(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", False)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3002.0, ts=1.0)
+    dynamic_stop = m.get_active_position()["dynamic_stop"]
+    m.on_price(dynamic_stop, ts=2.0)
+
+    closed = m.get_closed_positions()[-1]
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert closed["exit_stop_used"] == dynamic_stop
+    original_stop_r = (2998.0 - 3000.0) / 2.0
+    assert closed["realized_r_multiple"] != original_stop_r
+
+
+def test_virtual_same_direction_support_update_does_not_add_position(caplog):
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"))
+    first = m.get_active_position()
+
+    support = _accepted_candidate(direction="BUY", price=3001.0, stop=2998.5, zone_id="z2")
+    with caplog.at_level(logging.INFO):
+        assert m.on_candidate(support)
+
+    pos = m.get_active_position()
+    assert pos["position_id"] == first["position_id"]
+    assert pos["virtual_size_eth"] == first["virtual_size_eth"]
+    assert m.total_opened == 1
+    assert m.active_position is not None
+    assert pos["support_update_count"] == 1
+    assert "z2" in pos["support_zone_ids"]
+    assert any("[VIRTUAL-SUPPORT-UPDATE]" in r.message for r in caplog.records)
+
+
+def test_virtual_same_direction_support_can_improve_stop():
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"))
+    m.on_price(3001.0, ts=1.0)
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3001.0, stop=2999.0, zone_id="z2"))
+
+    pos = m.get_active_position()
+    assert pos["dynamic_stop"] == 2999.0
+    assert pos["last_stop_update_reason"] == "SUPPORT_CANDIDATE"
+    assert pos["stop_update_count"] == 1
+
+
+def test_virtual_same_direction_support_cannot_worsen_stop():
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"))
+    m.on_price(3001.0, ts=1.0)
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3001.0, stop=2999.0, zone_id="z2"))
+    improved_stop = m.get_active_position()["dynamic_stop"]
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3001.0, stop=2998.0, zone_id="z3"))
+
+    assert m.get_active_position()["dynamic_stop"] == improved_stop
+
+
+def test_virtual_opposite_direction_candidate_skipped(caplog):
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"))
+    before_skipped = m.total_skipped
+
+    with caplog.at_level(logging.INFO):
+        assert m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0, zone_id="z2")) is None
+
+    assert m.get_active_position()["direction"] == "LONG"
+    assert m.total_opened == 1
+    assert m.total_closed == 0
+    assert m.total_skipped == before_skipped + 1
+    assert any("reason=opposite_direction_active_position_exists" in r.message for r in caplog.records)
+
+
+def test_virtual_support_zone_ids_bounded(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_SUPPORT_MAX_ZONE_IDS", 2)
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"))
+    for i in range(2, 5):
+        m.on_candidate(_accepted_candidate(direction="BUY", price=3001.0, stop=2998.5, zone_id=f"z{i}"))
+
+    assert m.get_active_position()["support_zone_ids"] == ["z3", "z4"]
+
+
+def test_virtual_breakeven_and_trailing_disabled_configs_respected(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", False)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3004.0, ts=1.0)
+
+    pos = m.get_active_position()
+    assert pos["breakeven_activated"] is False
+    assert pos["trailing_activated"] is False
+    assert pos["dynamic_stop"] == pos["initial_stop"]
+
+
+def test_virtual_position_manager_does_not_call_trader_or_order_api(monkeypatch):
+    from src.execution.trader import IcebergTrader
+
+    called = {"process_signal": 0, "request": 0}
+
+    async def _boom_process_signal(self, signal, current_price):
+        called["process_signal"] += 1
+        raise AssertionError("real trader must not be called")
+
+    async def _boom_request(self, method, endpoint, payload=None):
+        called["request"] += 1
+        raise AssertionError("order API must not be called")
+
+    monkeypatch.setattr(IcebergTrader, "process_signal", _boom_process_signal)
+    monkeypatch.setattr(IcebergTrader, "_request", _boom_request)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3002.0, ts=1.0)
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3001.0, stop=2999.0, zone_id="z2"))
+    m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0, zone_id="z3"))
+
+    assert called == {"process_signal": 0, "request": 0}
 
 
 def test_virtual_summary_uses_cumulative_stats_not_closed_window():
@@ -1014,6 +1223,13 @@ def test_virtual_summary_uses_cumulative_stats_not_closed_window():
     assert summary["loss_count"] == 1
     expected_avg_r = (-1.0 + research_config.VIRTUAL_TAKE_PROFIT_R_MULTIPLE + research_config.VIRTUAL_TAKE_PROFIT_R_MULTIPLE) / 3.0
     assert abs(summary["avg_realized_r"] - expected_avg_r) < 1e-9
+    assert summary["active_dynamic_stop"] == 0.0
+    assert summary["active_initial_stop"] == 0.0
+    assert summary["active_best_price"] == 0.0
+    assert summary["active_breakeven_activated"] is False
+    assert summary["active_trailing_activated"] is False
+    assert summary["active_stop_update_count"] == 0
+    assert summary["active_support_update_count"] == 0
 
 def test_virtual_long_short_stop_and_take_profit_and_maxlen():
     m = VirtualPositionManager()
