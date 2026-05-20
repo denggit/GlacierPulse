@@ -949,6 +949,71 @@ def _accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"
     return c
 
 
+def _closed_virtual_position(
+    position_id="vp-test",
+    zone_id="z-outcome",
+    direction="LONG",
+    phase2_type="SWEEP_RECLAIM",
+    candidate_type="SWEEP_RECLAIM_RETEST_ENTRY",
+    close_reason="TAKE_PROFIT_R_MULTIPLE",
+    realized_r_multiple=1.5,
+    realized_pnl_u=10.0,
+    breakeven_activated=False,
+    trailing_activated=False,
+    support_update_count=0,
+    open_ts=100.0,
+    close_ts=130.0,
+):
+    return {
+        "status": "CLOSED",
+        "position_id": position_id,
+        "zone_id": zone_id,
+        "direction": direction,
+        "phase2_type": phase2_type,
+        "candidate_type": candidate_type,
+        "open_ts": open_ts,
+        "close_ts": close_ts,
+        "open_price": 3000.0,
+        "close_price": 3003.0,
+        "close_reason": close_reason,
+        "initial_stop": 2998.0,
+        "dynamic_stop": 2999.0,
+        "exit_stop_used": 2999.0,
+        "take_profit_price": 3003.0,
+        "realized_pnl_u": realized_pnl_u,
+        "realized_pnl_pct_on_equity": realized_pnl_u / 1000.0,
+        "realized_r_multiple": realized_r_multiple,
+        "max_favorable_u": max(realized_pnl_u, 0.0),
+        "max_adverse_u": min(realized_pnl_u, -1.0),
+        "max_favorable_r": max(realized_r_multiple, 0.0),
+        "max_adverse_r": min(realized_r_multiple, -0.5),
+        "virtual_equity_at_open": 1000.0,
+        "virtual_margin_usdt": 100.0,
+        "virtual_notional_usdt": 1000.0,
+        "virtual_size_eth": 0.333333333333,
+        "leverage": 10.0,
+        "final_margin_usage_pct": 0.1,
+        "breakeven_activated": breakeven_activated,
+        "trailing_activated": trailing_activated,
+        "stop_update_count": int(breakeven_activated) + int(trailing_activated),
+        "support_update_count": support_update_count,
+        "support_zone_ids": ["support-1", "support-2"][:support_update_count],
+        "last_stop_update_reason": "SUPPORT_CANDIDATE" if support_update_count else "",
+        "phase2_total_score": 0.82,
+        "absorption_score": 0.9,
+        "pressure_decay_score": 0.8,
+        "reclaim_score": 0.7,
+        "retest_score": 0.6,
+        "book_absorption_score": 0.5,
+        "relevant_book_depth_available": True,
+        "reload_score": 0.3,
+        "has_swept_boundary": True,
+        "has_absorbed_after_sweep": True,
+        "has_reclaimed_boundary": True,
+        "has_retested_inside_zone": True,
+    }
+
+
 def test_virtual_accept_opens_wait_reject_block_and_single_position(caplog):
     m = VirtualPositionManager()
     with caplog.at_level(logging.INFO):
@@ -1245,6 +1310,186 @@ def test_virtual_long_short_stop_and_take_profit_and_maxlen():
     assert m.get_closed_positions()[-1]["close_reason"] == "TAKE_PROFIT_R_MULTIPLE"
     m.on_candidate(_candidate(zone_id="e")); m.on_price(2998.5, ts=5)
     assert len(m.get_closed_positions()) == 2
+
+
+def test_phase3_outcome_valid_closed_position_creates_outcome(caplog):
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(realized_r_multiple=1.5, realized_pnl_u=10.0)
+
+    with caplog.at_level(logging.INFO):
+        outcome = evaluator.on_virtual_position_closed(closed)
+
+    assert outcome is not None
+    assert evaluator.total_closed == 1
+    assert evaluator.summary()["global"]["win_count"] == 1
+    assert outcome["outcome_bucket"] == "BIG_WIN"
+    assert any("[PHASE3-OUTCOME]" in r.message for r in caplog.records)
+
+
+def test_phase3_outcome_invalid_input_skipped(caplog):
+    evaluator = Phase3OutcomeEvaluator()
+
+    with caplog.at_level(logging.INFO):
+        assert evaluator.on_virtual_position_closed(None) is None
+        assert evaluator.on_virtual_position_closed({}) is None
+        assert evaluator.on_virtual_position_closed({"status": "OPEN"}) is None
+
+    assert evaluator.total_closed == 0
+    assert any("[PHASE3-OUTCOME-SKIP]" in r.message for r in caplog.records)
+
+
+def test_phase3_outcome_group_stats_by_phase2_type():
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p1", phase2_type="SWEEP_RECLAIM", realized_r_multiple=1.5, realized_pnl_u=10.0))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p2", phase2_type="SWEEP_RECLAIM", close_reason="STOP_LOSS", realized_r_multiple=-1.0, realized_pnl_u=-5.0))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p3", phase2_type="CLEAN_HOLD", candidate_type="CLEAN_HOLD_LOW_RISK", realized_r_multiple=0.5, realized_pnl_u=4.0))
+
+    groups = evaluator.summary()["groups"]
+    assert groups["phase2_type=SWEEP_RECLAIM"]["count"] == 2
+    assert groups["phase2_type=CLEAN_HOLD"]["count"] == 1
+
+
+def test_phase3_outcome_management_groups():
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(
+        _closed_virtual_position(
+            breakeven_activated=True,
+            trailing_activated=True,
+            support_update_count=2,
+        )
+    )
+
+    groups = evaluator.summary()["groups"]
+    assert "breakeven=True" in groups
+    assert "trailing=True" in groups
+    assert "support_used=True" in groups
+
+
+def test_phase3_outcome_profit_factor_calculation():
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p1", realized_r_multiple=1.5, realized_pnl_u=15.0))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p2", close_reason="STOP_LOSS", realized_r_multiple=-1.0, realized_pnl_u=-10.0))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p3", realized_r_multiple=0.5, realized_pnl_u=5.0))
+
+    assert evaluator.summary()["global"]["profit_factor_r"] == 2.0
+    assert evaluator.summary()["groups"]["ALL"]["profit_factor_r"] == 2.0
+
+
+def test_phase3_outcome_closed_positions_bounded(monkeypatch):
+    monkeypatch.setattr(research_config, "PHASE3_OUTCOME_MAX_CLOSED_POSITIONS", 2)
+    evaluator = Phase3OutcomeEvaluator()
+
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p1", realized_r_multiple=1.0, realized_pnl_u=10.0))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p2", realized_r_multiple=1.0, realized_pnl_u=10.0))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="p3", realized_r_multiple=-1.0, realized_pnl_u=-10.0))
+
+    summary = evaluator.summary()
+    assert len(evaluator.closed_positions) == 2
+    assert evaluator.total_closed == 3
+    assert summary["global"]["total_closed"] == 3
+    assert summary["global"]["total_realized_pnl_u"] == 10.0
+
+
+def test_virtual_position_closed_event_queue_pop_once():
+    m = VirtualPositionManager()
+    m.on_candidate(_candidate(zone_id="closed-event"))
+    m.on_price(2998.5, ts=1.0)
+
+    first = m.pop_closed_events()
+    second = m.pop_closed_events()
+    assert len(first) == 1
+    assert first[0]["status"] == "CLOSED"
+    assert second == []
+
+
+def test_phase1_integration_drains_closed_events():
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+
+    class _V:
+        def __init__(self):
+            self.events = [_closed_virtual_position(position_id="p-drain")]
+
+        def pop_closed_events(self):
+            events = self.events
+            self.events = []
+            return events
+
+    class _Outcome:
+        def __init__(self):
+            self.closed = []
+
+        def on_virtual_position_closed(self, event):
+            self.closed.append(event)
+
+    eng = Phase1Engine(_Ctx(), iceberg_detector=None)
+    eng.virtual_position_manager = _V()
+    eng.phase3_trade_outcome_evaluator = _Outcome()
+    eng._drain_virtual_position_closed_events()
+
+    assert len(eng.phase3_trade_outcome_evaluator.closed) == 1
+
+
+def test_phase1_catches_outcome_exception(caplog):
+    class _Ctx:
+        current_price = 3000.0
+        bids = {3000.0: 1.0}
+        asks = {3001.0: 1.0}
+
+    class _V:
+        def pop_closed_events(self):
+            return [_closed_virtual_position(position_id="p-boom")]
+
+    class _Outcome:
+        def on_virtual_position_closed(self, event):
+            raise RuntimeError("boom")
+
+    eng = Phase1Engine(_Ctx(), iceberg_detector=None)
+    eng.virtual_position_manager = _V()
+    eng.phase3_trade_outcome_evaluator = _Outcome()
+
+    with caplog.at_level(logging.ERROR):
+        eng._drain_virtual_position_closed_events()
+
+    assert any("[PHASE3-OUTCOME-FAILED]" in r.message for r in caplog.records)
+
+
+def test_phase3_outcome_evaluator_does_not_call_trader_or_order_api(monkeypatch):
+    from src.execution.trader import IcebergTrader
+
+    called = {"process_signal": 0, "request": 0}
+
+    async def _boom_process_signal(self, signal, current_price):
+        called["process_signal"] += 1
+        raise AssertionError("real trader must not be called")
+
+    async def _boom_request(self, method, endpoint, payload=None):
+        called["request"] += 1
+        raise AssertionError("order API must not be called")
+
+    monkeypatch.setattr(IcebergTrader, "process_signal", _boom_process_signal)
+    monkeypatch.setattr(IcebergTrader, "_request", _boom_request)
+
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(_closed_virtual_position())
+
+    assert called == {"process_signal": 0, "request": 0}
+
+
+def test_phase3_outcome_summary_log_throttled(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "PHASE3_OUTCOME_SUMMARY_LOG_INTERVAL_SEC", 999999.0)
+    evaluator = Phase3OutcomeEvaluator()
+
+    with caplog.at_level(logging.INFO):
+        for i in range(3):
+            evaluator.on_virtual_position_closed(_closed_virtual_position(position_id=f"p{i}", close_ts=130.0 + i))
+
+    outcome_logs = [r.message for r in caplog.records if "[PHASE3-OUTCOME]" in r.message]
+    summary_logs = [r.message for r in caplog.records if "[PHASE3-OUTCOME-SUMMARY]" in r.message]
+    assert len(outcome_logs) == 3
+    assert len(summary_logs) == 0
 
 
 def test_phase1_virtual_integration_and_execution_modes(monkeypatch):

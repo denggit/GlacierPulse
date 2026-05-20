@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional
 from config.research_evaluator import (
     PHASE2_ORDERFLOW_EVALUATOR_ENABLED,
     PHASE3_CANDIDATE_EVALUATOR_ENABLED,
+    PHASE3_OUTCOME_EVALUATOR_ENABLED,
     VIRTUAL_POSITION_MANAGER_ENABLED,
     REAL_EXECUTION_ENABLED,
     VIRTUAL_SHADOW_MODE,
@@ -59,7 +60,11 @@ class Phase1Engine:
             if PHASE3_CANDIDATE_EVALUATOR_ENABLED
             else None
         )
-        self.phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        self.phase3_trade_outcome_evaluator = (
+            Phase3OutcomeEvaluator()
+            if PHASE3_OUTCOME_EVALUATOR_ENABLED
+            else None
+        )
         virtual_should_run = (
             VIRTUAL_POSITION_MANAGER_ENABLED
             and ((not REAL_EXECUTION_ENABLED) or VIRTUAL_SHADOW_MODE)
@@ -84,6 +89,7 @@ class Phase1Engine:
         if self.virtual_position_manager:
             try:
                 self.virtual_position_manager.on_price(price=price, ts=trade_ts)
+                self._drain_virtual_position_closed_events()
             except Exception:
                 logger.exception("[VIRTUAL-POSITION-FAILED] stage=on_price")
 
@@ -550,6 +556,7 @@ class Phase1Engine:
                 if result and self.virtual_position_manager:
                     try:
                         self.virtual_position_manager.on_candidate(result)
+                        self._drain_virtual_position_closed_events()
                     except Exception:
                         logger.exception("[VIRTUAL-POSITION-FAILED] stage=on_candidate zone_id=%s", event.get("zone_id") if isinstance(event, dict) else None)
             except Exception:
@@ -557,6 +564,22 @@ class Phase1Engine:
                     "[PHASE3-CANDIDATE-FAILED] zone_id=%s",
                     event.get("zone_id") if isinstance(event, dict) else None,
                 )
+
+    def _drain_virtual_position_closed_events(self) -> None:
+        if not self.virtual_position_manager or not self.phase3_trade_outcome_evaluator:
+            return
+        try:
+            pop_events = getattr(self.virtual_position_manager, "pop_closed_events", None)
+            if not callable(pop_events):
+                return
+            closed_events = pop_events()
+            for closed_event in closed_events or []:
+                try:
+                    self.phase3_trade_outcome_evaluator.on_virtual_position_closed(closed_event)
+                except Exception:
+                    logger.exception("[PHASE3-OUTCOME-FAILED] position_id=%s", closed_event.get("position_id") if isinstance(closed_event, dict) else None)
+        except Exception:
+            logger.exception("[PHASE3-OUTCOME-FAILED] stage=pop_closed_events")
 
     def _build_iceberg_impact_event(
         self,

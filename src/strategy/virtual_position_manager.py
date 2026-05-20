@@ -82,6 +82,7 @@ class VirtualPositionManager:
     def __init__(self):
         self.active_position: Optional[VirtualPosition] = None
         self.closed_positions: Deque[Dict[str, Any]] = deque(maxlen=max(1, int(cfg.VIRTUAL_MAX_CLOSED_POSITIONS)))
+        self.closed_events: Deque[Dict[str, Any]] = deque(maxlen=max(1, int(cfg.PHASE3_OUTCOME_MAX_CLOSED_POSITIONS)))
         self.virtual_equity_usdt: float = float(cfg.VIRTUAL_INITIAL_EQUITY_USDT)
         self.total_opened = 0
         self.total_closed = 0
@@ -333,6 +334,7 @@ class VirtualPositionManager:
         self.virtual_equity_usdt += pos.realized_pnl_u
         snapshot = asdict(pos)
         self.closed_positions.append(snapshot)
+        self.closed_events.append(snapshot)
         self.active_position = None
         self.total_closed += 1
         self.cumulative_realized_pnl_u += pos.realized_pnl_u
@@ -352,6 +354,11 @@ class VirtualPositionManager:
 
     def get_closed_positions(self) -> List[Dict[str, Any]]:
         return list(self.closed_positions)
+
+    def pop_closed_events(self) -> List[Dict[str, Any]]:
+        events = list(self.closed_events)
+        self.closed_events.clear()
+        return events
 
     def summary(self) -> Dict[str, Any]:
         closed = list(self.closed_positions)
