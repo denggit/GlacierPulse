@@ -16,6 +16,8 @@ from config.research_evaluator import (
     PHASE2_ORDERFLOW_EVALUATOR_ENABLED,
     PHASE3_CANDIDATE_EVALUATOR_ENABLED,
     VIRTUAL_POSITION_MANAGER_ENABLED,
+    REAL_EXECUTION_ENABLED,
+    VIRTUAL_SHADOW_MODE,
 )
 from src.strategy.iceberg.zone_tracker import IcebergZoneTracker
 from src.strategy.iceberg.outcome_evaluator import IcebergOutcomeEvaluator
@@ -58,11 +60,11 @@ class Phase1Engine:
             else None
         )
         self.phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
-        self.virtual_position_manager = (
-            VirtualPositionManager()
-            if VIRTUAL_POSITION_MANAGER_ENABLED
-            else None
+        virtual_should_run = (
+            VIRTUAL_POSITION_MANAGER_ENABLED
+            and ((not REAL_EXECUTION_ENABLED) or VIRTUAL_SHADOW_MODE)
         )
+        self.virtual_position_manager = VirtualPositionManager() if virtual_should_run else None
 
     def process_tick(self, trade_data: Dict[str, Any]) -> Optional[Dict]:
         return self.on_trade(trade_data)
@@ -79,6 +81,11 @@ class Phase1Engine:
         except Exception:
             logger.exception("[ICEBERG-ZONE-OUTCOME] evaluator_on_price_failed")
         self._update_phase2_orderflow(trade_data=trade_data, price=price, trade_ts=trade_ts)
+        if self.virtual_position_manager:
+            try:
+                self.virtual_position_manager.on_price(price=price, ts=trade_ts)
+            except Exception:
+                logger.exception("[VIRTUAL-POSITION-FAILED] stage=on_price")
 
         active_notional = price * size
         if active_notional < self.min_event_merge_notional_usdt:
@@ -539,7 +546,12 @@ class Phase1Engine:
 
         for event in phase2_events or []:
             try:
-                self.phase3_candidate_evaluator.evaluate_phase2_confirmed(event)
+                result = self.phase3_candidate_evaluator.evaluate_phase2_confirmed(event)
+                if result and self.virtual_position_manager:
+                    try:
+                        self.virtual_position_manager.on_candidate(result)
+                    except Exception:
+                        logger.exception("[VIRTUAL-POSITION-FAILED] stage=on_candidate zone_id=%s", event.get("zone_id") if isinstance(event, dict) else None)
             except Exception:
                 logger.exception(
                     "[PHASE3-CANDIDATE-FAILED] zone_id=%s",
