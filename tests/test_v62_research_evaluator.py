@@ -963,7 +963,11 @@ def _closed_virtual_position(
     support_update_count=0,
     open_ts=100.0,
     close_ts=130.0,
+    max_adverse_r=None,
+    max_favorable_r=None,
 ):
+    adverse_r = min(realized_r_multiple, -0.5) if max_adverse_r is None else max_adverse_r
+    favorable_r = max(realized_r_multiple, 0.0) if max_favorable_r is None else max_favorable_r
     return {
         "status": "CLOSED",
         "position_id": position_id,
@@ -985,8 +989,8 @@ def _closed_virtual_position(
         "realized_r_multiple": realized_r_multiple,
         "max_favorable_u": max(realized_pnl_u, 0.0),
         "max_adverse_u": min(realized_pnl_u, -1.0),
-        "max_favorable_r": max(realized_r_multiple, 0.0),
-        "max_adverse_r": min(realized_r_multiple, -0.5),
+        "max_favorable_r": favorable_r,
+        "max_adverse_r": adverse_r,
         "virtual_equity_at_open": 1000.0,
         "virtual_margin_usdt": 100.0,
         "virtual_notional_usdt": 1000.0,
@@ -1490,6 +1494,214 @@ def test_phase3_outcome_summary_log_throttled(monkeypatch, caplog):
     summary_logs = [r.message for r in caplog.records if "[PHASE3-OUTCOME-SUMMARY]" in r.message]
     assert len(outcome_logs) == 3
     assert len(summary_logs) == 0
+
+
+def test_phase3_outcome_candidate_type_research_inferred_from_sweep_reclaim():
+    evaluator = Phase3OutcomeEvaluator()
+    outcome = evaluator.on_virtual_position_closed(
+        _closed_virtual_position(
+            candidate_type="RESEARCH",
+            phase2_type="SWEEP_RECLAIM",
+        )
+    )
+
+    assert outcome["candidate_type"] == "SWEEP_RECLAIM_RETEST_ENTRY"
+
+
+def test_phase3_outcome_candidate_type_empty_inferred_from_clean_hold():
+    evaluator = Phase3OutcomeEvaluator()
+    outcome = evaluator.on_virtual_position_closed(
+        _closed_virtual_position(
+            candidate_type="",
+            phase2_type="CLEAN_HOLD",
+        )
+    )
+
+    assert outcome["candidate_type"] == "CLEAN_HOLD_LOW_RISK"
+
+
+def test_phase3_outcome_candidate_type_research_inferred_from_below_zone_absorption():
+    evaluator = Phase3OutcomeEvaluator()
+    outcome = evaluator.on_virtual_position_closed(
+        _closed_virtual_position(
+            candidate_type="RESEARCH",
+            phase2_type="BELOW_ZONE_ABSORPTION",
+        )
+    )
+
+    assert outcome["candidate_type"] == "BELOW_ZONE_ABSORPTION_ENTRY"
+
+
+def test_phase3_outcome_non_canonical_candidate_type_warns(caplog):
+    evaluator = Phase3OutcomeEvaluator()
+
+    with caplog.at_level(logging.WARNING):
+        outcome = evaluator.on_virtual_position_closed(
+            _closed_virtual_position(
+                candidate_type="WEIRD_TYPE",
+                phase2_type="UNKNOWN_PHASE2",
+            )
+        )
+
+    assert outcome["candidate_type"] == "WEIRD_TYPE"
+    assert any(
+        "[PHASE3-OUTCOME-WARN]" in r.message
+        and "reason=non_canonical_candidate_type" in r.message
+        for r in caplog.records
+    )
+
+
+def test_phase3_outcome_avg_mae_abs_r_global_and_group():
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(
+        _closed_virtual_position(position_id="mae-1", max_adverse_r=-0.5)
+    )
+    evaluator.on_virtual_position_closed(
+        _closed_virtual_position(position_id="mae-2", max_adverse_r=-1.0)
+    )
+
+    summary = evaluator.summary()
+    assert summary["global"]["avg_mae_r"] == -0.75
+    assert summary["global"]["avg_mae_abs_r"] == 0.75
+    assert summary["groups"]["ALL"]["avg_mae_abs_r"] == 0.75
+
+
+def test_phase3_outcome_best_group_excludes_all_with_small_sample(monkeypatch):
+    monkeypatch.setattr(research_config, "PHASE3_OUTCOME_MIN_GROUP_SAMPLE_SIZE", 5)
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="small-sample"))
+
+    best_group = Phase3OutcomeEvaluator._best_group(
+        evaluator.summary()["groups"],
+        prefix=None,
+        reverse=True,
+    )
+
+    assert best_group
+    assert best_group != "ALL"
+
+
+def test_phase3_outcome_best_phase2_type_excludes_combined_group():
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(
+        _closed_virtual_position(position_id="phase2-best-1", phase2_type="SWEEP_RECLAIM")
+    )
+    evaluator.on_virtual_position_closed(
+        _closed_virtual_position(
+            position_id="phase2-best-2",
+            phase2_type="CLEAN_HOLD",
+            candidate_type="CLEAN_HOLD_LOW_RISK",
+            realized_r_multiple=-1.0,
+            realized_pnl_u=-10.0,
+        )
+    )
+
+    best_phase2 = Phase3OutcomeEvaluator._best_group(
+        evaluator.summary()["groups"],
+        prefix="phase2_type=",
+        reverse=True,
+    )
+
+    assert best_phase2.startswith("phase2_type=")
+    assert "|" not in best_phase2
+
+
+def test_phase3_outcome_duplicate_position_id_skipped(caplog):
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(position_id="dup-1")
+
+    with caplog.at_level(logging.INFO):
+        assert evaluator.on_virtual_position_closed(closed) is not None
+        assert evaluator.on_virtual_position_closed(closed) is None
+
+    assert evaluator.total_closed == 1
+    assert evaluator.total_duplicate_skipped == 1
+    assert any("duplicate_position_id" in r.message for r in caplog.records)
+
+
+def test_phase3_outcome_duplicate_position_id_allowed_when_dedup_disabled(monkeypatch):
+    monkeypatch.setattr(research_config, "PHASE3_OUTCOME_DEDUP_ENABLED", False)
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(position_id="dup-disabled")
+
+    assert evaluator.on_virtual_position_closed(closed) is not None
+    assert evaluator.on_virtual_position_closed(closed) is not None
+
+    assert evaluator.total_closed == 2
+    assert evaluator.total_duplicate_skipped == 0
+
+
+def test_phase3_outcome_summary_dedup_fields():
+    evaluator = Phase3OutcomeEvaluator()
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="dedup-summary"))
+    evaluator.on_virtual_position_closed(_closed_virtual_position(position_id="dedup-summary"))
+
+    summary = evaluator.summary()
+    assert summary["total_duplicate_skipped"] == 1
+    assert summary["dedup_enabled"] is True
+    assert summary["processed_position_ids_count"] == 1
+    assert summary["global"]["total_duplicate_skipped"] == 1
+
+
+def test_virtual_stop_loss_uses_old_dynamic_stop_before_updates(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.active_position.dynamic_stop = 3001.0
+    m.active_position.stop_update_count = 0
+    m.on_price(2997.0, ts=1.0)
+
+    closed = m.get_closed_positions()[-1]
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert closed["exit_stop_used"] == 3001.0
+    assert closed["stop_update_count"] == 0
+    assert closed["breakeven_activated"] is False
+    assert closed["trailing_activated"] is False
+
+
+def test_virtual_long_jump_through_stop_does_not_update_trailing_on_stop_tick(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_TRIGGER_R", 1.5)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_DISTANCE_R", 0.8)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0))
+    m.on_price(3004.0, ts=1.0)
+    stop_before_jump = m.get_active_position()["dynamic_stop"]
+    updates_before_jump = m.get_active_position()["stop_update_count"]
+    m.on_price(stop_before_jump - 2.0, ts=2.0)
+
+    closed = m.get_closed_positions()[-1]
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert closed["exit_stop_used"] == stop_before_jump
+    assert closed["stop_update_count"] == updates_before_jump
+    assert closed["last_stop_update_reason"] == "TRAILING"
+
+
+def test_virtual_short_jump_through_stop_uses_old_dynamic_stop(monkeypatch):
+    monkeypatch.setattr(research_config, "VIRTUAL_TAKE_PROFIT_R_MULTIPLE", 10.0)
+    monkeypatch.setattr(research_config, "VIRTUAL_BREAKEVEN_ENABLED", False)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_ENABLED", True)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_TRIGGER_R", 1.5)
+    monkeypatch.setattr(research_config, "VIRTUAL_TRAILING_DISTANCE_R", 0.8)
+
+    m = VirtualPositionManager()
+    m.on_candidate(_accepted_candidate(direction="SELL", price=3000.0, stop=3002.0))
+    m.on_price(2996.0, ts=1.0)
+    stop_before_jump = m.get_active_position()["dynamic_stop"]
+    updates_before_jump = m.get_active_position()["stop_update_count"]
+    m.on_price(stop_before_jump + 2.0, ts=2.0)
+
+    closed = m.get_closed_positions()[-1]
+    assert closed["close_reason"] == "STOP_LOSS"
+    assert closed["exit_stop_used"] == stop_before_jump
+    assert closed["stop_update_count"] == updates_before_jump
+    assert closed["last_stop_update_reason"] == "TRAILING"
 
 
 def test_phase1_virtual_integration_and_execution_modes(monkeypatch):

@@ -177,7 +177,14 @@ class VirtualPositionManager:
         if pos is None:
             return None
         now_ts = self._as_float(ts, time.time())
+        old_dynamic_stop = pos.dynamic_stop
         pos.current_price = float(price)
+
+        if pos.direction == "LONG" and pos.current_price <= old_dynamic_stop:
+            return self._close_position(pos.current_price, now_ts, "STOP_LOSS", exit_stop_used_override=old_dynamic_stop)
+        if pos.direction == "SHORT" and pos.current_price >= old_dynamic_stop:
+            return self._close_position(pos.current_price, now_ts, "STOP_LOSS", exit_stop_used_override=old_dynamic_stop)
+
         if pos.direction == "LONG":
             pos.best_price = max(pos.best_price, pos.current_price)
             pos.unrealized_pnl_u = pos.virtual_size_eth * (pos.current_price - pos.open_price)
@@ -196,11 +203,7 @@ class VirtualPositionManager:
         self._maybe_apply_trailing(pos, now_ts)
 
         close_reason = None
-        if pos.direction == "LONG" and pos.current_price <= pos.dynamic_stop:
-            close_reason = "STOP_LOSS"
-        elif pos.direction == "SHORT" and pos.current_price >= pos.dynamic_stop:
-            close_reason = "STOP_LOSS"
-        elif pos.direction == "LONG" and pos.current_price >= pos.take_profit_price:
+        if pos.direction == "LONG" and pos.current_price >= pos.take_profit_price:
             close_reason = "TAKE_PROFIT_R_MULTIPLE"
         elif pos.direction == "SHORT" and pos.current_price <= pos.take_profit_price:
             close_reason = "TAKE_PROFIT_R_MULTIPLE"
@@ -314,7 +317,13 @@ class VirtualPositionManager:
     def _log_stop_update(self, pos: VirtualPosition, now_ts: float, reason: str, old_stop: float, new_stop: float, zone_id: str) -> None:
         logger.info("[VIRTUAL-STOP-UPDATE] position_id=%s zone_id=%s direction=%s ts=%.3f reason=%s old_stop=%.6f new_stop=%.6f initial_stop=%.6f dynamic_stop=%.6f open_price=%.6f current_price=%.6f best_price=%.6f unrealized_r_multiple=%.6f max_favorable_r=%.6f stop_update_count=%d breakeven_activated=%s trailing_activated=%s", pos.position_id, zone_id, pos.direction, now_ts, reason, old_stop, new_stop, pos.initial_stop, pos.dynamic_stop, pos.open_price, pos.current_price, pos.best_price, pos.unrealized_r_multiple, pos.max_favorable_r, pos.stop_update_count, pos.breakeven_activated, pos.trailing_activated)
 
-    def _close_position(self, close_price: float, close_ts: float, close_reason: str) -> Dict[str, Any]:
+    def _close_position(
+        self,
+        close_price: float,
+        close_ts: float,
+        close_reason: str,
+        exit_stop_used_override: Optional[float] = None,
+    ) -> Dict[str, Any]:
         pos = self.active_position
         if pos is None:
             return {}
@@ -323,7 +332,10 @@ class VirtualPositionManager:
         pos.close_ts = close_ts
         pos.close_reason = close_reason if close_reason in {"STOP_LOSS", "TAKE_PROFIT_R_MULTIPLE", "MANUAL_RESET", "REPLACED", "UNKNOWN"} else "UNKNOWN"
         pos.status = "CLOSED"
-        pos.exit_stop_used = pos.dynamic_stop if pos.close_reason == "STOP_LOSS" else pos.dynamic_stop
+        if pos.close_reason == "STOP_LOSS" and exit_stop_used_override is not None:
+            pos.exit_stop_used = float(exit_stop_used_override)
+        else:
+            pos.exit_stop_used = pos.dynamic_stop
         if pos.direction == "LONG":
             pos.realized_pnl_u = pos.virtual_size_eth * (pos.close_price - pos.open_price)
             pos.realized_r_multiple = (pos.close_price - pos.open_price) / pos.risk_distance_u

@@ -5,7 +5,7 @@
 import logging
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Set
 
 from config import research_evaluator as cfg
 
@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 
 
 class Phase3OutcomeEvaluator:
+    CANONICAL_CANDIDATE_TYPES = {
+        "SWEEP_RECLAIM_RETEST_ENTRY",
+        "CLEAN_HOLD_LOW_RISK",
+        "BELOW_ZONE_ABSORPTION_ENTRY",
+    }
+    PHASE2_TO_CANDIDATE_TYPE = {
+        "SWEEP_RECLAIM": "SWEEP_RECLAIM_RETEST_ENTRY",
+        "CLEAN_HOLD": "CLEAN_HOLD_LOW_RISK",
+        "BELOW_ZONE_ABSORPTION": "BELOW_ZONE_ABSORPTION_ENTRY",
+    }
     REQUIRED_FIELDS = (
         "position_id",
         "zone_id",
@@ -39,11 +49,18 @@ class Phase3OutcomeEvaluator:
         self.cumulative_negative_r_abs = 0.0
         self.cumulative_mfe_r = 0.0
         self.cumulative_mae_r = 0.0
+        self.cumulative_mae_abs_r = 0.0
         self.cumulative_holding_seconds = 0.0
         self.max_win_r = 0.0
         self.max_loss_r = 0.0
         self.last_summary_log_ts = 0.0
         self.group_stats: Dict[str, Dict[str, Any]] = {}
+        self.dedup_enabled = bool(cfg.PHASE3_OUTCOME_DEDUP_ENABLED)
+        self.processed_position_ids: Deque[str] = deque(
+            maxlen=max(1, int(cfg.PHASE3_OUTCOME_DEDUP_MAX_IDS))
+        )
+        self.processed_position_id_set: Set[str] = set()
+        self.total_duplicate_skipped = 0
         self.outcomes = self.closed_positions
 
     def record(self, outcome: Dict[str, Any]) -> None:
@@ -60,6 +77,9 @@ class Phase3OutcomeEvaluator:
             missing = [field for field in self.REQUIRED_FIELDS if field not in closed_position]
             if missing:
                 self._log_skip("missing_required_fields:%s" % ",".join(missing), closed_position)
+                return None
+            position_id = str(closed_position.get("position_id", ""))
+            if not self._mark_processed_position_id(position_id):
                 return None
 
             outcome = self._normalize_closed_position(closed_position)
@@ -84,6 +104,9 @@ class Phase3OutcomeEvaluator:
             "recent_closed_count": len(self.closed_positions),
             "total_closed": self.total_closed,
             "sample_size": self.total_closed,
+            "total_duplicate_skipped": self.total_duplicate_skipped,
+            "dedup_enabled": self.dedup_enabled,
+            "processed_position_ids_count": len(self.processed_position_id_set),
         }
 
     def _normalize_closed_position(self, closed_position: Dict[str, Any]) -> Dict[str, Any]:
@@ -113,12 +136,20 @@ class Phase3OutcomeEvaluator:
             len(support_zone_ids) if isinstance(support_zone_ids, list) else 0,
         )
 
+        phase2_type = str(closed_position.get("phase2_type", ""))
+        position_id = str(closed_position.get("position_id", ""))
+        candidate_type = self._normalize_candidate_type(
+            closed_position.get("candidate_type"),
+            phase2_type=phase2_type,
+            position_id=position_id,
+        )
+
         outcome = {
-            "position_id": str(closed_position.get("position_id", "")),
+            "position_id": position_id,
             "zone_id": str(closed_position.get("zone_id", "")),
             "direction": direction,
-            "phase2_type": str(closed_position.get("phase2_type", "")),
-            "candidate_type": str(closed_position.get("candidate_type", "")),
+            "phase2_type": phase2_type,
+            "candidate_type": candidate_type,
             "open_ts": open_ts,
             "close_ts": close_ts,
             "holding_seconds": holding_seconds,
@@ -185,7 +216,9 @@ class Phase3OutcomeEvaluator:
         elif realized_r < 0:
             self.cumulative_negative_r_abs += abs(realized_r)
         self.cumulative_mfe_r += self._as_float(outcome.get("max_favorable_r"))
-        self.cumulative_mae_r += self._as_float(outcome.get("max_adverse_r"))
+        mae_r = self._as_float(outcome.get("max_adverse_r"))
+        self.cumulative_mae_r += mae_r
+        self.cumulative_mae_abs_r += abs(mae_r)
         self.cumulative_holding_seconds += self._as_float(outcome.get("holding_seconds"))
         self.max_win_r = max(self.max_win_r, realized_r)
         self.max_loss_r = min(self.max_loss_r, realized_r)
@@ -231,7 +264,9 @@ class Phase3OutcomeEvaluator:
             raw_group["max_win_r"] = max(raw_group["max_win_r"], realized_r)
             raw_group["max_loss_r"] = min(raw_group["max_loss_r"], realized_r)
             raw_group["mfe_r_sum"] += self._as_float(outcome.get("max_favorable_r"))
-            raw_group["mae_r_sum"] += self._as_float(outcome.get("max_adverse_r"))
+            mae_r = self._as_float(outcome.get("max_adverse_r"))
+            raw_group["mae_r_sum"] += mae_r
+            raw_group["mae_abs_r_sum"] += abs(mae_r)
             raw_group["holding_seconds_sum"] += self._as_float(outcome.get("holding_seconds"))
             raw_group["stop_loss_count"] += 1 if outcome.get("close_reason") == "STOP_LOSS" else 0
             raw_group["take_profit_count"] += 1 if outcome.get("close_reason") == "TAKE_PROFIT_R_MULTIPLE" else 0
@@ -261,6 +296,7 @@ class Phase3OutcomeEvaluator:
             "max_loss_r": self._as_float(raw_group.get("max_loss_r")) if count else 0.0,
             "avg_mfe_r": self._ratio(raw_group.get("mfe_r_sum"), count),
             "avg_mae_r": self._ratio(raw_group.get("mae_r_sum"), count),
+            "avg_mae_abs_r": self._ratio(raw_group.get("mae_abs_r_sum"), count),
             "avg_holding_seconds": self._ratio(raw_group.get("holding_seconds_sum"), count),
             "stop_loss_count": self._as_int(raw_group.get("stop_loss_count")),
             "take_profit_count": self._as_int(raw_group.get("take_profit_count")),
@@ -307,12 +343,15 @@ class Phase3OutcomeEvaluator:
         logger.info(
             "[PHASE3-OUTCOME-SUMMARY] total_closed=%d win_rate=%.6f avg_realized_r=%.6f "
             "total_realized_pnl_u=%.6f profit_factor_r=%.6f max_win_r=%.6f max_loss_r=%.6f "
-            "avg_mfe_r=%.6f avg_mae_r=%.6f best_group_by_avg_r=%s worst_group_by_avg_r=%s "
+            "avg_mfe_r=%.6f avg_mae_r=%.6f avg_mae_abs_r=%.6f duplicate_skipped=%d "
+            "recent_closed_count=%d sample_size=%d best_group_by_avg_r=%s worst_group_by_avg_r=%s "
             "best_phase2_type=%s worst_phase2_type=%s",
             global_summary["total_closed"], global_summary["win_rate"], global_summary["avg_realized_r"],
             global_summary["total_realized_pnl_u"], global_summary["profit_factor_r"],
             global_summary["max_win_r"], global_summary["max_loss_r"], global_summary["avg_mfe_r"],
-            global_summary["avg_mae_r"], best_group, worst_group, best_phase2, worst_phase2,
+            global_summary["avg_mae_r"], global_summary["avg_mae_abs_r"], self.total_duplicate_skipped,
+            summary["recent_closed_count"], summary["sample_size"], best_group, worst_group, best_phase2,
+            worst_phase2,
         )
 
     def _global_summary(self) -> Dict[str, Any]:
@@ -334,7 +373,9 @@ class Phase3OutcomeEvaluator:
             "max_loss_r": self.max_loss_r if total else 0.0,
             "avg_mfe_r": self._ratio(self.cumulative_mfe_r, total),
             "avg_mae_r": self._ratio(self.cumulative_mae_r, total),
+            "avg_mae_abs_r": self._ratio(self.cumulative_mae_abs_r, total),
             "avg_holding_seconds": self._ratio(self.cumulative_holding_seconds, total),
+            "total_duplicate_skipped": self.total_duplicate_skipped,
         }
 
     @staticmethod
@@ -352,6 +393,7 @@ class Phase3OutcomeEvaluator:
             "max_loss_r": 0.0,
             "mfe_r_sum": 0.0,
             "mae_r_sum": 0.0,
+            "mae_abs_r_sum": 0.0,
             "holding_seconds_sum": 0.0,
             "stop_loss_count": 0,
             "take_profit_count": 0,
@@ -373,17 +415,87 @@ class Phase3OutcomeEvaluator:
         return "FULL_R_LOSS_OR_WORSE"
 
     @staticmethod
-    def _best_group(groups: Dict[str, Dict[str, Any]], prefix: Optional[str], reverse: bool) -> str:
-        candidates = []
-        for key, group in groups.items():
-            if prefix is not None:
-                if not key.startswith(prefix) or "|" in key:
-                    continue
-            candidates.append((key, group.get("avg_realized_r", 0.0)))
+    def _best_group(
+        groups: Dict[str, Dict[str, Any]],
+        prefix: Optional[str],
+        reverse: bool,
+        exclude_all: bool = True,
+        require_min_sample_size: bool = True,
+    ) -> str:
+        candidates = Phase3OutcomeEvaluator._group_candidates(
+            groups=groups,
+            prefix=prefix,
+            exclude_all=exclude_all,
+            require_min_sample_size=require_min_sample_size,
+        )
+        if not candidates and require_min_sample_size:
+            candidates = Phase3OutcomeEvaluator._group_candidates(
+                groups=groups,
+                prefix=prefix,
+                exclude_all=exclude_all,
+                require_min_sample_size=False,
+            )
         if not candidates:
             return ""
         candidates.sort(key=lambda item: item[1], reverse=reverse)
         return candidates[0][0]
+
+    @staticmethod
+    def _group_candidates(
+        groups: Dict[str, Dict[str, Any]],
+        prefix: Optional[str],
+        exclude_all: bool,
+        require_min_sample_size: bool,
+    ) -> List[Any]:
+        candidates = []
+        for key, group in groups.items():
+            if exclude_all and key == "ALL":
+                continue
+            if prefix is not None:
+                if not key.startswith(prefix) or "|" in key:
+                    continue
+            if require_min_sample_size and group.get("sample_size_too_small"):
+                continue
+            candidates.append((key, group.get("avg_realized_r", 0.0)))
+        return candidates
+
+    def _normalize_candidate_type(self, value: Any, phase2_type: str = "", position_id: str = "") -> str:
+        raw_candidate_type = str(value or "").strip()
+        normalized_phase2_type = str(phase2_type or "").strip()
+        if (not raw_candidate_type or raw_candidate_type == "RESEARCH") and normalized_phase2_type:
+            inferred = self.PHASE2_TO_CANDIDATE_TYPE.get(normalized_phase2_type)
+            if inferred:
+                return inferred
+        if raw_candidate_type in self.CANONICAL_CANDIDATE_TYPES:
+            return raw_candidate_type
+
+        normalized_candidate_type = raw_candidate_type or str(cfg.PHASE3_OUTCOME_UNKNOWN_CANDIDATE_TYPE)
+        if bool(cfg.PHASE3_OUTCOME_WARN_NON_CANONICAL_CANDIDATE_TYPE):
+            logger.warning(
+                "[PHASE3-OUTCOME-WARN] reason=non_canonical_candidate_type "
+                "raw_candidate_type=%s normalized_candidate_type=%s phase2_type=%s position_id=%s",
+                raw_candidate_type,
+                normalized_candidate_type,
+                normalized_phase2_type,
+                position_id,
+            )
+        return normalized_candidate_type
+
+    def _mark_processed_position_id(self, position_id: str) -> bool:
+        if not self.dedup_enabled:
+            return True
+        if not position_id:
+            return True
+        if position_id in self.processed_position_id_set:
+            self.total_duplicate_skipped += 1
+            logger.info("[PHASE3-OUTCOME-SKIP] reason=duplicate_position_id position_id=%s", position_id)
+            return False
+        if len(self.processed_position_ids) == self.processed_position_ids.maxlen:
+            oldest_position_id = self.processed_position_ids.popleft()
+            self.processed_position_id_set.discard(oldest_position_id)
+        self.processed_position_ids.append(position_id)
+        self.processed_position_id_set.add(position_id)
+        return True
 
     def _log_skip(self, reason: str, closed_position: Any) -> None:
         logger.info("[PHASE3-OUTCOME-SKIP] reason=%s closed_position=%s", reason, closed_position)
