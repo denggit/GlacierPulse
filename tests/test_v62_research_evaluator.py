@@ -80,6 +80,25 @@ def _phase2_confirmed_event(
     }
 
 
+def _a1_frozen_metadata():
+    return {
+        "frozen_reason": "STATE_RELOADING",
+        "frozen_state": "RELOADING",
+        "frozen_event_id": "evt-123",
+        "event_count": 4,
+        "iceberg_count": 3,
+        "ignore_count": 1,
+        "spoof_count": 0,
+        "cancel_count": 0,
+        "high_count": 1,
+        "medium_count": 2,
+        "low_count": 1,
+        "positive_score": 5.5,
+        "negative_score": 1.2,
+        "net_score": 4.3,
+    }
+
+
 def test_v62_skeleton_imports():
     assert Phase2OrderflowEvaluator()
     assert Phase3CandidateEvaluator()
@@ -655,6 +674,53 @@ def test_phase3_clean_hold_accepts_when_score_is_high_enough():
     assert result["suggested_stop"] == event["frozen_low"] - research_config.PHASE3_CLEAN_HOLD_STOP_BUFFER_USDT
 
 
+def test_phase3_candidate_carries_a1_frozen_metadata():
+    evaluator = Phase3CandidateEvaluator()
+    event = _phase2_confirmed_event(
+        zone_id="iz-meta-1",
+        direction="BUY",
+        phase2_type="CLEAN_HOLD",
+        last_price=3000.0,
+        suggested_stop=0.0,
+        phase2_total_score=0.9,
+    )
+    event["frozen_low"] = 2998.0
+    event["frozen_high"] = 3002.0
+    event.update(_a1_frozen_metadata())
+
+    result = evaluator.evaluate_phase2_confirmed(event)
+
+    assert result["frozen_reason"] == "STATE_RELOADING"
+    assert result["frozen_state"] == "RELOADING"
+    assert result["frozen_event_id"] == "evt-123"
+    assert result["event_count"] == 4
+    assert result["iceberg_count"] == 3
+    assert result["high_count"] == 1
+    assert result["medium_count"] == 2
+    assert result["low_count"] == 1
+    assert isinstance(result["event_count"], int)
+    assert isinstance(result["positive_score"], float)
+    assert result["positive_score"] == 5.5
+    assert result["negative_score"] == 1.2
+    assert result["net_score"] == 4.3
+
+
+def test_phase3_candidate_log_includes_frozen_metadata(caplog):
+    evaluator = Phase3CandidateEvaluator()
+    event = _phase2_confirmed_event(zone_id="p3-log-meta")
+    event.update(_a1_frozen_metadata())
+
+    with caplog.at_level(logging.INFO):
+        evaluator.evaluate_phase2_confirmed(event)
+
+    messages = [record.getMessage() for record in caplog.records if "[PHASE3-CANDIDATE]" in record.getMessage()]
+    assert any("frozen_reason=STATE_RELOADING" in message for message in messages)
+    assert any("frozen_state=RELOADING" in message for message in messages)
+    assert any("iceberg_count=3" in message for message in messages)
+    assert any("high_count=1" in message for message in messages)
+    assert any("net_score=" in message for message in messages)
+
+
 def test_phase3_below_zone_absorption_accepts_with_relevant_book_depth():
     evaluator = Phase3CandidateEvaluator()
     event = _phase2_confirmed_event(
@@ -1035,6 +1101,39 @@ def test_virtual_accept_opens_wait_reject_block_and_single_position(caplog):
 
 
 
+def test_virtual_position_preserves_a1_metadata():
+    m = VirtualPositionManager()
+    candidate = _accepted_candidate(zone_id="virtual-meta-open")
+    candidate.update(_a1_frozen_metadata())
+
+    snapshot = m.on_candidate(candidate)
+    active = m.get_active_position()
+
+    assert snapshot["frozen_reason"] == "STATE_RELOADING"
+    assert active["frozen_state"] == "RELOADING"
+    assert active["iceberg_count"] == 3
+    assert active["high_count"] == 1
+    assert active["net_score"] == 4.3
+
+
+def test_virtual_closed_event_preserves_a1_metadata():
+    m = VirtualPositionManager()
+    candidate = _accepted_candidate(zone_id="virtual-meta-close")
+    candidate.update(_a1_frozen_metadata())
+
+    m.on_candidate(candidate)
+    m.on_price(2998.0, ts=1.0)
+
+    closed_events = m.pop_closed_events()
+    assert len(closed_events) == 1
+    closed = closed_events[0]
+    assert closed["frozen_reason"] == "STATE_RELOADING"
+    assert closed["frozen_state"] == "RELOADING"
+    assert closed["iceberg_count"] == 3
+    assert closed["high_count"] == 1
+    assert closed["net_score"] == 4.3
+
+
 def test_virtual_open_ts_prefers_candidate_ts_and_fallback_to_ts():
     m1 = VirtualPositionManager()
     c1 = _candidate()
@@ -1352,6 +1451,44 @@ def test_phase3_outcome_group_stats_by_phase2_type():
     groups = evaluator.summary()["groups"]
     assert groups["phase2_type=SWEEP_RECLAIM"]["count"] == 2
     assert groups["phase2_type=CLEAN_HOLD"]["count"] == 1
+
+
+def test_phase3_outcome_preserves_a1_metadata_and_groups_by_frozen_reason():
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(
+        position_id="outcome-meta",
+        phase2_type="CLEAN_HOLD",
+        candidate_type="CLEAN_HOLD_LOW_RISK",
+    )
+    closed.update(_a1_frozen_metadata())
+
+    outcome = evaluator.on_virtual_position_closed(closed)
+
+    assert outcome["frozen_reason"] == "STATE_RELOADING"
+    assert outcome["frozen_state"] == "RELOADING"
+    assert outcome["iceberg_count"] == 3
+    assert outcome["high_count"] == 1
+    assert outcome["net_score"] == 4.3
+    groups = evaluator.summary()["groups"]
+    assert "frozen_reason=STATE_RELOADING" in groups
+    assert "phase2_type=CLEAN_HOLD|frozen_reason=STATE_RELOADING" in groups
+    assert "candidate_type=CLEAN_HOLD_LOW_RISK|frozen_reason=STATE_RELOADING" in groups
+
+
+def test_outcome_log_includes_frozen_metadata(caplog):
+    evaluator = Phase3OutcomeEvaluator()
+    closed = _closed_virtual_position(position_id="outcome-log-meta")
+    closed.update(_a1_frozen_metadata())
+
+    with caplog.at_level(logging.INFO):
+        evaluator.on_virtual_position_closed(closed)
+
+    messages = [record.getMessage() for record in caplog.records if "[PHASE3-OUTCOME]" in record.getMessage()]
+    assert any("frozen_reason=STATE_RELOADING" in message for message in messages)
+    assert any("frozen_state=RELOADING" in message for message in messages)
+    assert any("iceberg_count=" in message for message in messages)
+    assert any("high_count=" in message for message in messages)
+    assert any("net_score=" in message for message in messages)
 
 
 def test_phase3_outcome_management_groups():
@@ -2143,6 +2280,22 @@ def test_research_runtime_group_highlights_fallback_small_sample_non_all():
     )
 
     assert result["outcome_best_group_by_avg_r"] == "candidate_type=ABC"
+
+
+def test_research_runtime_highlights_best_frozen_reason():
+    monitor = ResearchRuntimeMonitor(object(), label="test-groups")
+    result = monitor._outcome_group_highlights(
+        {
+            "groups": {
+                "frozen_reason=HIGH_ICEBERG": {"avg_realized_r": 0.2},
+                "frozen_reason=STATE_RELOADING": {"avg_realized_r": 1.1},
+                "frozen_reason=STATE_ACTIVE": {"avg_realized_r": -0.4},
+            }
+        }
+    )
+
+    assert result["outcome_best_frozen_reason"] == "frozen_reason=STATE_RELOADING"
+    assert result["outcome_worst_frozen_reason"] == "frozen_reason=STATE_ACTIVE"
 
 
 def test_v62_monitor_does_not_call_trader_or_order_api(monkeypatch):

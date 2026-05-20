@@ -8,6 +8,11 @@ from collections import deque
 from typing import Any, Deque, Dict, List, Optional, Set
 
 from config import research_evaluator as cfg
+from src.strategy.a1_metadata import (
+    A1_COUNT_METADATA_FIELDS,
+    A1_SCORE_METADATA_FIELDS,
+    A1_STRING_METADATA_FIELDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +197,7 @@ class Phase3OutcomeEvaluator:
             "has_reclaimed_boundary": self._as_bool(closed_position.get("has_reclaimed_boundary")),
             "has_retested_inside_zone": self._as_bool(closed_position.get("has_retested_inside_zone")),
         }
+        outcome.update(self._a1_metadata_from_closed_position(closed_position))
         outcome["is_win"] = realized_r > 0.0
         outcome["is_loss"] = realized_r < 0.0
         outcome["is_flat"] = realized_r == 0.0
@@ -227,6 +233,8 @@ class Phase3OutcomeEvaluator:
         candidate_type = outcome.get("candidate_type")
         direction = outcome.get("direction")
         close_reason = outcome.get("close_reason")
+        frozen_reason = str(outcome.get("frozen_reason") or "")
+        frozen_state = str(outcome.get("frozen_state") or "")
         breakeven = bool(outcome.get("breakeven_activated"))
         trailing = bool(outcome.get("trailing_activated"))
         support_used = self._as_int(outcome.get("support_update_count")) > 0
@@ -245,6 +253,22 @@ class Phase3OutcomeEvaluator:
             f"phase2_type={phase2_type}|trailing={trailing}",
             f"phase2_type={phase2_type}|support_used={support_used}",
         ]
+        if frozen_reason:
+            keys.extend(
+                [
+                    f"frozen_reason={frozen_reason}",
+                    f"phase2_type={phase2_type}|frozen_reason={frozen_reason}",
+                    f"candidate_type={candidate_type}|frozen_reason={frozen_reason}",
+                    f"direction={direction}|frozen_reason={frozen_reason}",
+                ]
+            )
+        if frozen_state:
+            keys.extend(
+                [
+                    f"frozen_state={frozen_state}",
+                    f"phase2_type={phase2_type}|frozen_state={frozen_state}",
+                ]
+            )
         return [key for key in keys if key and not key.endswith("=None")]
 
     def _update_group_stats(self, outcome: Dict[str, Any]) -> None:
@@ -313,7 +337,8 @@ class Phase3OutcomeEvaluator:
             "realized_r_multiple=%.6f max_favorable_r=%.6f max_adverse_r=%.6f mfe_mae_ratio=%.6f "
             "outcome_bucket=%s breakeven_activated=%s trailing_activated=%s stop_update_count=%d "
             "support_update_count=%d support_zone_ids_count=%d last_stop_update_reason=%s "
-            "phase2_total_score=%.6f absorption_score=%.6f relevant_book_depth_available=%s reload_score=%.6f",
+            "phase2_total_score=%.6f absorption_score=%.6f relevant_book_depth_available=%s reload_score=%.6f "
+            "frozen_reason=%s frozen_state=%s iceberg_count=%d high_count=%d net_score=%.6f",
             outcome["position_id"], outcome["zone_id"], outcome["direction"], outcome["phase2_type"],
             outcome["candidate_type"], outcome["close_reason"], outcome["open_ts"], outcome["close_ts"],
             outcome["holding_seconds"], outcome["open_price"], outcome["close_price"], outcome["realized_pnl_u"],
@@ -322,7 +347,8 @@ class Phase3OutcomeEvaluator:
             outcome["breakeven_activated"], outcome["trailing_activated"], outcome["stop_update_count"],
             outcome["support_update_count"], outcome["support_zone_ids_count"], outcome["last_stop_update_reason"],
             outcome["phase2_total_score"], outcome["absorption_score"], outcome["relevant_book_depth_available"],
-            outcome["reload_score"],
+            outcome["reload_score"], outcome["frozen_reason"], outcome["frozen_state"],
+            outcome["iceberg_count"], outcome["high_count"], outcome["net_score"],
         )
 
     def _maybe_log_summary(self, now_ts: float) -> None:
@@ -480,6 +506,16 @@ class Phase3OutcomeEvaluator:
             )
         return normalized_candidate_type
 
+    def _a1_metadata_from_closed_position(self, closed_position: Dict[str, Any]) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        for field in A1_STRING_METADATA_FIELDS:
+            metadata[field] = self._as_str(closed_position.get(field), "")
+        for field in A1_COUNT_METADATA_FIELDS:
+            metadata[field] = self._as_int(closed_position.get(field), 0)
+        for field in A1_SCORE_METADATA_FIELDS:
+            metadata[field] = self._as_float(closed_position.get(field), 0.0)
+        return metadata
+
     def _mark_processed_position_id(self, position_id: str) -> bool:
         if not self.dedup_enabled:
             return True
@@ -516,8 +552,8 @@ class Phase3OutcomeEvaluator:
     @staticmethod
     def _as_int(value: Any, default: int = 0) -> int:
         try:
-            return int(value)
-        except (TypeError, ValueError):
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
             return int(default)
 
     @staticmethod
@@ -527,3 +563,9 @@ class Phase3OutcomeEvaluator:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    @staticmethod
+    def _as_str(value: Any, default: str = "") -> str:
+        if value is None:
+            return default
+        return str(value)

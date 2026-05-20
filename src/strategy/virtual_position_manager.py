@@ -9,6 +9,11 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Deque, Dict, List, Optional
 
 from config import research_evaluator as cfg
+from src.strategy.a1_metadata import (
+    A1_COUNT_METADATA_FIELDS,
+    A1_SCORE_METADATA_FIELDS,
+    A1_STRING_METADATA_FIELDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +81,20 @@ class VirtualPosition:
     has_absorbed_after_sweep: bool = False
     has_reclaimed_boundary: bool = False
     has_retested_inside_zone: bool = False
+    frozen_reason: str = ""
+    frozen_state: str = ""
+    frozen_event_id: str = ""
+    event_count: int = 0
+    iceberg_count: int = 0
+    ignore_count: int = 0
+    spoof_count: int = 0
+    cancel_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    positive_score: float = 0.0
+    negative_score: float = 0.0
+    net_score: float = 0.0
 
 
 class VirtualPositionManager:
@@ -140,6 +159,7 @@ class VirtualPositionManager:
         take_profit_price = open_price + risk_distance_u * cfg.VIRTUAL_TAKE_PROFIT_R_MULTIPLE if direction == "LONG" else open_price - risk_distance_u * cfg.VIRTUAL_TAKE_PROFIT_R_MULTIPLE
 
         candidate_ts = self._as_float(candidate.get("candidate_ts", candidate.get("ts")), time.time())
+        a1_metadata = self._a1_metadata_from_candidate(candidate)
 
         self.total_opened += 1
         position = VirtualPosition(
@@ -160,9 +180,10 @@ class VirtualPositionManager:
             relevant_book_depth_available=bool(candidate.get("relevant_book_depth_available", False)), reload_score=self._as_float(candidate.get("reload_score")),
             has_swept_boundary=bool(candidate.get("has_swept_boundary", False)), has_absorbed_after_sweep=bool(candidate.get("has_absorbed_after_sweep", False)),
             has_reclaimed_boundary=bool(candidate.get("has_reclaimed_boundary", False)), has_retested_inside_zone=bool(candidate.get("has_retested_inside_zone", False)),
+            **a1_metadata,
         )
         self.active_position = position
-        logger.info("[VIRTUAL-POSITION-OPEN] position_id=%s zone_id=%s direction=%s phase2_type=%s candidate_type=%s open_ts=%.3f open_price=%.6f suggested_stop=%.6f initial_stop=%.6f dynamic_stop=%.6f best_price=%.6f breakeven_activated=%s trailing_activated=%s take_profit_price=%.6f risk_distance_u=%.6f risk_distance_pct=%.6f leverage=%.6f final_margin_usage_pct=%.6f virtual_equity_at_open=%.6f virtual_margin_usdt=%.6f virtual_notional_usdt=%.6f virtual_size_eth=%.12f expected_account_loss_if_sl=%.6f phase2_total_score=%.6f absorption_score=%.6f relevant_book_depth_available=%s reload_score=%.6f", position.position_id, position.zone_id, position.direction, position.phase2_type, position.candidate_type, position.open_ts, position.open_price, position.suggested_stop, position.initial_stop, position.dynamic_stop, position.best_price, position.breakeven_activated, position.trailing_activated, position.take_profit_price, position.risk_distance_u, position.risk_distance_pct, position.leverage, position.final_margin_usage_pct, position.virtual_equity_at_open, position.virtual_margin_usdt, position.virtual_notional_usdt, position.virtual_size_eth, position.expected_account_loss_if_sl, position.phase2_total_score, position.absorption_score, position.relevant_book_depth_available, position.reload_score)
+        logger.info("[VIRTUAL-POSITION-OPEN] position_id=%s zone_id=%s direction=%s phase2_type=%s candidate_type=%s open_ts=%.3f open_price=%.6f suggested_stop=%.6f initial_stop=%.6f dynamic_stop=%.6f best_price=%.6f breakeven_activated=%s trailing_activated=%s take_profit_price=%.6f risk_distance_u=%.6f risk_distance_pct=%.6f leverage=%.6f final_margin_usage_pct=%.6f virtual_equity_at_open=%.6f virtual_margin_usdt=%.6f virtual_notional_usdt=%.6f virtual_size_eth=%.12f expected_account_loss_if_sl=%.6f phase2_total_score=%.6f absorption_score=%.6f relevant_book_depth_available=%s reload_score=%.6f frozen_reason=%s frozen_state=%s iceberg_count=%d high_count=%d net_score=%.6f", position.position_id, position.zone_id, position.direction, position.phase2_type, position.candidate_type, position.open_ts, position.open_price, position.suggested_stop, position.initial_stop, position.dynamic_stop, position.best_price, position.breakeven_activated, position.trailing_activated, position.take_profit_price, position.risk_distance_u, position.risk_distance_pct, position.leverage, position.final_margin_usage_pct, position.virtual_equity_at_open, position.virtual_margin_usdt, position.virtual_notional_usdt, position.virtual_size_eth, position.expected_account_loss_if_sl, position.phase2_total_score, position.absorption_score, position.relevant_book_depth_available, position.reload_score, position.frozen_reason, position.frozen_state, position.iceberg_count, position.high_count, position.net_score)
         return asdict(position)
 
     def on_price(self, price: float, ts: Optional[float] = None) -> Optional[Dict[str, Any]]:
@@ -371,7 +392,7 @@ class VirtualPositionManager:
         self.cumulative_realized_r_count += 1
         self.cumulative_max_win_r = max(self.cumulative_max_win_r, pos.realized_r_multiple)
         self.cumulative_max_loss_r = min(self.cumulative_max_loss_r, pos.realized_r_multiple)
-        logger.info("[VIRTUAL-POSITION-CLOSE] position_id=%s zone_id=%s direction=%s phase2_type=%s candidate_type=%s open_ts=%.3f close_ts=%.3f open_price=%.6f close_price=%.6f close_reason=%s suggested_stop=%.6f initial_stop=%.6f dynamic_stop=%.6f exit_stop_used=%.6f breakeven_activated=%s trailing_activated=%s stop_update_count=%d support_update_count=%d last_stop_update_reason=%s take_profit_price=%.6f realized_pnl_u=%.6f realized_pnl_pct_on_equity=%.6f realized_r_multiple=%.6f max_favorable_u=%.6f max_adverse_u=%.6f max_favorable_r=%.6f max_adverse_r=%.6f virtual_equity_before=%.6f virtual_equity_after=%.6f virtual_margin_usdt=%.6f virtual_notional_usdt=%.6f virtual_size_eth=%.12f", pos.position_id, pos.zone_id, pos.direction, pos.phase2_type, pos.candidate_type, pos.open_ts, pos.close_ts, pos.open_price, pos.close_price, pos.close_reason, pos.suggested_stop, pos.initial_stop, pos.dynamic_stop, pos.exit_stop_used, pos.breakeven_activated, pos.trailing_activated, pos.stop_update_count, pos.support_update_count, pos.last_stop_update_reason, pos.take_profit_price, pos.realized_pnl_u, pos.realized_pnl_pct_on_equity, pos.realized_r_multiple, pos.max_favorable_u, pos.max_adverse_u, pos.max_favorable_r, pos.max_adverse_r, before, self.virtual_equity_usdt, pos.virtual_margin_usdt, pos.virtual_notional_usdt, pos.virtual_size_eth)
+        logger.info("[VIRTUAL-POSITION-CLOSE] position_id=%s zone_id=%s direction=%s phase2_type=%s candidate_type=%s open_ts=%.3f close_ts=%.3f open_price=%.6f close_price=%.6f close_reason=%s suggested_stop=%.6f initial_stop=%.6f dynamic_stop=%.6f exit_stop_used=%.6f breakeven_activated=%s trailing_activated=%s stop_update_count=%d support_update_count=%d last_stop_update_reason=%s take_profit_price=%.6f realized_pnl_u=%.6f realized_pnl_pct_on_equity=%.6f realized_r_multiple=%.6f max_favorable_u=%.6f max_adverse_u=%.6f max_favorable_r=%.6f max_adverse_r=%.6f virtual_equity_before=%.6f virtual_equity_after=%.6f virtual_margin_usdt=%.6f virtual_notional_usdt=%.6f virtual_size_eth=%.12f frozen_reason=%s frozen_state=%s iceberg_count=%d high_count=%d net_score=%.6f", pos.position_id, pos.zone_id, pos.direction, pos.phase2_type, pos.candidate_type, pos.open_ts, pos.close_ts, pos.open_price, pos.close_price, pos.close_reason, pos.suggested_stop, pos.initial_stop, pos.dynamic_stop, pos.exit_stop_used, pos.breakeven_activated, pos.trailing_activated, pos.stop_update_count, pos.support_update_count, pos.last_stop_update_reason, pos.take_profit_price, pos.realized_pnl_u, pos.realized_pnl_pct_on_equity, pos.realized_r_multiple, pos.max_favorable_u, pos.max_adverse_u, pos.max_favorable_r, pos.max_adverse_r, before, self.virtual_equity_usdt, pos.virtual_margin_usdt, pos.virtual_notional_usdt, pos.virtual_size_eth, pos.frozen_reason, pos.frozen_state, pos.iceberg_count, pos.high_count, pos.net_score)
         return snapshot
 
     def get_active_position(self) -> Optional[Dict[str, Any]]:
@@ -427,9 +448,32 @@ class VirtualPositionManager:
             return "SHORT"
         return ""
 
+    def _a1_metadata_from_candidate(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        for field in A1_STRING_METADATA_FIELDS:
+            metadata[field] = self._as_str(candidate.get(field), "")
+        for field in A1_COUNT_METADATA_FIELDS:
+            metadata[field] = self._as_int(candidate.get(field), 0)
+        for field in A1_SCORE_METADATA_FIELDS:
+            metadata[field] = self._as_float(candidate.get(field), 0.0)
+        return metadata
+
     @staticmethod
     def _as_float(value: Any, default: float = 0.0) -> float:
         try:
             return float(value)
         except (TypeError, ValueError):
             return float(default)
+
+    @staticmethod
+    def _as_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return int(default)
+
+    @staticmethod
+    def _as_str(value: Any, default: str = "") -> str:
+        if value is None:
+            return default
+        return str(value)

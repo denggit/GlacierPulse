@@ -11,6 +11,11 @@ import time
 from typing import Any, Dict, Optional, Set
 
 from config import research_evaluator as research_config
+from src.strategy.a1_metadata import (
+    A1_COUNT_METADATA_FIELDS,
+    A1_SCORE_METADATA_FIELDS,
+    A1_STRING_METADATA_FIELDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +217,7 @@ class Phase3CandidateEvaluator:
             "has_reclaimed_boundary": bool(phase2_event.get("has_reclaimed_boundary")),
             "has_retested_inside_zone": bool(phase2_event.get("has_retested_inside_zone")),
         }
+        result.update(self._a1_metadata_from_phase2_event(phase2_event))
         self._log_candidate(result)
         if self.real_trading_enabled:
             logger.warning("[PHASE3-REAL-TRADING-BLOCKED] reason=v62_research_candidate_only")
@@ -246,7 +252,7 @@ class Phase3CandidateEvaluator:
         decision: str,
         decision_reason: str,
     ) -> Dict[str, Any]:
-        return {
+        result = {
             "zone_id": str(phase2_event.get("zone_id") or ""),
             "direction": str(phase2_event.get("direction") or "").upper(),
             "phase2_type": str(phase2_event.get("phase2_type") or ""),
@@ -280,10 +286,22 @@ class Phase3CandidateEvaluator:
             "has_reclaimed_boundary": bool(phase2_event.get("has_reclaimed_boundary")),
             "has_retested_inside_zone": bool(phase2_event.get("has_retested_inside_zone")),
         }
+        result.update(self._a1_metadata_from_phase2_event(phase2_event))
+        return result
+
+    def _a1_metadata_from_phase2_event(self, phase2_event: Dict[str, Any]) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        for field in A1_STRING_METADATA_FIELDS:
+            metadata[field] = self._safe_str(phase2_event.get(field), "")
+        for field in A1_COUNT_METADATA_FIELDS:
+            metadata[field] = self._safe_int(phase2_event.get(field), 0)
+        for field in A1_SCORE_METADATA_FIELDS:
+            metadata[field] = self._safe_float(phase2_event.get(field), 0.0)
+        return metadata
 
     def _log_candidate(self, result: Dict[str, Any]) -> None:
         logger.info(
-            "[PHASE3-CANDIDATE] zone_id=%s direction=%s phase2_type=%s candidate_type=%s decision=%s decision_reason=%s candidate_ts=%s candidate_price=%s suggested_stop=%s risk_distance_u=%s risk_distance_pct=%s total_loss_pct=%s leverage=%s max_account_loss_pct=%s roundtrip_fee_pct=%s slippage_buffer_pct=%s raw_margin_usage_pct=%s final_margin_usage_pct=%s notional_equity_multiple=%s expected_account_loss_if_sl=%s phase2_total_score=%s absorption_score=%s pressure_decay_score=%s reclaim_score=%s retest_score=%s book_absorption_score=%s relevant_book_depth_available=%s reload_score=%s has_swept_boundary=%s has_absorbed_after_sweep=%s has_reclaimed_boundary=%s has_retested_inside_zone=%s",
+            "[PHASE3-CANDIDATE] zone_id=%s direction=%s phase2_type=%s candidate_type=%s decision=%s decision_reason=%s candidate_ts=%s candidate_price=%s suggested_stop=%s risk_distance_u=%s risk_distance_pct=%s total_loss_pct=%s leverage=%s max_account_loss_pct=%s roundtrip_fee_pct=%s slippage_buffer_pct=%s raw_margin_usage_pct=%s final_margin_usage_pct=%s notional_equity_multiple=%s expected_account_loss_if_sl=%s phase2_total_score=%s absorption_score=%s pressure_decay_score=%s reclaim_score=%s retest_score=%s book_absorption_score=%s relevant_book_depth_available=%s reload_score=%s has_swept_boundary=%s has_absorbed_after_sweep=%s has_reclaimed_boundary=%s has_retested_inside_zone=%s frozen_reason=%s frozen_state=%s iceberg_count=%s high_count=%s net_score=%s",
             result.get("zone_id"),
             result.get("direction"),
             result.get("phase2_type"),
@@ -316,6 +334,11 @@ class Phase3CandidateEvaluator:
             result.get("has_absorbed_after_sweep"),
             result.get("has_reclaimed_boundary"),
             result.get("has_retested_inside_zone"),
+            result.get("frozen_reason"),
+            result.get("frozen_state"),
+            result.get("iceberg_count"),
+            result.get("high_count"),
+            result.get("net_score"),
         )
 
     def _candidate_ts(self, phase2_event: Dict[str, Any]) -> float:
@@ -331,3 +354,16 @@ class Phase3CandidateEvaluator:
             return float(value)
         except (TypeError, ValueError):
             return float(default)
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return int(default)
+
+    @staticmethod
+    def _safe_str(value: Any, default: str = "") -> str:
+        if value is None:
+            return default
+        return str(value)

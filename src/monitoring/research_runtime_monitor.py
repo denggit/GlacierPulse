@@ -352,6 +352,18 @@ class ResearchRuntimeMonitor:
             reverse=False,
             exclude_combined=True,
         )
+        best_frozen_reason = self._select_group_by_avg_r(
+            groups,
+            prefix="frozen_reason=",
+            reverse=True,
+            exclude_combined=True,
+        )
+        worst_frozen_reason = self._select_group_by_avg_r(
+            groups,
+            prefix="frozen_reason=",
+            reverse=False,
+            exclude_combined=True,
+        )
         best_group = self._select_group_by_avg_r(groups, reverse=True)
         worst_group = self._select_group_by_avg_r(groups, reverse=False)
 
@@ -359,6 +371,10 @@ class ResearchRuntimeMonitor:
             result["outcome_best_phase2_type"] = best_phase2
         if worst_phase2:
             result["outcome_worst_phase2_type"] = worst_phase2
+        if best_frozen_reason:
+            result["outcome_best_frozen_reason"] = best_frozen_reason
+        if worst_frozen_reason:
+            result["outcome_worst_frozen_reason"] = worst_frozen_reason
         if best_group:
             result["outcome_best_group_by_avg_r"] = best_group
         if worst_group:
