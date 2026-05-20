@@ -76,7 +76,7 @@ class Phase1Engine:
             and ((not REAL_EXECUTION_ENABLED) or VIRTUAL_SHADOW_MODE)
         )
         self.virtual_position_manager = VirtualPositionManager() if virtual_should_run else None
-        self.v62_integration_monitor = (
+        self.research_runtime_monitor = (
             ResearchRuntimeMonitor(
                 phase1_engine=self,
                 label=V62_SHADOW_RUN_LABEL,
@@ -84,14 +84,14 @@ class Phase1Engine:
             if (V62_STARTUP_SAFETY_CHECK_ENABLED or V62_INTEGRATION_HEARTBEAT_ENABLED)
             else None
         )
-        if self.v62_integration_monitor:
+        if self.research_runtime_monitor:
             try:
                 if V62_STARTUP_SAFETY_CHECK_ENABLED:
-                    self.v62_integration_monitor.run_startup_safety_check()
+                    self.research_runtime_monitor.run_startup_safety_check()
                 if V62_LOG_COMPONENT_STATUS_ON_START:
-                    self.v62_integration_monitor.log_component_status()
+                    self.research_runtime_monitor.log_component_status()
                 if V62_LOG_CONFIG_SNAPSHOT_ON_START:
-                    self.v62_integration_monitor.log_config_snapshot()
+                    self.research_runtime_monitor.log_config_snapshot()
             except Exception:
                 logger.exception("[V62-MONITOR-FAILED] stage=startup")
 
@@ -116,7 +116,7 @@ class Phase1Engine:
                 self._drain_virtual_position_closed_events()
             except Exception:
                 logger.exception("[VIRTUAL-POSITION-FAILED] stage=on_price")
-        self._maybe_log_v62_heartbeat(trade_ts)
+        self._maybe_log_research_runtime_heartbeat(trade_ts)
 
         active_notional = price * size
         if active_notional < self.min_event_merge_notional_usdt:
@@ -606,19 +606,19 @@ class Phase1Engine:
         except Exception:
             logger.exception("[PHASE3-OUTCOME-FAILED] stage=pop_closed_events")
 
-    def _maybe_log_v62_heartbeat(self, now_ts: float) -> None:
-        if not self.v62_integration_monitor:
+    def _maybe_log_research_runtime_heartbeat(self, now_ts: float) -> None:
+        if not self.research_runtime_monitor:
             return
         try:
-            self.v62_integration_monitor.maybe_log_heartbeat(now_ts)
+            self.research_runtime_monitor.maybe_log_heartbeat(now_ts)
         except Exception:
             logger.exception("[V62-MONITOR-FAILED] stage=heartbeat")
 
-    def log_v62_final_summary(self) -> Optional[Dict[str, Any]]:
-        if not self.v62_integration_monitor:
+    def log_research_runtime_final_summary(self) -> Optional[Dict[str, Any]]:
+        if not self.research_runtime_monitor:
             return None
         try:
-            return self.v62_integration_monitor.log_final_summary()
+            return self.research_runtime_monitor.log_final_summary()
         except Exception:
             logger.exception("[V62-MONITOR-FAILED] stage=final_summary")
             return None

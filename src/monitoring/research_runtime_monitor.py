@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-V6.2 integration monitor for research/shadow-run readiness.
+"""Research runtime monitor for safety checks, heartbeat logs, and run summaries.
 
-This module only observes existing research components. It must not call trader
-APIs, create orders, or alter strategy decisions.
+The log tags may include V62 while this monitor is used by the V6.2 research
+chain, but the module itself is version-neutral and reusable.
 """
 
 import logging
@@ -144,6 +143,8 @@ class ResearchRuntimeMonitor:
         }
 
     def log_final_summary(self) -> Dict[str, Any]:
+        if not bool(getattr(cfg, "V62_ENABLE_FINAL_RUN_SUMMARY", True)):
+            return {}
         summary = self.summary()
         virtual_summary = summary.get("virtual_position_summary") or {}
         outcome_summary = self._flatten_outcome_summary(summary.get("outcome_summary") or {})
@@ -338,23 +339,83 @@ class ResearchRuntimeMonitor:
         groups = outcome_summary.get("groups") if isinstance(outcome_summary, dict) else None
         if not isinstance(groups, dict):
             return {}
-        candidates = []
-        phase2_candidates = []
-        for key, group in groups.items():
-            if not isinstance(group, dict) or group.get("sample_size_too_small"):
-                continue
-            avg_r = self._safe_float(group.get("avg_realized_r"), 0.0)
-            candidates.append((str(key), avg_r))
-            if str(key).startswith("phase2_type="):
-                phase2_candidates.append((str(key), avg_r))
         result: Dict[str, Any] = {}
-        if phase2_candidates:
-            result["outcome_best_phase2_type"] = max(phase2_candidates, key=lambda x: x[1])[0]
-            result["outcome_worst_phase2_type"] = min(phase2_candidates, key=lambda x: x[1])[0]
-        if candidates:
-            result["outcome_best_group_by_avg_r"] = max(candidates, key=lambda x: x[1])[0]
-            result["outcome_worst_group_by_avg_r"] = min(candidates, key=lambda x: x[1])[0]
+        best_phase2 = self._select_group_by_avg_r(
+            groups,
+            prefix="phase2_type=",
+            reverse=True,
+            exclude_combined=True,
+        )
+        worst_phase2 = self._select_group_by_avg_r(
+            groups,
+            prefix="phase2_type=",
+            reverse=False,
+            exclude_combined=True,
+        )
+        best_group = self._select_group_by_avg_r(groups, reverse=True)
+        worst_group = self._select_group_by_avg_r(groups, reverse=False)
+
+        if best_phase2:
+            result["outcome_best_phase2_type"] = best_phase2
+        if worst_phase2:
+            result["outcome_worst_phase2_type"] = worst_phase2
+        if best_group:
+            result["outcome_best_group_by_avg_r"] = best_group
+        if worst_group:
+            result["outcome_worst_group_by_avg_r"] = worst_group
         return result
+
+    def _select_group_by_avg_r(
+        self,
+        groups: Dict[str, Any],
+        prefix: Optional[str] = None,
+        reverse: bool = True,
+        exclude_all: bool = True,
+        exclude_combined: bool = False,
+        require_min_sample_size: bool = True,
+    ) -> str:
+        candidates = self._group_candidates(
+            groups=groups,
+            prefix=prefix,
+            exclude_all=exclude_all,
+            exclude_combined=exclude_combined,
+            require_min_sample_size=require_min_sample_size,
+        )
+        if not candidates and require_min_sample_size:
+            candidates = self._group_candidates(
+                groups=groups,
+                prefix=prefix,
+                exclude_all=exclude_all,
+                exclude_combined=exclude_combined,
+                require_min_sample_size=False,
+            )
+        if not candidates:
+            return ""
+        return sorted(candidates, key=lambda item: item[1], reverse=reverse)[0][0]
+
+    def _group_candidates(
+        self,
+        groups: Dict[str, Any],
+        prefix: Optional[str],
+        exclude_all: bool,
+        exclude_combined: bool,
+        require_min_sample_size: bool,
+    ) -> List[Any]:
+        candidates = []
+        for key, group in groups.items():
+            key_text = str(key)
+            if not isinstance(group, dict):
+                continue
+            if exclude_all and key_text == "ALL":
+                continue
+            if prefix is not None and not key_text.startswith(prefix):
+                continue
+            if exclude_combined and "|" in key_text:
+                continue
+            if require_min_sample_size and group.get("sample_size_too_small"):
+                continue
+            candidates.append((key_text, self._safe_float(group.get("avg_realized_r"), 0.0)))
+        return candidates
 
     def _safe_collect(self, fn: Any) -> Dict[str, Any]:
         try:

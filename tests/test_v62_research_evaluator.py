@@ -2008,7 +2008,7 @@ def test_v62_heartbeat_includes_virtual_and_outcome_summary(monkeypatch, caplog)
     assert "outcome_avg_mae_abs_r=0.200000" in log
 
 
-def test_phase1_creates_v62_monitor_when_enabled(monkeypatch):
+def test_phase1_creates_research_runtime_monitor_when_enabled(monkeypatch):
     monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
     monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
 
@@ -2018,10 +2018,11 @@ def test_phase1_creates_v62_monitor_when_enabled(monkeypatch):
         asks = {3001.0: 1.0}
 
     eng = Phase1Engine(_Ctx(), iceberg_detector=None)
-    assert eng.v62_integration_monitor is not None
+    assert eng.research_runtime_monitor is not None
+    assert not hasattr(eng, "v62_integration_monitor")
 
 
-def test_phase1_v62_heartbeat_does_not_break_early_return():
+def test_phase1_research_runtime_heartbeat_does_not_break_early_return():
     class _Ctx:
         current_price = 3000.0
         bids = {3000.0: 1.0}
@@ -2037,7 +2038,7 @@ def test_phase1_v62_heartbeat_does_not_break_early_return():
 
     eng = Phase1Engine(_Ctx(), iceberg_detector=None)
     monitor = _Monitor()
-    eng.v62_integration_monitor = monitor
+    eng.research_runtime_monitor = monitor
 
     result = eng.on_trade({"price": 3000.0, "size": 1.0, "side": "sell", "ts": 10.0})
 
@@ -2064,7 +2065,26 @@ def test_v62_final_summary_logs(caplog):
     assert any("[V62-FINAL-SUMMARY]" in r.message for r in caplog.records)
 
 
-def test_phase1_log_v62_final_summary_logs(monkeypatch, caplog):
+def test_research_runtime_final_summary_respects_disabled_config(monkeypatch, caplog):
+    monkeypatch.setattr(research_config, "V62_ENABLE_FINAL_RUN_SUMMARY", False)
+
+    class _Engine:
+        phase2_orderflow_evaluator = None
+        phase3_candidate_evaluator = None
+        virtual_position_manager = VirtualPositionManager()
+        phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        zone_tracker = object()
+        outcome_evaluator = object()
+
+    monitor = ResearchRuntimeMonitor(_Engine(), label="test-final-disabled")
+    with caplog.at_level(logging.INFO):
+        result = monitor.log_final_summary()
+
+    assert result == {}
+    assert not any("[V62-FINAL-SUMMARY]" in r.message for r in caplog.records)
+
+
+def test_phase1_log_research_runtime_final_summary_logs(monkeypatch, caplog):
     monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
     monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
 
@@ -2075,10 +2095,54 @@ def test_phase1_log_v62_final_summary_logs(monkeypatch, caplog):
 
     eng = Phase1Engine(_Ctx(), iceberg_detector=None)
     with caplog.at_level(logging.INFO):
-        result = eng.log_v62_final_summary()
+        result = eng.log_research_runtime_final_summary()
 
     assert isinstance(result, dict)
     assert any("[V62-FINAL-SUMMARY]" in r.message for r in caplog.records)
+
+
+def test_research_runtime_group_highlights_exclude_all():
+    monitor = ResearchRuntimeMonitor(object(), label="test-groups")
+    result = monitor._outcome_group_highlights(
+        {
+            "groups": {
+                "ALL": {"avg_realized_r": 999.0},
+                "phase2_type=SWEEP_RECLAIM": {"avg_realized_r": 1.0},
+                "candidate_type=SWEEP_RECLAIM_RETEST_ENTRY": {"avg_realized_r": 0.8},
+            }
+        }
+    )
+
+    assert result["outcome_best_group_by_avg_r"] != "ALL"
+    assert result["outcome_best_group_by_avg_r"] == "phase2_type=SWEEP_RECLAIM"
+
+
+def test_research_runtime_group_highlights_exclude_combined_phase2_group():
+    monitor = ResearchRuntimeMonitor(object(), label="test-groups")
+    result = monitor._outcome_group_highlights(
+        {
+            "groups": {
+                "phase2_type=SWEEP_RECLAIM|direction=LONG": {"avg_realized_r": 999.0},
+                "phase2_type=CLEAN_HOLD": {"avg_realized_r": 0.5},
+            }
+        }
+    )
+
+    assert result["outcome_best_phase2_type"] == "phase2_type=CLEAN_HOLD"
+
+
+def test_research_runtime_group_highlights_fallback_small_sample_non_all():
+    monitor = ResearchRuntimeMonitor(object(), label="test-groups")
+    result = monitor._outcome_group_highlights(
+        {
+            "groups": {
+                "ALL": {"sample_size_too_small": False, "avg_realized_r": 999.0},
+                "candidate_type=ABC": {"sample_size_too_small": True, "avg_realized_r": 1.0},
+            }
+        }
+    )
+
+    assert result["outcome_best_group_by_avg_r"] == "candidate_type=ABC"
 
 
 def test_v62_monitor_does_not_call_trader_or_order_api(monkeypatch):
