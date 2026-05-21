@@ -1,0 +1,107 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.research.a1_edge.dataset_exporter import A1EdgeDatasetExporter
+from src.research.a1_edge.forward_metrics import A1ForwardMetricsAnalyzer
+from src.research.a1_edge.hypothesis_simulator import A1HypothesisSimulator
+from src.research.a1_edge.io_utils import ensure_dir, parse_windows, read_kline_csv
+from src.research.a1_edge.random_baseline import A1RandomBaselineComparator, RandomBaselineSampler
+from src.research.a1_edge.report_builder import A1EdgeReportBuilder
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="V6.3.10 A1 Edge Validation Suite")
+    parser.add_argument("--events", required=True, help="A1 events JSONL or CSV path")
+    parser.add_argument("--klines", required=True, help="1m kline CSV path")
+    parser.add_argument("--out", default="reports/a1_edge", help="Output directory")
+    parser.add_argument("--symbol", default="ETH-USDT-SWAP", help="Default symbol when events do not contain one")
+    parser.add_argument("--random-samples-per-event", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--min-risk-u", type=float, default=1.0)
+    parser.add_argument("--min-risk-pct", type=float, default=0.0003)
+    parser.add_argument("--stop-buffer-u", type=float, default=0.8)
+    parser.add_argument("--roundtrip-fee-pct", type=float, default=0.001)
+    parser.add_argument("--windows", default="1m,3m,5m,15m,30m,60m")
+    parser.add_argument("--min-group-sample-size", type=int, default=30)
+    parser.add_argument("--exclude-near-a1-minutes", type=float, default=5.0)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    events_path = Path(args.events)
+    klines_path = Path(args.klines)
+    if not events_path.exists():
+        print(f"Error: events path does not exist: {events_path}", file=sys.stderr)
+        return 2
+    if not klines_path.exists():
+        print(f"Error: klines path does not exist: {klines_path}", file=sys.stderr)
+        return 2
+    out_dir = ensure_dir(args.out)
+    try:
+        klines = read_kline_csv(klines_path)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if not klines:
+        print(f"Error: kline CSV is empty or has no valid timestamp rows: {klines_path}", file=sys.stderr)
+        return 2
+    try:
+        windows = parse_windows(args.windows)
+        exporter = A1EdgeDatasetExporter()
+        events = exporter.load_events(events_path, symbol=args.symbol)
+        exporter.export(events, out_dir)
+        forward = A1ForwardMetricsAnalyzer(windows, args.min_risk_u, args.min_risk_pct)
+        forward_results = forward.analyze(events, klines)
+        forward.export(forward_results, out_dir)
+        sampler = RandomBaselineSampler(
+            samples_per_event=args.random_samples_per_event,
+            random_seed=args.seed,
+            exclude_near_a1_minutes=args.exclude_near_a1_minutes,
+            windows_sec=windows,
+            min_risk_u=args.min_risk_u,
+            min_risk_pct=args.min_risk_pct,
+        )
+        baseline = sampler.sample(events, klines)
+        comparator = A1RandomBaselineComparator(min_group_sample_size=args.min_group_sample_size)
+        random_summary = comparator.summarize(events, [row.to_dict() for row in forward_results], baseline)
+        comparator.export(baseline, random_summary, out_dir)
+        simulator = A1HypothesisSimulator(
+            stop_buffer_u=args.stop_buffer_u,
+            min_risk_u=args.min_risk_u,
+            min_risk_pct=args.min_risk_pct,
+            roundtrip_fee_pct=args.roundtrip_fee_pct,
+            min_group_sample_size=args.min_group_sample_size,
+        )
+        hypothesis_results = simulator.simulate(events, klines)
+        hypothesis_summary = simulator.summarize(hypothesis_results)
+        simulator.export(hypothesis_results, hypothesis_summary, out_dir)
+        report = A1EdgeReportBuilder(min_group_sample_size=args.min_group_sample_size).build(
+            events=[event.to_dict() for event in events],
+            forward_metrics=[row.to_dict() for row in forward_results],
+            random_baseline=[row.to_dict() for row in baseline],
+            random_summary=random_summary,
+            hypothesis_results=[row.to_dict() for row in hypothesis_results],
+            hypothesis_summary=hypothesis_summary,
+            out_dir=out_dir,
+        )
+    except Exception as exc:
+        print(f"Error: failed to analyze A1 edge data: {exc}", file=sys.stderr)
+        return 1
+    print(f"A1 edge analysis complete: decision={report.decision} out={out_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
