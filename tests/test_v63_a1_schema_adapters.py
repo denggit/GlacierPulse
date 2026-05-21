@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from src.strategy.a1_absorption.schema import (
+from src.strategy.a1_absorption.event_schema import (
     A1AbsorptionContext,
     A1OutcomeRecord,
     A1ReactionSnapshot,
 )
-from src.strategy.a1_absorption.score_model import A1UnifiedScoreModel
 
 
 def test_a1_absorption_context_from_public_zone_legacy_keys():
@@ -274,7 +273,7 @@ def test_as_int_supports_float_like_string_values():
     assert ctx.event_count == 3
 
 
-def test_a1_score_model_accepts_schema_adapter_outputs():
+def test_schema_adapters_preserve_raw_a1_fields_without_score_model():
     absorption = A1AbsorptionContext.from_public_zone(
         {
             "zone_id": "iz-integ",
@@ -303,7 +302,6 @@ def test_a1_score_model_accepts_schema_adapter_outputs():
             "relevant_book_depth_available": True,
         }
     )
-    record = A1UnifiedScoreModel.score(absorption, reaction)
-    assert record.zone_id == absorption.zone_id == reaction.zone_id
-    assert record.reaction_type == reaction.reaction_type
-    assert record.legacy_phase2_type == reaction.legacy_phase2_type
+    assert absorption.zone_id == reaction.zone_id
+    assert reaction.reaction_type == "SWEEP_RECLAIM"
+    assert reaction.legacy_phase2_total_score == 0.7

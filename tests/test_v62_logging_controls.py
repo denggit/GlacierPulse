@@ -11,9 +11,9 @@ import pytest
 
 from config import research_evaluator as research_config
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
-from src.strategy.phase1_zone_engine import Phase1Engine
-from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
-from src.strategy.virtual_position_manager import VirtualPositionManager
+from src.strategy.a1_absorption.engine import A1AbsorptionEngine as Phase1Engine
+from src.strategy.execution_research.candidate_risk_evaluator import CandidateRiskEvaluator as Phase3CandidateEvaluator
+from src.strategy.execution_research.virtual_position_manager import ResearchVirtualPositionManager as VirtualPositionManager
 from src.utils.log_noise import suppressed_log_counter
 
 

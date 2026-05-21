@@ -3,3 +3,6 @@
 /logs/
 /CLAUDE.md
 /AGENTS.md
+/tests/logs/
+/tests/.pytest_cache/
+/tools/logs/

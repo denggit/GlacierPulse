@@ -17,7 +17,7 @@ from config import research_evaluator as research_config
 from src.utils.log import get_logger
 from src.context.market_context import MarketContext
 from src.detectors.iceberg_detector import IcebergDetector
-from src.strategy.phase1_zone_engine import Phase1Engine
+from src.strategy.a1_absorption.engine import A1AbsorptionEngine
 from src.execution.trader import IcebergTrader
 from src.data_feed.okx_books_stream import OKXBooksStreamer
 from src.data_feed.okx_stream import OKXTickStreamer
@@ -40,7 +40,7 @@ async def main():
     # 1. 实例化核心组件
     ctx = MarketContext()
     iceberg_radar = IcebergDetector()
-    engine = Phase1Engine(market_context=ctx, iceberg_detector=iceberg_radar)
+    engine = A1AbsorptionEngine(market_context=ctx, iceberg_detector=iceberg_radar)
     trader = IcebergTrader(symbol=symbol, leverage=3, td_mode="cross")
 
     # 2. 定义高频数据回调处理链路 (Callback Pipeline)

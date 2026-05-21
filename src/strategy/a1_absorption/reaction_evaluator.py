@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class Phase2FlowBucket:
+class A1ReactionFlowBucket:
     bucket_ts: int
     active_buy_notional: float = 0.0
     active_sell_notional: float = 0.0
@@ -52,7 +52,7 @@ class Phase2FlowBucket:
 
 
 @dataclass
-class Phase2BookSample:
+class A1ReactionBookSample:
     ts: float
     bid_depth_near_zone: float = 0.0
     ask_depth_near_zone: float = 0.0
@@ -61,7 +61,7 @@ class Phase2BookSample:
 
 
 @dataclass
-class Phase2TrackedZone:
+class A1ReactionTrackedZone:
     zone_id: str
     direction: str
     frozen_ts: float
@@ -130,8 +130,8 @@ class Phase2TrackedZone:
     reload_score: float = 0.0
     last_book_ts: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict, repr=False)
-    flow_buckets: Deque[Phase2FlowBucket] = field(default_factory=deque, repr=False)
-    book_samples: Deque[Phase2BookSample] = field(default_factory=deque, repr=False)
+    flow_buckets: Deque[A1ReactionFlowBucket] = field(default_factory=deque, repr=False)
+    book_samples: Deque[A1ReactionBookSample] = field(default_factory=deque, repr=False)
     bid_reload_watch_active: bool = field(default=False, repr=False)
     bid_reload_low: float = field(default=0.0, repr=False)
     bid_reload_recover_target: float = field(default=0.0, repr=False)
@@ -178,8 +178,12 @@ class Phase2TrackedZone:
                 "reclaim_score": self.reclaim_score,
                 "retest_score": self.retest_score,
                 "phase2_total_score": self.phase2_total_score,
+                "a1_reaction_score": self.phase2_total_score,
                 "phase2_type": self.phase2_type,
+                "a1_reaction_type": self.phase2_type,
                 "phase2_reason": self.phase2_reason,
+                "a1_reaction_reason": self.phase2_reason,
+                "a1_reaction_confirmed_ts": self.confirmed_ts,
                 "sweep_extreme": self.sweep_extreme,
                 "last_price": self.last_price,
                 "min_price_seen_after_frozen": self.min_price_seen_after_frozen,
@@ -217,7 +221,7 @@ class Phase2TrackedZone:
         return snapshot
 
 
-class Phase2OrderflowEvaluator:
+class A1ReactionEvaluator:
     RELOAD_MIN_DEPTH_USDT = 10_000.0
     RELOAD_MIN_DEPTH_PCT = 0.10
     RELOAD_RECOVER_PCT = 0.70
@@ -247,7 +251,7 @@ class Phase2OrderflowEvaluator:
         self.max_sweep_depth_pct_hard = max(0.0, float(PHASE2_MAX_SWEEP_DEPTH_PCT_HARD))
         self.max_time_below_ms = max(0.0, float(PHASE2_MAX_TIME_BELOW_MS))
         self.max_time_above_ms = max(0.0, float(PHASE2_MAX_TIME_ABOVE_MS))
-        self.active_zones: "OrderedDict[str, Phase2TrackedZone]" = OrderedDict()
+        self.active_zones: "OrderedDict[str, A1ReactionTrackedZone]" = OrderedDict()
         self.confirmed_events: Deque[Dict[str, Any]] = deque()
         self._confirmed_event_zone_ids: Set[str] = set()
 
@@ -356,7 +360,7 @@ class Phase2OrderflowEvaluator:
             return None if zone_id is not None else []
 
     def pop_confirmed_events(self) -> List[Dict[str, Any]]:
-        """Return and clear Phase2 confirmed snapshots for Phase3 consumers."""
+        """Return and clear confirmed A1 reaction snapshots for research consumers."""
         events = list(self.confirmed_events)
         self.confirmed_events.clear()
         return events
@@ -392,7 +396,7 @@ class Phase2OrderflowEvaluator:
             )
         return True
 
-    def _build_tracked_zone(self, zone: Dict[str, Any], now_ts: float) -> Phase2TrackedZone:
+    def _build_tracked_zone(self, zone: Dict[str, Any], now_ts: float) -> A1ReactionTrackedZone:
         frozen_low = self._safe_float(
             zone.get("frozen_zone_lower", zone.get("zone_lower")),
             0.0,
@@ -412,7 +416,7 @@ class Phase2OrderflowEvaluator:
         zone_mid = (frozen_low + frozen_high) / 2.0 if frozen_low > 0 and frozen_high > 0 else 0.0
         direction = str(zone.get("direction") or "").upper()
 
-        return Phase2TrackedZone(
+        return A1ReactionTrackedZone(
             zone_id=str(zone.get("zone_id") or "").strip(),
             direction=direction,
             frozen_ts=self._safe_float(zone.get("frozen_ts"), now_ts),
@@ -525,7 +529,7 @@ class Phase2OrderflowEvaluator:
 
     def _update_zone_book_metrics(
         self,
-        zone: Phase2TrackedZone,
+        zone: A1ReactionTrackedZone,
         ts: float,
         bid_depth_near_zone: float,
         ask_depth_near_zone: float,
@@ -543,7 +547,7 @@ class Phase2OrderflowEvaluator:
         zone.last_book_ts = ts
 
         zone.book_samples.append(
-            Phase2BookSample(
+            A1ReactionBookSample(
                 ts=ts,
                 bid_depth_near_zone=bid_depth_near_zone,
                 ask_depth_near_zone=ask_depth_near_zone,
@@ -576,14 +580,14 @@ class Phase2OrderflowEvaluator:
         )
         self._recompute_book_scores(zone)
 
-    def _prune_book_samples(self, zone: Phase2TrackedZone, now_ts: float) -> None:
+    def _prune_book_samples(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
         cutoff_ts = now_ts - 1.0
         while zone.book_samples and zone.book_samples[0].ts < cutoff_ts:
             zone.book_samples.popleft()
 
     def _update_reload_state(
         self,
-        zone: Phase2TrackedZone,
+        zone: A1ReactionTrackedZone,
         side: str,
         previous_depth: float,
         current_depth: float,
@@ -620,7 +624,7 @@ class Phase2OrderflowEvaluator:
                 zone.ask_reload_low = 0.0
                 zone.ask_reload_recover_target = 0.0
 
-    def _recompute_book_scores(self, zone: Phase2TrackedZone) -> None:
+    def _recompute_book_scores(self, zone: A1ReactionTrackedZone) -> None:
         self._update_relevant_book_depth_available(zone)
         if zone.direction == "BUY":
             pressure_notional = zone.active_sell_notional_1s
@@ -645,7 +649,7 @@ class Phase2OrderflowEvaluator:
             zone.book_absorption_score = 0.0
         zone.reload_score = min(1.0, max(0, reload_count) / 3.0)
 
-    def _update_relevant_book_depth_available(self, zone: Phase2TrackedZone) -> None:
+    def _update_relevant_book_depth_available(self, zone: A1ReactionTrackedZone) -> None:
         if zone.direction == "BUY":
             zone.relevant_book_depth_available = (
                 zone.bid_depth_near_zone > 0
@@ -664,7 +668,7 @@ class Phase2OrderflowEvaluator:
                 or zone.ask_depth_near_sweep > 0
             )
 
-    def _update_zone_price(self, zone: Phase2TrackedZone, price: float) -> None:
+    def _update_zone_price(self, zone: A1ReactionTrackedZone, price: float) -> None:
         zone.last_price = price
         if zone.min_price_seen_after_frozen <= 0:
             zone.min_price_seen_after_frozen = price
@@ -691,7 +695,7 @@ class Phase2OrderflowEvaluator:
 
     def _add_flow_to_zone(
         self,
-        zone: Phase2TrackedZone,
+        zone: A1ReactionTrackedZone,
         ts: float,
         active_buy_notional: float,
         active_sell_notional: float,
@@ -704,7 +708,7 @@ class Phase2OrderflowEvaluator:
         bucket.tick_count += tick_count
         self._recompute_windows(zone=zone, now_ts=ts)
 
-    def _get_or_create_bucket(self, zone: Phase2TrackedZone, bucket_ts: int) -> Phase2FlowBucket:
+    def _get_or_create_bucket(self, zone: A1ReactionTrackedZone, bucket_ts: int) -> A1ReactionFlowBucket:
         if zone.flow_buckets and zone.flow_buckets[-1].bucket_ts == bucket_ts:
             return zone.flow_buckets[-1]
 
@@ -714,11 +718,11 @@ class Phase2OrderflowEvaluator:
             if bucket.bucket_ts < bucket_ts:
                 break
 
-        bucket = Phase2FlowBucket(bucket_ts=bucket_ts)
+        bucket = A1ReactionFlowBucket(bucket_ts=bucket_ts)
         zone.flow_buckets.append(bucket)
         return bucket
 
-    def _recompute_windows(self, zone: Phase2TrackedZone, now_ts: float) -> None:
+    def _recompute_windows(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
         oldest_bucket_ts = int(now_ts) - 9
         while zone.flow_buckets and zone.flow_buckets[0].bucket_ts < oldest_bucket_ts:
             zone.flow_buckets.popleft()
@@ -742,7 +746,7 @@ class Phase2OrderflowEvaluator:
 
     def _sum_buckets(
         self,
-        buckets: Deque[Phase2FlowBucket],
+        buckets: Deque[A1ReactionFlowBucket],
         now_ts: float,
         window_seconds: int,
     ) -> Tuple[float, float, int]:
@@ -758,7 +762,7 @@ class Phase2OrderflowEvaluator:
             tick_count += bucket.tick_count
         return buy_notional, sell_notional, tick_count
 
-    def _evaluate_state_machine(self, zone: Phase2TrackedZone, now_ts: float) -> None:
+    def _evaluate_state_machine(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
         if zone.state in ("PHASE2_CONFIRMED", "PHASE2_FAILED", "PHASE2_TIMEOUT"):
             return
         price = zone.last_price
@@ -868,7 +872,7 @@ class Phase2OrderflowEvaluator:
         zone.previous_break_depth_u = zone.break_depth_u
         zone.previous_pressure_notional_3s = self._pressure_notional_3s(zone)
 
-    def _update_boundary_timers(self, zone: Phase2TrackedZone, now_ts: float) -> None:
+    def _update_boundary_timers(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
         price = zone.last_price
         if zone.direction == "BUY":
             if zone.sweep_started_ts > 0:
@@ -881,7 +885,7 @@ class Phase2OrderflowEvaluator:
                 zone.time_above_boundary_ms = max(0.0, (end_ts - zone.sweep_started_ts) * 1000.0)
             zone.time_below_boundary_ms = 0.0 if price >= zone.frozen_low else max(0.0, (now_ts - zone.phase2_registered_ts) * 1000.0)
 
-    def _recompute_phase2_scores(self, zone: Phase2TrackedZone) -> None:
+    def _recompute_phase2_scores(self, zone: A1ReactionTrackedZone) -> None:
         pressure_1s = self._pressure_notional_1s(zone)
         pressure_3s = self._pressure_notional_3s(zone)
         opposite_1s = self._opposite_notional_1s(zone)
@@ -960,7 +964,7 @@ class Phase2OrderflowEvaluator:
                     max(0.0, min(1.0, below_zone_total_score)),
                 )
 
-    def _absorption_reason(self, zone: Phase2TrackedZone) -> str:
+    def _absorption_reason(self, zone: A1ReactionTrackedZone) -> str:
         if not self._is_sweeping_boundary(zone=zone, price=zone.last_price):
             return ""
         pressure_3s = self._pressure_notional_3s(zone)
@@ -974,7 +978,7 @@ class Phase2OrderflowEvaluator:
             return "trade_flow_pressure_decay_without_book_depth" if not zone.relevant_book_depth_available else "trade_flow_pressure_decay"
         return ""
 
-    def _reclaim_reason(self, zone: Phase2TrackedZone, price: float) -> str:
+    def _reclaim_reason(self, zone: A1ReactionTrackedZone, price: float) -> str:
         if zone.direction == "BUY":
             reclaimed = price >= zone.frozen_low - self.reclaim_buffer_usdt
         elif zone.direction == "SELL":
@@ -985,14 +989,14 @@ class Phase2OrderflowEvaluator:
             return ""
         return "boundary_reclaimed_with_orderflow_shift"
 
-    def _retest_reason(self, zone: Phase2TrackedZone, price: float) -> str:
+    def _retest_reason(self, zone: A1ReactionTrackedZone, price: float) -> str:
         if not self._is_retest_inside_zone(zone=zone, price=price):
             return ""
         if zone.retest_score < self.min_retest_score:
             return ""
         return "inside_zone_retest_holding"
 
-    def _confirm_reason(self, zone: Phase2TrackedZone) -> str:
+    def _confirm_reason(self, zone: A1ReactionTrackedZone) -> str:
         if zone.state != "PHASE2_RETEST_INSIDE_ZONE":
             return ""
         if zone.phase2_total_score < self.min_total_score:
@@ -1009,7 +1013,7 @@ class Phase2OrderflowEvaluator:
             return "event_sequence_sweep_absorb_reclaim_retest"
         return ""
 
-    def _below_zone_absorption_confirm_reason(self, zone: Phase2TrackedZone, now_ts: float) -> str:
+    def _below_zone_absorption_confirm_reason(self, zone: A1ReactionTrackedZone, now_ts: float) -> str:
         if zone.has_failed or zone.has_reclaimed_boundary:
             return ""
         if not zone.has_swept_boundary or not zone.has_absorbed_after_sweep:
@@ -1052,7 +1056,7 @@ class Phase2OrderflowEvaluator:
             return "below_zone_trade_flow_pressure_decay_without_book_depth"
         return ""
 
-    def _clean_hold_confirm_reason(self, zone: Phase2TrackedZone) -> str:
+    def _clean_hold_confirm_reason(self, zone: A1ReactionTrackedZone) -> str:
         if zone.state != "PHASE2_TESTING_ZONE":
             return ""
         if not zone.has_tested_zone or zone.has_swept_boundary or zone.has_failed:
@@ -1074,7 +1078,7 @@ class Phase2OrderflowEvaluator:
             return "clean_hold_trade_flow_pressure_decay"
         return ""
 
-    def _hard_failure_reason(self, zone: Phase2TrackedZone, now_ts: float) -> str:
+    def _hard_failure_reason(self, zone: A1ReactionTrackedZone, now_ts: float) -> str:
         if zone.break_depth_pct >= self.max_sweep_depth_pct_hard:
             return "hard_sweep_depth_exceeded"
         if zone.direction == "BUY":
@@ -1118,7 +1122,7 @@ class Phase2OrderflowEvaluator:
 
     def _transition_state(
         self,
-        zone: Phase2TrackedZone,
+        zone: A1ReactionTrackedZone,
         new_state: str,
         now_ts: float,
         reason: str,
@@ -1143,7 +1147,7 @@ class Phase2OrderflowEvaluator:
 
     def _log_phase2_state(
         self,
-        zone: Phase2TrackedZone,
+        zone: A1ReactionTrackedZone,
         previous_state: str,
         now_ts: float,
         reason: str,
@@ -1192,7 +1196,7 @@ class Phase2OrderflowEvaluator:
             reason,
         )
 
-    def _log_phase2_confirmed(self, zone: Phase2TrackedZone, now_ts: float, reason: str) -> None:
+    def _log_phase2_confirmed(self, zone: A1ReactionTrackedZone, now_ts: float, reason: str) -> None:
         if not bool(getattr(cfg, "V62_LOG_PHASE2_CONFIRMED_ENABLED", True)):
             return
         suggested_stop = self._suggested_stop(zone)
@@ -1223,7 +1227,7 @@ class Phase2OrderflowEvaluator:
             zone.phase2_total_score,
         )
 
-    def _append_confirmed_event(self, zone: Phase2TrackedZone) -> None:
+    def _append_confirmed_event(self, zone: A1ReactionTrackedZone) -> None:
         if zone.zone_id in self._confirmed_event_zone_ids:
             return
         event = zone.to_snapshot().copy()
@@ -1240,27 +1244,27 @@ class Phase2OrderflowEvaluator:
         self.confirmed_events.append(event)
         self._confirmed_event_zone_ids.add(zone.zone_id)
 
-    def _suggested_stop(self, zone: Phase2TrackedZone) -> float:
+    def _suggested_stop(self, zone: A1ReactionTrackedZone) -> float:
         if zone.direction == "BUY":
             return (zone.sweep_extreme - 0.5) if zone.sweep_extreme > 0 else (zone.frozen_low - 0.8)
         if zone.direction == "SELL":
             return (zone.sweep_extreme + 0.5) if zone.sweep_extreme > 0 else (zone.frozen_high + 0.8)
         return 0.0
 
-    def _is_testing_zone(self, zone: Phase2TrackedZone, price: float) -> bool:
+    def _is_testing_zone(self, zone: A1ReactionTrackedZone, price: float) -> bool:
         return (
             price >= zone.frozen_low - self.test_zone_buffer_usdt
             and price <= zone.frozen_high + self.test_zone_buffer_usdt
         )
 
-    def _is_sweeping_boundary(self, zone: Phase2TrackedZone, price: float) -> bool:
+    def _is_sweeping_boundary(self, zone: A1ReactionTrackedZone, price: float) -> bool:
         if zone.direction == "BUY":
             return price < zone.frozen_low
         if zone.direction == "SELL":
             return price > zone.frozen_high
         return False
 
-    def _is_retest_inside_zone(self, zone: Phase2TrackedZone, price: float) -> bool:
+    def _is_retest_inside_zone(self, zone: A1ReactionTrackedZone, price: float) -> bool:
         if zone.direction == "BUY":
             return (
                 price >= zone.frozen_low - self.retest_buffer_usdt
@@ -1273,19 +1277,19 @@ class Phase2OrderflowEvaluator:
             )
         return False
 
-    def _pressure_notional_1s(self, zone: Phase2TrackedZone) -> float:
+    def _pressure_notional_1s(self, zone: A1ReactionTrackedZone) -> float:
         return zone.active_sell_notional_1s if zone.direction == "BUY" else zone.active_buy_notional_1s
 
-    def _pressure_notional_3s(self, zone: Phase2TrackedZone) -> float:
+    def _pressure_notional_3s(self, zone: A1ReactionTrackedZone) -> float:
         return zone.active_sell_notional_3s if zone.direction == "BUY" else zone.active_buy_notional_3s
 
-    def _opposite_notional_1s(self, zone: Phase2TrackedZone) -> float:
+    def _opposite_notional_1s(self, zone: A1ReactionTrackedZone) -> float:
         return zone.active_buy_notional_1s if zone.direction == "BUY" else zone.active_sell_notional_1s
 
-    def _directional_reload_count(self, zone: Phase2TrackedZone) -> int:
+    def _directional_reload_count(self, zone: A1ReactionTrackedZone) -> int:
         return zone.bid_reload_count if zone.direction == "BUY" else zone.ask_reload_count
 
-    def _directional_reload_score(self, zone: Phase2TrackedZone) -> float:
+    def _directional_reload_score(self, zone: A1ReactionTrackedZone) -> float:
         if self._directional_reload_count(zone) <= 0:
             return 0.0
         return zone.reload_score
@@ -1317,7 +1321,7 @@ class Phase2OrderflowEvaluator:
             _, zone = self.active_zones.popitem(last=False)
             self._log_zone_expired(zone=zone, now_ts=now, expire_reason="CAPACITY_LIMIT")
 
-    def _log_zone_expired(self, zone: Phase2TrackedZone, now_ts: float, expire_reason: str) -> None:
+    def _log_zone_expired(self, zone: A1ReactionTrackedZone, now_ts: float, expire_reason: str) -> None:
         logger.info(
             "[PHASE2-ZONE-EXPIRED] zone_id=%s direction=%s expire_reason=%s age_seconds=%.1f last_state=%s frozen_low=%.2f frozen_high=%.2f min_price_seen=%.2f max_price_seen=%.2f bid_depth_near_zone=%.0f ask_depth_near_zone=%.0f bid_depth_near_sweep=%.0f ask_depth_near_sweep=%.0f bid_reload_count=%d ask_reload_count=%d book_absorption_score=%.4f relevant_book_depth_available=%s reload_score=%.4f book_update_count=%d",
             zone.zone_id,
@@ -1389,7 +1393,7 @@ class Phase2OrderflowEvaluator:
                 parsed_levels.append((price, size))
         return tuple(parsed_levels)
 
-    def _zone_book_anchor(self, zone: Phase2TrackedZone) -> float:
+    def _zone_book_anchor(self, zone: A1ReactionTrackedZone) -> float:
         if zone.direction == "BUY":
             return zone.frozen_low
         if zone.direction == "SELL":
@@ -1413,7 +1417,7 @@ class Phase2OrderflowEvaluator:
         return depth
 
     @staticmethod
-    def _max_sample_depth(samples: Deque[Phase2BookSample], attr_name: str) -> float:
+    def _max_sample_depth(samples: Deque[A1ReactionBookSample], attr_name: str) -> float:
         max_depth = 0.0
         for sample in samples:
             max_depth = max(max_depth, float(getattr(sample, attr_name, 0.0)))
@@ -1433,19 +1437,9 @@ class Phase2OrderflowEvaluator:
         except (TypeError, ValueError):
             return float(default)
 
-A1ReactionEvaluator = Phase2OrderflowEvaluator
-A1ReactionTrackedZone = Phase2TrackedZone
-A1ReactionFlowBucket = Phase2FlowBucket
-A1ReactionBookSample = Phase2BookSample
-
 __all__ = [
     "A1ReactionEvaluator",
     "A1ReactionTrackedZone",
     "A1ReactionFlowBucket",
     "A1ReactionBookSample",
-    "Phase2OrderflowEvaluator",
-    "Phase2TrackedZone",
-    "Phase2FlowBucket",
-    "Phase2BookSample",
 ]
-

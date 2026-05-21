@@ -1,27 +1,15 @@
-"""Semantic package exports for execution research modules."""
+"""Execution research modules for A1 reaction candidates."""
 
-from .candidate_evaluator import (
-    ExecutionResearchCandidateEvaluator,
-    Phase3CandidateEvaluator,
-)
-from .trade_outcome_evaluator import (
-    ExecutionResearchOutcomeEvaluator,
-    Phase3OutcomeEvaluator,
-)
+from .candidate_risk_evaluator import CandidateRiskEvaluator
+from .trade_outcome_evaluator import ExecutionResearchOutcomeEvaluator
 from .virtual_position_manager import (
     ResearchVirtualPosition,
     ResearchVirtualPositionManager,
-    VirtualPosition,
-    VirtualPositionManager,
 )
 
 __all__ = [
-    "ExecutionResearchCandidateEvaluator",
-    "Phase3CandidateEvaluator",
+    "CandidateRiskEvaluator",
     "ResearchVirtualPositionManager",
     "ResearchVirtualPosition",
-    "VirtualPositionManager",
-    "VirtualPosition",
     "ExecutionResearchOutcomeEvaluator",
-    "Phase3OutcomeEvaluator",
 ]

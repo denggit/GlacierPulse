@@ -1,26 +1,30 @@
-"""Semantic package exports for A1 iceberg absorption research modules."""
+"""A1 absorption runtime and research modules for V6.3.8."""
 
 from .engine import A1AbsorptionEngine
-from .outcome_evaluator import A1ZoneOutcomeEvaluator
-from .schema import A1AbsorptionContext, A1OutcomeRecord, A1ReactionSnapshot
+from .event_schema import A1AbsorptionContext, A1OutcomeRecord, A1ReactionSnapshot
+from .outcome_evaluator import A1OutcomeEvaluator
+from .reaction_evaluator import (
+    A1ReactionBookSample,
+    A1ReactionEvaluator,
+    A1ReactionFlowBucket,
+    A1ReactionTrackedZone,
+)
 from .research_report import (
     A1ResearchGroupStats,
     A1ResearchReport,
     A1ResearchReportBuilder,
     A1ResearchSample,
 )
-from .score_model import (
-    A1ScoreBreakdown,
-    A1ScoreRecord,
-    A1UnifiedScoreModel,
-    bucket_for_score,
-)
 from .zone_tracker import A1ZoneTracker
 
 __all__ = [
     "A1AbsorptionEngine",
     "A1ZoneTracker",
-    "A1ZoneOutcomeEvaluator",
+    "A1OutcomeEvaluator",
+    "A1ReactionEvaluator",
+    "A1ReactionTrackedZone",
+    "A1ReactionFlowBucket",
+    "A1ReactionBookSample",
     "A1AbsorptionContext",
     "A1ReactionSnapshot",
     "A1OutcomeRecord",
@@ -28,8 +32,4 @@ __all__ = [
     "A1ResearchGroupStats",
     "A1ResearchReport",
     "A1ResearchReportBuilder",
-    "A1ScoreBreakdown",
-    "A1ScoreRecord",
-    "A1UnifiedScoreModel",
-    "bucket_for_score",
 ]

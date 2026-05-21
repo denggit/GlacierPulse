@@ -7,13 +7,13 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.strategy.phase2_orderflow_evaluator import Phase2OrderflowEvaluator
-from src.strategy.phase1_zone_engine import Phase1Engine
-from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
+from src.strategy.a1_absorption.reaction_evaluator import A1ReactionEvaluator as Phase2OrderflowEvaluator
+from src.strategy.a1_absorption.engine import A1AbsorptionEngine as Phase1Engine
+from src.strategy.execution_research.candidate_risk_evaluator import CandidateRiskEvaluator as Phase3CandidateEvaluator
 from config import research_evaluator as research_config
-from src.strategy.phase3_trade_outcome_evaluator import Phase3OutcomeEvaluator
+from src.strategy.execution_research.trade_outcome_evaluator import ExecutionResearchOutcomeEvaluator as Phase3OutcomeEvaluator
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
-from src.strategy.virtual_position_manager import VirtualPositionManager
+from src.strategy.execution_research.virtual_position_manager import ResearchVirtualPositionManager as VirtualPositionManager
 
 
 def _frozen_zone(zone_id="iz-1", frozen_ts=100.0):
@@ -2004,14 +2004,14 @@ def test_phase1_virtual_integration_and_execution_modes(monkeypatch):
         def on_price(self, **kw): self.p.append(kw)
     eng=Phase1Engine(_Ctx(), iceberg_detector=None)
     eng.phase2_orderflow_evaluator=_P2(); eng.phase3_candidate_evaluator=_P3(); eng.virtual_position_manager=_V()
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", True)
     eng._drain_phase2_confirmed_events(); assert len(eng.virtual_position_manager.c)==1
     eng.on_trade({"price":3000,"size":200,"side":"sell","ts":10}); assert eng.virtual_position_manager.p
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.REAL_EXECUTION_ENABLED", True)
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_POSITION_MANAGER_ENABLED", True)
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_SHADOW_MODE", False)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.REAL_EXECUTION_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.VIRTUAL_POSITION_MANAGER_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.VIRTUAL_SHADOW_MODE", False)
     assert Phase1Engine(_Ctx(), iceberg_detector=None).virtual_position_manager is None
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.VIRTUAL_SHADOW_MODE", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.VIRTUAL_SHADOW_MODE", True)
     assert Phase1Engine(_Ctx(), iceberg_detector=None).virtual_position_manager is not None
 
 
@@ -2169,8 +2169,8 @@ def test_v62_heartbeat_includes_virtual_and_outcome_summary(monkeypatch, caplog)
 
 
 def test_phase1_creates_research_runtime_monitor_when_enabled(monkeypatch):
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
 
     class _Ctx:
         current_price = 3000.0
@@ -2245,8 +2245,8 @@ def test_research_runtime_final_summary_respects_disabled_config(monkeypatch, ca
 
 
 def test_phase1_log_research_runtime_final_summary_logs(monkeypatch, caplog):
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
-    monkeypatch.setattr("src.strategy.phase1_zone_engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.V62_STARTUP_SAFETY_CHECK_ENABLED", True)
+    monkeypatch.setattr("src.strategy.a1_absorption.engine.V62_INTEGRATION_HEARTBEAT_ENABLED", True)
 
     class _Ctx:
         current_price = 3000.0

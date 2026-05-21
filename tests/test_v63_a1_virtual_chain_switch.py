@@ -1,7 +1,7 @@
 import logging
 
-from src.strategy.phase1_zone_engine import Phase1Engine
-from src.strategy import phase1_zone_engine
+from src.strategy.a1_absorption.engine import A1AbsorptionEngine as Phase1Engine
+from src.strategy.a1_absorption import engine as phase1_zone_engine
 
 
 class FakeCandidateEvaluator:

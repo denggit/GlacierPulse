@@ -27,7 +27,7 @@ from src.research.a1_frozen_metadata import (
 logger = logging.getLogger(__name__)
 
 
-class Phase3CandidateEvaluator:
+class CandidateRiskEvaluator:
     CANDIDATE_TYPES = {
         "SWEEP_RECLAIM": "SWEEP_RECLAIM_RETEST_ENTRY",
         "CLEAN_HOLD": "CLEAN_HOLD_LOW_RISK",
@@ -194,7 +194,9 @@ class Phase3CandidateEvaluator:
             "zone_id": str(phase2_event.get("zone_id") or ""),
             "direction": direction,
             "phase2_type": phase2_type,
+            "a1_reaction_type": self._safe_str(phase2_event.get("a1_reaction_type"), phase2_type),
             "candidate_type": candidate_type,
+            "candidate_source": "A1_REACTION_RESEARCH",
             "decision": decision,
             "decision_reason": decision_reason,
             "candidate_ts": self._candidate_ts(phase2_event),
@@ -212,6 +214,18 @@ class Phase3CandidateEvaluator:
             "notional_equity_multiple": notional_equity_multiple,
             "expected_account_loss_if_sl": expected_account_loss_if_sl,
             "phase2_total_score": self._safe_float(phase2_event.get("phase2_total_score"), 0.0),
+            "a1_reaction_score": self._safe_float(
+                phase2_event.get("a1_reaction_score", phase2_event.get("phase2_total_score")),
+                0.0,
+            ),
+            "a1_reaction_reason": self._safe_str(
+                phase2_event.get("a1_reaction_reason", phase2_event.get("phase2_reason")),
+                "",
+            ),
+            "a1_reaction_confirmed_ts": self._safe_float(
+                phase2_event.get("a1_reaction_confirmed_ts", phase2_event.get("confirmed_ts")),
+                0.0,
+            ),
             "absorption_score": self._safe_float(phase2_event.get("absorption_score"), 0.0),
             "pressure_decay_score": self._safe_float(phase2_event.get("pressure_decay_score"), 0.0),
             "reclaim_score": self._safe_float(phase2_event.get("reclaim_score"), 0.0),
@@ -263,7 +277,12 @@ class Phase3CandidateEvaluator:
             "zone_id": str(phase2_event.get("zone_id") or ""),
             "direction": str(phase2_event.get("direction") or "").upper(),
             "phase2_type": str(phase2_event.get("phase2_type") or ""),
+            "a1_reaction_type": self._safe_str(
+                phase2_event.get("a1_reaction_type", phase2_event.get("phase2_type")),
+                "",
+            ),
             "candidate_type": "UNKNOWN",
+            "candidate_source": "A1_REACTION_RESEARCH",
             "decision": decision,
             "decision_reason": decision_reason,
             "candidate_ts": self._candidate_ts(phase2_event),
@@ -281,6 +300,18 @@ class Phase3CandidateEvaluator:
             "notional_equity_multiple": 0.0,
             "expected_account_loss_if_sl": 0.0,
             "phase2_total_score": self._safe_float(phase2_event.get("phase2_total_score"), 0.0),
+            "a1_reaction_score": self._safe_float(
+                phase2_event.get("a1_reaction_score", phase2_event.get("phase2_total_score")),
+                0.0,
+            ),
+            "a1_reaction_reason": self._safe_str(
+                phase2_event.get("a1_reaction_reason", phase2_event.get("phase2_reason")),
+                "",
+            ),
+            "a1_reaction_confirmed_ts": self._safe_float(
+                phase2_event.get("a1_reaction_confirmed_ts", phase2_event.get("confirmed_ts")),
+                0.0,
+            ),
             "absorption_score": self._safe_float(phase2_event.get("absorption_score"), 0.0),
             "pressure_decay_score": self._safe_float(phase2_event.get("pressure_decay_score"), 0.0),
             "reclaim_score": self._safe_float(phase2_event.get("reclaim_score"), 0.0),
@@ -352,7 +383,10 @@ class Phase3CandidateEvaluator:
 
     def _candidate_ts(self, phase2_event: Dict[str, Any]) -> float:
         candidate_ts = self._safe_float(
-            phase2_event.get("confirmed_ts", phase2_event.get("candidate_ts")),
+            phase2_event.get(
+                "a1_reaction_confirmed_ts",
+                phase2_event.get("confirmed_ts", phase2_event.get("candidate_ts")),
+            ),
             0.0,
         )
         return candidate_ts if candidate_ts > 0 else time.time()
@@ -378,9 +412,4 @@ class Phase3CandidateEvaluator:
         return str(value)
 
 
-ExecutionResearchCandidateEvaluator = Phase3CandidateEvaluator
-
-__all__ = [
-    "ExecutionResearchCandidateEvaluator",
-    "Phase3CandidateEvaluator",
-]
+__all__ = ["CandidateRiskEvaluator"]
