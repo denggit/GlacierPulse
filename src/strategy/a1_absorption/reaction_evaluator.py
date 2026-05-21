@@ -40,6 +40,18 @@ from config.research_evaluator import (
     PHASE2_ZONE_TTL_SECONDS,
 )
 
+from src.strategy.a1_absorption.reaction_taxonomy import (
+    A1_REACTION_BREAKOUT_AWAY,
+    A1_REACTION_CLEAN_HOLD,
+    A1_REACTION_FAST_CLEAN_HOLD,
+    A1_REACTION_NO_RESPONSE,
+    A1_REACTION_SWEEP_NO_RECLAIM,
+    A1_REACTION_SWEEP_RECLAIM_NO_RETEST,
+    A1_REACTION_SWEEP_RECLAIM_RETEST,
+    A1_REACTION_TIMEOUT,
+    normalize_a1_reaction_type,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -253,7 +265,13 @@ class A1ReactionEvaluator:
         self.max_time_above_ms = max(0.0, float(PHASE2_MAX_TIME_ABOVE_MS))
         self.active_zones: "OrderedDict[str, A1ReactionTrackedZone]" = OrderedDict()
         self.confirmed_events: Deque[Dict[str, Any]] = deque()
+        self.research_events: Deque[Dict[str, Any]] = deque()
         self._confirmed_event_zone_ids: Set[str] = set()
+        self.total_registered_zones = 0
+        self.total_confirmed_zones = 0
+        self.total_failed_zones = 0
+        self.total_timeout_zones = 0
+        self.total_research_events = 0
 
     def register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
         """
@@ -365,6 +383,11 @@ class A1ReactionEvaluator:
         self.confirmed_events.clear()
         return events
 
+    def pop_research_events(self) -> List[Dict[str, Any]]:
+        events = list(self.research_events)
+        self.research_events.clear()
+        return events
+
     def _register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
         if not isinstance(zone, dict) or not zone.get("is_frozen"):
             return False
@@ -380,6 +403,7 @@ class A1ReactionEvaluator:
         self.active_zones[zone_id] = tracked_zone
         self.active_zones.move_to_end(zone_id)
 
+        self.total_registered_zones += 1
         if bool(getattr(cfg, "V62_LOG_PHASE2_REGISTERED_ENABLED", True)):
             logger.info(
                 "[PHASE2-REGISTERED] zone_id=%s direction=%s frozen_ts=%.3f frozen_reason=%s frozen_state=%s frozen_event_id=%s frozen_low=%.2f frozen_high=%.2f live_low=%.2f live_high=%.2f",
@@ -801,6 +825,8 @@ class A1ReactionEvaluator:
             zone.has_failed = True
             zone.failed_ts = now_ts
             self._transition_state(zone=zone, new_state="PHASE2_FAILED", now_ts=now_ts, reason=failure_reason)
+            self.total_failed_zones += 1
+            self._append_research_event(zone=zone, reaction_type="A1_REACTION_FAILED_RECLAIM", event_kind="FAILED")
             return
 
         if zone.state in ("PHASE2_SWEEPING_LOW", "PHASE2_SWEEPING_HIGH"):
@@ -868,6 +894,7 @@ class A1ReactionEvaluator:
             )
             self._log_phase2_confirmed(zone=zone, now_ts=now_ts, reason=confirm_reason)
             self._append_confirmed_event(zone=zone)
+            self._append_research_event(zone=zone, reaction_type=A1_REACTION_SWEEP_RECLAIM_RETEST if zone.phase2_type=="SWEEP_RECLAIM" else A1_REACTION_CLEAN_HOLD, event_kind="CONFIRMED")
 
         zone.previous_break_depth_u = zone.break_depth_u
         zone.previous_pressure_notional_3s = self._pressure_notional_3s(zone)
@@ -1239,10 +1266,18 @@ class A1ReactionEvaluator:
                 "suggested_stop": suggested_stop,
                 "risk_to_stop_u": risk_to_stop_u,
                 "risk_to_stop_pct": risk_to_stop_pct,
+                "legacy_phase2_type": event.get("phase2_type", ""),
+                "a1_reaction_type": normalize_a1_reaction_type(event.get("phase2_type", ""), event.get("phase2_type", "")),
+                "a1_reaction_score": event.get("phase2_total_score", 0.0),
+                "legacy_phase2_total_score": event.get("phase2_total_score", 0.0),
+                "a1_reaction_reason": event.get("phase2_reason", ""),
+                "a1_reaction_confirmed_ts": event.get("confirmed_ts", 0.0),
+                "reaction_event_kind": "CONFIRMED",
             }
         )
         self.confirmed_events.append(event)
         self._confirmed_event_zone_ids.add(zone.zone_id)
+        self.total_confirmed_zones += 1
 
     def _suggested_stop(self, zone: A1ReactionTrackedZone) -> float:
         if zone.direction == "BUY":
@@ -1314,6 +1349,20 @@ class A1ReactionEvaluator:
                             now_ts=now,
                             reason="zone_ttl_exceeded",
                         )
+                        self.total_timeout_zones += 1
+                        if not zone.has_swept_boundary and not zone.has_reclaimed_boundary:
+                            rtype = A1_REACTION_NO_RESPONSE
+                            ekind = "NO_RESPONSE"
+                        elif zone.has_swept_boundary and not zone.has_reclaimed_boundary:
+                            rtype = A1_REACTION_SWEEP_NO_RECLAIM
+                            ekind = "SWEEP_NO_RECLAIM"
+                        elif zone.has_reclaimed_boundary and not zone.has_retested_inside_zone:
+                            rtype = A1_REACTION_SWEEP_RECLAIM_NO_RETEST
+                            ekind = "RECLAIM_NO_RETEST"
+                        else:
+                            rtype = A1_REACTION_TIMEOUT
+                            ekind = "TIMEOUT"
+                        self._append_research_event(zone=zone, reaction_type=rtype, event_kind=ekind)
                     self._log_zone_expired(zone=zone, now_ts=now, expire_reason="TTL")
 
         target_size = max(0, self.max_active_zones - max(0, int(reserve_slots)))

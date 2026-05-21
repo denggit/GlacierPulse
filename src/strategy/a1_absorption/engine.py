@@ -30,6 +30,7 @@ from config.research_evaluator import (
 from src.strategy.a1_absorption.zone_tracker import A1ZoneTracker
 from src.strategy.a1_absorption.outcome_evaluator import A1OutcomeEvaluator
 from src.strategy.a1_absorption.reaction_evaluator import A1ReactionEvaluator
+from src.strategy.a1_absorption.reaction_event_recorder import A1ReactionEventRecorder
 from src.strategy.execution_research.candidate_risk_evaluator import CandidateRiskEvaluator
 from src.strategy.execution_research.trade_outcome_evaluator import ExecutionResearchOutcomeEvaluator
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
@@ -79,6 +80,12 @@ class A1AbsorptionEngine:
             and ((not REAL_EXECUTION_ENABLED) or VIRTUAL_SHADOW_MODE)
         )
         self.virtual_position_manager = ResearchVirtualPositionManager() if virtual_should_run else None
+        self.a1_reaction_event_recorder = A1ReactionEventRecorder(
+            enabled=bool(getattr(cfg, "A1_REACTION_EVENT_RECORDER_ENABLED", True)),
+            write_jsonl=bool(getattr(cfg, "A1_REACTION_EVENT_RECORDER_WRITE_JSONL", False)),
+            jsonl_path=str(getattr(cfg, "A1_REACTION_EVENT_RECORDER_JSONL_PATH", "logs/research/a1_reaction_events.jsonl")),
+            max_recent_events=int(getattr(cfg, "A1_REACTION_EVENT_RECORDER_MAX_RECENT_EVENTS", 5000)),
+        )
         self.research_runtime_monitor = (
             ResearchRuntimeMonitor(
                 phase1_engine=self,
@@ -578,6 +585,7 @@ class A1AbsorptionEngine:
             enriched_trade.setdefault("ts", trade_ts)
             self.a1_reaction_evaluator.on_trade(enriched_trade)
             self._drain_a1_reaction_confirmed_events()
+            self._drain_a1_reaction_research_events()
         except Exception:
             logger.exception("[PHASE2-ORDERFLOW-FAILED]")
 
@@ -594,6 +602,7 @@ class A1AbsorptionEngine:
                 a1_reaction_book_data["asks"] = ctx_asks
             self.a1_reaction_evaluator.on_book_update(a1_reaction_book_data)
             self._drain_a1_reaction_confirmed_events()
+            self._drain_a1_reaction_research_events()
         except Exception:
             logger.exception("[PHASE2-BOOK-FAILED]")
 
@@ -640,6 +649,16 @@ class A1AbsorptionEngine:
                     "[PHASE3-CANDIDATE-FAILED] zone_id=%s",
                     event.get("zone_id") if isinstance(event, dict) else None,
                 )
+
+    def _drain_a1_reaction_research_events(self) -> None:
+        if not self.a1_reaction_evaluator:
+            return
+        events = self.a1_reaction_evaluator.pop_research_events()
+        if self.a1_reaction_event_recorder:
+            self.a1_reaction_event_recorder.record_many(events)
+        if bool(getattr(cfg, "V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED", True)):
+            for event in events:
+                logger.info("[A1-REACTION-RESEARCH-EVENT] zone_id=%s a1_reaction_type=%s reaction_event_kind=%s direction=%s frozen_reason=%s frozen_state=%s", event.get("zone_id"), event.get("a1_reaction_type"), event.get("reaction_event_kind"), event.get("direction"), event.get("frozen_reason"), event.get("frozen_state"))
 
     def _drain_virtual_position_closed_events(self) -> None:
         if not self.virtual_position_manager or not self.execution_outcome_evaluator:

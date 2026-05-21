@@ -104,6 +104,8 @@ class A1ResearchSample:
     frozen_state: str
     a1_reaction_type: str
     legacy_phase2_type: str
+    reaction_event_kind: str
+    candidate_source: str
     candidate_type: str
     iceberg_count_bucket: str
     high_count_bucket: str
@@ -131,6 +133,8 @@ class A1ResearchSample:
             frozen_state=_safe_str(record.get("frozen_state"), "UNKNOWN_FROZEN_STATE"),
             a1_reaction_type=a1_reaction_type or "UNKNOWN_A1_REACTION_TYPE",
             legacy_phase2_type=legacy_phase2_type or "UNKNOWN_PHASE2_TYPE",
+            reaction_event_kind=_safe_str(record.get("reaction_event_kind"), "UNKNOWN_REACTION_EVENT_KIND"),
+            candidate_source=_safe_str(record.get("candidate_source"), "UNKNOWN_CANDIDATE_SOURCE"),
             candidate_type=_safe_str(record.get("candidate_type"), "UNKNOWN_CANDIDATE_TYPE"),
             iceberg_count_bucket=_count_bucket(record.get("iceberg_count")),
             high_count_bucket=_count_bucket(record.get("high_count")),
@@ -280,6 +284,8 @@ class A1ResearchReportBuilder:
         ("frozen_state", "UNKNOWN_FROZEN_STATE"),
         ("a1_reaction_type", "UNKNOWN_A1_REACTION_TYPE"),
         ("legacy_phase2_type", "UNKNOWN_PHASE2_TYPE"),
+        ("reaction_event_kind", "UNKNOWN_REACTION_EVENT_KIND"),
+        ("candidate_source", "UNKNOWN_CANDIDATE_SOURCE"),
         ("candidate_type", "UNKNOWN_CANDIDATE_TYPE"),
         ("direction", "UNKNOWN_DIRECTION"),
         ("iceberg_count_bucket", "UNKNOWN_ICEBERG_COUNT"),
