@@ -191,8 +191,10 @@ class A1ReactionTrackedZone:
                 "retest_score": self.retest_score,
                 "phase2_total_score": self.phase2_total_score,
                 "a1_reaction_score": self.phase2_total_score,
+                "legacy_phase2_total_score": self.phase2_total_score,
                 "phase2_type": self.phase2_type,
-                "a1_reaction_type": self.phase2_type,
+                "a1_reaction_type": normalize_a1_reaction_type(self.phase2_type, self.phase2_type),
+                "legacy_phase2_type": self.phase2_type,
                 "phase2_reason": self.phase2_reason,
                 "a1_reaction_reason": self.phase2_reason,
                 "a1_reaction_confirmed_ts": self.confirmed_ts,
@@ -272,6 +274,7 @@ class A1ReactionEvaluator:
         self.total_failed_zones = 0
         self.total_timeout_zones = 0
         self.total_research_events = 0
+        self._research_event_keys: Set[Tuple[str, str, str]] = set()
 
     def register_frozen_zone(self, zone: Dict[str, Any], now_ts: Optional[float] = None) -> bool:
         """
@@ -794,6 +797,7 @@ class A1ReactionEvaluator:
             return
 
         self._update_boundary_timers(zone=zone, now_ts=now_ts)
+        self._maybe_append_fast_move_research_event(zone=zone, now_ts=now_ts)
         self._recompute_phase2_scores(zone=zone)
 
         if not zone.has_tested_zone and self._is_testing_zone(zone=zone, price=price):
@@ -1253,6 +1257,40 @@ class A1ReactionEvaluator:
             zone.retest_score,
             zone.phase2_total_score,
         )
+
+
+    def _append_research_event(self, zone: A1ReactionTrackedZone, reaction_type: str, event_kind: str, reason: str = "") -> None:
+        if not zone:
+            return
+        normalized_type = normalize_a1_reaction_type(reaction_type, zone.phase2_type)
+        kind = str(event_kind or "UNKNOWN").strip() or "UNKNOWN"
+        key = (zone.zone_id, normalized_type, kind)
+        if key in self._research_event_keys:
+            return
+        self._research_event_keys.add(key)
+        event = zone.to_snapshot().copy()
+        event_ts = zone.confirmed_ts or zone.failed_ts or zone.timeout_ts or zone.last_book_ts or zone.state_updated_ts or time.time()
+        event.update({"zone_id": zone.zone_id, "direction": zone.direction, "state": zone.state, "a1_reaction_type": normalized_type, "legacy_phase2_type": zone.phase2_type, "phase2_type": zone.phase2_type, "reaction_event_kind": kind, "reaction_event_ts": event_ts, "reaction_event_price": zone.last_price, "a1_reaction_score": zone.phase2_total_score, "legacy_phase2_total_score": zone.phase2_total_score, "a1_reaction_reason": reason or zone.phase2_reason, "phase2_reason": zone.phase2_reason, "has_confirmed": zone.has_confirmed, "has_failed": zone.has_failed})
+        self.research_events.append(event)
+        self.total_research_events += 1
+
+    def _maybe_append_fast_move_research_event(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
+        if not bool(getattr(cfg, "A1_REACTION_FAST_MOVE_ENABLED", True)):
+            return
+        if zone.has_confirmed or zone.has_failed or zone.phase2_registered_ts <= 0:
+            return
+        if now_ts - zone.phase2_registered_ts > float(getattr(cfg, "A1_REACTION_FAST_MOVE_WINDOW_SEC", 3.0)):
+            return
+        price = zone.last_price
+        if price <= 0:
+            return
+        min_dist = max(float(getattr(cfg, "A1_REACTION_FAST_MOVE_MIN_DISTANCE_U", 1.0)), abs((zone.frozen_high if zone.direction=="BUY" else zone.frozen_low) * float(getattr(cfg, "A1_REACTION_FAST_MOVE_MIN_DISTANCE_PCT", 0.0003))))
+        if zone.direction == "BUY" and price >= zone.frozen_high + min_dist:
+            rtype = A1_REACTION_BREAKOUT_AWAY if zone.has_swept_boundary else A1_REACTION_FAST_CLEAN_HOLD
+            self._append_research_event(zone=zone, reaction_type=rtype, event_kind="MISSED_FAST_MOVE")
+        elif zone.direction == "SELL" and price <= zone.frozen_low - min_dist:
+            rtype = A1_REACTION_BREAKOUT_AWAY if zone.has_swept_boundary else A1_REACTION_FAST_CLEAN_HOLD
+            self._append_research_event(zone=zone, reaction_type=rtype, event_kind="MISSED_FAST_MOVE")
 
     def _append_confirmed_event(self, zone: A1ReactionTrackedZone) -> None:
         if zone.zone_id in self._confirmed_event_zone_ids:

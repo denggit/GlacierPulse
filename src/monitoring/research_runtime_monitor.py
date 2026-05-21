@@ -233,6 +233,24 @@ class ResearchRuntimeMonitor:
             summary.update(self._outcome_group_highlights(self._outcome_summary()))
         return summary
 
+
+    def _a1_reaction_research_summary(self) -> Dict[str, Any]:
+        recorder = getattr(self.phase1_engine, "a1_reaction_event_recorder", None)
+        default = {"active": False, "total_events": 0, "total_confirmed": 0, "total_failed": 0, "total_timeout": 0, "total_no_response": 0, "total_missed_fast_move": 0, "total_sweep_no_reclaim": 0, "total_reclaim_no_retest": 0, "by_a1_reaction_type": {}, "by_event_kind": {}}
+        if recorder is None:
+            return default
+        try:
+            summary_fn = getattr(recorder, "summary", None)
+            if callable(summary_fn):
+                summary = dict(summary_fn())
+                summary.setdefault("active", bool(getattr(recorder, "enabled", True)))
+                for k,v in default.items(): summary.setdefault(k,v)
+                return summary
+            default["active"] = True
+            return default
+        except Exception:
+            logger.exception("[V62-SUMMARY-FAILED] component=a1_reaction_research")
+            return default
     def _collect_component_status(self) -> Dict[str, Any]:
         engine = self.phase1_engine
         a1_reaction_active = getattr(engine, "a1_reaction_evaluator", None) is not None

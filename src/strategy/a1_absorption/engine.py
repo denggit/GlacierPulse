@@ -653,12 +653,27 @@ class A1AbsorptionEngine:
     def _drain_a1_reaction_research_events(self) -> None:
         if not self.a1_reaction_evaluator:
             return
-        events = self.a1_reaction_evaluator.pop_research_events()
-        if self.a1_reaction_event_recorder:
-            self.a1_reaction_event_recorder.record_many(events)
+        try:
+            pop_events = getattr(self.a1_reaction_evaluator, "pop_research_events", None)
+            if not callable(pop_events):
+                return
+            events = pop_events() or []
+        except Exception:
+            logger.exception("[A1-REACTION-RESEARCH-FAILED] stage=pop_research_events")
+            return
+
+        try:
+            if self.a1_reaction_event_recorder:
+                self.a1_reaction_event_recorder.record_many(events)
+        except Exception:
+            logger.exception("[A1-REACTION-RESEARCH-FAILED] stage=record_many")
+
         if bool(getattr(cfg, "V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED", True)):
             for event in events:
-                logger.info("[A1-REACTION-RESEARCH-EVENT] zone_id=%s a1_reaction_type=%s reaction_event_kind=%s direction=%s frozen_reason=%s frozen_state=%s", event.get("zone_id"), event.get("a1_reaction_type"), event.get("reaction_event_kind"), event.get("direction"), event.get("frozen_reason"), event.get("frozen_state"))
+                try:
+                    logger.info("[A1-REACTION-RESEARCH-EVENT] zone_id=%s a1_reaction_type=%s reaction_event_kind=%s direction=%s frozen_reason=%s frozen_state=%s", event.get("zone_id"), event.get("a1_reaction_type"), event.get("reaction_event_kind"), event.get("direction"), event.get("frozen_reason"), event.get("frozen_state"))
+                except Exception:
+                    logger.exception("[A1-REACTION-RESEARCH-FAILED] stage=log_event")
 
     def _drain_virtual_position_closed_events(self) -> None:
         if not self.virtual_position_manager or not self.execution_outcome_evaluator:
