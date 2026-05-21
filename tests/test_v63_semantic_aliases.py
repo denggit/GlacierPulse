@@ -33,7 +33,13 @@ from src.strategy.a1_reaction.reaction_evaluator import (
 
 from src.strategy.execution_research import (
     ExecutionResearchCandidateEvaluator as PackageExecutionResearchCandidateEvaluator,
+    ExecutionResearchOutcomeEvaluator as PackageExecutionResearchOutcomeEvaluator,
     Phase3CandidateEvaluator as PackagePhase3CandidateEvaluator,
+    Phase3OutcomeEvaluator as PackagePhase3OutcomeEvaluator,
+    ResearchVirtualPosition as PackageResearchVirtualPosition,
+    ResearchVirtualPositionManager as PackageResearchVirtualPositionManager,
+    VirtualPosition as PackageVirtualPosition,
+    VirtualPositionManager as PackageVirtualPositionManager,
 )
 from src.strategy.phase3_candidate_evaluator import (
     Phase3CandidateEvaluator as LegacyPhase3CandidateEvaluator,
@@ -43,8 +49,12 @@ from src.strategy.execution_research.candidate_evaluator import (
     Phase3CandidateEvaluator as NewPathPhase3CandidateEvaluator,
 )
 
-from src.strategy.virtual_position_manager import VirtualPositionManager
+from src.strategy.virtual_position_manager import (
+    VirtualPosition,
+    VirtualPositionManager,
+)
 from src.strategy.execution_research.virtual_position_manager import (
+    ResearchVirtualPosition,
     ResearchVirtualPositionManager,
 )
 
@@ -113,3 +123,15 @@ def test_a1_reaction_package_exports_match_new_path():
 def test_execution_research_package_exports_match_new_path():
     assert PackageExecutionResearchCandidateEvaluator is ExecutionResearchCandidateEvaluator
     assert PackagePhase3CandidateEvaluator is NewPathPhase3CandidateEvaluator
+
+
+def test_execution_research_package_exports_virtual_position_names():
+    assert PackageResearchVirtualPositionManager is ResearchVirtualPositionManager
+    assert PackageResearchVirtualPosition is ResearchVirtualPosition
+    assert PackageVirtualPositionManager is VirtualPositionManager
+    assert PackageVirtualPosition is VirtualPosition
+
+
+def test_execution_research_package_exports_outcome_names():
+    assert PackageExecutionResearchOutcomeEvaluator is ExecutionResearchOutcomeEvaluator
+    assert PackagePhase3OutcomeEvaluator is Phase3OutcomeEvaluator

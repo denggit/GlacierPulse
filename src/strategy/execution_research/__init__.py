@@ -1,4 +1,4 @@
-"""Semantic aliases for current execution research modules."""
+"""Semantic package exports for execution research modules."""
 
 from .candidate_evaluator import (
     ExecutionResearchCandidateEvaluator,
