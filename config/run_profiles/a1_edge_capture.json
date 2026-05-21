@@ -4,7 +4,7 @@
   "allow_override_env": false,
   "env": {
     "V62_LOG_PROFILE": "RESEARCH_KEY_EVENTS",
-    "LOG_TO_CONSOLE": false,
+    "LOG_TO_CONSOLE": true,
     "LOG_TO_FILE": true,
 
     "A1_REACTION_RESEARCH_COVERAGE_ENABLED": true,
