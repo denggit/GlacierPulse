@@ -142,6 +142,27 @@ def test_string_number_fields_convert_safely():
     assert ctx.net_score == 3.5
 
 
+def test_a1_absorption_context_boundary_fields_fallback_when_new_keys_are_none():
+    zone = {
+        "zone_id": "iz-boundary-fallback",
+        "frozen_low": None,
+        "frozen_high": None,
+        "live_low": None,
+        "live_high": None,
+        "frozen_zone_lower": "3000.1",
+        "frozen_zone_upper": "3001.2",
+        "live_zone_lower": "2999.9",
+        "live_zone_upper": "3001.5",
+    }
+
+    ctx = A1AbsorptionContext.from_public_zone(zone)
+
+    assert ctx.frozen_low == 3000.1
+    assert ctx.frozen_high == 3001.2
+    assert ctx.live_low == 2999.9
+    assert ctx.live_high == 3001.5
+
+
 def test_a1_outcome_record_from_iceberg_outcome_fields():
     record = {
         "zone_id": "iz-iceberg",
@@ -214,6 +235,30 @@ def test_a1_outcome_record_field_precedence():
     assert outcome.mfe_u == 10.0
     assert outcome.mae_u == -5.0
     assert outcome.outcome_label == "PRIMARY"
+
+
+def test_a1_outcome_record_field_precedence_skips_none_values():
+    record = {
+        "outcome_label": None,
+        "label": "LABEL_FALLBACK",
+        "outcome_bucket": "BUCKET_FALLBACK",
+        "reaction_type": None,
+        "phase2_type": "CLEAN_HOLD",
+        "mfe_u": None,
+        "mfe": 4.0,
+        "max_favorable_u": 6.0,
+        "mae_u": None,
+        "mae": -2.0,
+        "max_adverse_u": -3.0,
+    }
+
+    outcome = A1OutcomeRecord.from_mapping(record)
+
+    assert outcome.outcome_label == "LABEL_FALLBACK"
+    assert outcome.reaction_type == "CLEAN_HOLD"
+    assert outcome.legacy_phase2_type == "CLEAN_HOLD"
+    assert outcome.mfe_u == 4.0
+    assert outcome.mae_u == -2.0
 
 
 def test_as_int_supports_float_like_string_values():
