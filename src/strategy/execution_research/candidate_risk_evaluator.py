@@ -37,6 +37,10 @@ class CandidateRiskEvaluator:
     def __init__(self, real_trading_enabled: bool = research_config.PHASE3_REAL_TRADING_ENABLED):
         self.real_trading_enabled = bool(real_trading_enabled)
         self.seen_zone_ids: Set[str] = set()
+        self.total_candidates = 0
+        self.accepted_candidates = 0
+        self.rejected_candidates = 0
+        self.wait_candidates = 0
 
     def evaluate(self, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Backward-compatible alias for Phase2 confirmed candidate evaluation."""
@@ -120,6 +124,7 @@ class CandidateRiskEvaluator:
                 decision="REJECT_EXCEPTION",
                 decision_reason=f"exception:{exc.__class__.__name__}",
             )
+            self._update_counters(result)
             self._log_candidate(result)
             return result
 
@@ -239,6 +244,7 @@ class CandidateRiskEvaluator:
             "has_retested_inside_zone": bool(phase2_event.get("has_retested_inside_zone")),
         }
         result.update(self._a1_metadata_from_phase2_event(phase2_event))
+        self._update_counters(result)
         self._log_candidate(result)
         if self.real_trading_enabled:
             logger.warning("[PHASE3-REAL-TRADING-BLOCKED] reason=v62_research_candidate_only")
@@ -385,6 +391,15 @@ class CandidateRiskEvaluator:
             result.get("high_count"),
             result.get("net_score"),
         )
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "active": True,
+            "total_candidates": self.total_candidates,
+            "accepted_candidates": self.accepted_candidates,
+            "rejected_candidates": self.rejected_candidates,
+            "wait_candidates": self.wait_candidates,
+        }
 
     def _candidate_ts(self, phase2_event: Dict[str, Any]) -> float:
         candidate_ts = self._safe_float(

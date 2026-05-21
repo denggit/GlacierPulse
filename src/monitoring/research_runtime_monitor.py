@@ -180,6 +180,7 @@ class ResearchRuntimeMonitor:
         virtual_summary = self._virtual_position_summary()
         outcome_summary = self._flatten_outcome_summary(self._outcome_summary())
 
+        recorder_summary = self._a1_reaction_research_summary()
         summary = {
             "label": self.label,
             "uptime_sec": max(0.0, now_ts - self.started_ts),
@@ -195,6 +196,15 @@ class ResearchRuntimeMonitor:
             "phase3_accepted_candidates": candidate_summary.get("accepted_candidates", 0),
             "phase3_wait_candidates": candidate_summary.get("wait_candidates", 0),
             "phase3_rejected_candidates": candidate_summary.get("rejected_candidates", 0),
+            "a1_reaction_research_recorder_active": recorder_summary.get("active", False),
+            "a1_reaction_research_total_events": recorder_summary.get("total_events", 0),
+            "a1_reaction_research_total_confirmed": recorder_summary.get("total_confirmed", 0),
+            "a1_reaction_research_total_failed": recorder_summary.get("total_failed", 0),
+            "a1_reaction_research_total_timeout": recorder_summary.get("total_timeout", 0),
+            "a1_reaction_research_total_no_response": recorder_summary.get("total_no_response", 0),
+            "a1_reaction_research_total_missed_fast_move": recorder_summary.get("total_missed_fast_move", 0),
+            "a1_reaction_research_total_sweep_no_reclaim": recorder_summary.get("total_sweep_no_reclaim", 0),
+            "a1_reaction_research_total_reclaim_no_retest": recorder_summary.get("total_reclaim_no_retest", 0),
             "virtual_active_position_exists": virtual_summary.get("active_position_exists", False),
             "virtual_equity_usdt": virtual_summary.get("virtual_equity_usdt", 0.0),
             "virtual_total_opened": virtual_summary.get("total_opened", 0),
