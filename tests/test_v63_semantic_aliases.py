@@ -16,6 +16,10 @@ from src.strategy.phase2_orderflow_evaluator import (
     Phase2OrderflowEvaluator as LegacyPhase2OrderflowEvaluator,
     Phase2TrackedZone as LegacyPhase2TrackedZone,
 )
+from src.strategy.a1_reaction import (
+    A1ReactionEvaluator as PackageA1ReactionEvaluator,
+    Phase2OrderflowEvaluator as PackagePhase2OrderflowEvaluator,
+)
 from src.strategy.a1_reaction.reaction_evaluator import (
     A1ReactionBookSample,
     A1ReactionEvaluator,
@@ -91,3 +95,8 @@ def test_a1_metadata_reexport_contains_existing_fields():
     assert "frozen_reason" in A1_METADATA_FIELDS
     assert "iceberg_count" in A1_METADATA_FIELDS
     assert "net_score" in A1_METADATA_FIELDS
+
+
+def test_a1_reaction_package_exports_match_new_path():
+    assert PackageA1ReactionEvaluator is A1ReactionEvaluator
+    assert PackagePhase2OrderflowEvaluator is NewPathPhase2OrderflowEvaluator

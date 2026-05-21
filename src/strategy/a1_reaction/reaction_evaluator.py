@@ -1,10 +1,15 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-V6.2 Phase2 orderflow research evaluator.
+V6.3 A1 reaction research evaluator.
 
 This module is research-only. It tracks lightweight tick/orderflow aggregates
 for frozen A1 zones and never places orders or calls the trading path.
+
+Compatibility note:
+Legacy PHASE2 state names, PHASE2 log tags, and phase2_type fields are
+intentionally preserved because downstream V6.2/V6.3 tests, logs, and research
+pipelines still depend on them.
 """
 
 import logging
