@@ -36,16 +36,7 @@ class A1EdgeDatasetExporter:
         seen = set()
         unique: List[A1EdgeEvent] = []
         for event in events or []:
-            if event.zone_id:
-                key = (event.zone_id, event.a1_reaction_type, event.reaction_event_kind, event.event_ts)
-            else:
-                key = (
-                    event.direction,
-                    event.event_ts,
-                    event.frozen_low,
-                    event.frozen_high,
-                    event.a1_reaction_type,
-                )
+            key = event.event_key
             if key in seen:
                 continue
             seen.add(key)
@@ -78,5 +69,5 @@ class A1EdgeDatasetExporter:
         summary = self.build_summary([A1EdgeEvent.from_mapping(row) for row in rows])
         write_csv(out / "a1_edge_events.csv", rows, A1_EDGE_EVENT_FIELDS)
         write_jsonl(out / "a1_edge_events.jsonl", rows)
-        write_json(out / "a1_edge_summary.json", summary)
+        write_json(out / "a1_edge_dataset_summary.json", summary)
         return summary

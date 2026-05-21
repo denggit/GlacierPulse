@@ -85,9 +85,24 @@ def _first_present(record: Mapping[str, Any], *names: str) -> Any:
     return None
 
 
+def build_event_key(
+    zone_id: str,
+    direction: str,
+    event_ts: float,
+    frozen_low: float,
+    frozen_high: float,
+    a1_reaction_type: str,
+    reaction_event_kind: str,
+) -> str:
+    if zone_id:
+        return f"{zone_id}|{a1_reaction_type}|{reaction_event_kind}|{event_ts}"
+    return f"{direction}|{event_ts}|{frozen_low}|{frozen_high}|{a1_reaction_type}|{reaction_event_kind}"
+
+
 @dataclass(frozen=True)
 class A1EdgeEvent:
     zone_id: str = ""
+    event_key: str = ""
     symbol: str = ""
     direction: str = "UNKNOWN"
     frozen_ts: float = 0.0
@@ -121,6 +136,22 @@ class A1EdgeEvent:
     negative_score: float = 0.0
     net_score: float = 0.0
 
+    def __post_init__(self) -> None:
+        if not self.event_key:
+            object.__setattr__(
+                self,
+                "event_key",
+                build_event_key(
+                    self.zone_id,
+                    self.direction,
+                    self.event_ts,
+                    self.frozen_low,
+                    self.frozen_high,
+                    self.a1_reaction_type,
+                    self.reaction_event_kind,
+                ),
+            )
+
     @classmethod
     def from_mapping(cls, record: Mapping[str, Any]) -> "A1EdgeEvent":
         r = record or {}
@@ -131,18 +162,34 @@ class A1EdgeEvent:
         )
         if event_ts <= 0:
             event_ts = reaction_ts or frozen_ts
+        zone_id = str(_first_present(r, "zone_id", "frozen_event_id") or "")
+        direction = normalize_direction(_first_present(r, "direction", "side"))
+        frozen_low = parse_float(_first_present(r, "frozen_low", "zone_low", "low"))
+        frozen_high = parse_float(_first_present(r, "frozen_high", "zone_high", "high"))
+        a1_reaction_type = str(_first_present(r, "a1_reaction_type", "reaction_type") or "A1_REACTION_UNKNOWN")
+        reaction_event_kind = str(_first_present(r, "reaction_event_kind", "event_kind") or "UNKNOWN")
+        event_key = str(_first_present(r, "event_key") or "") or build_event_key(
+            zone_id,
+            direction,
+            event_ts,
+            frozen_low,
+            frozen_high,
+            a1_reaction_type,
+            reaction_event_kind,
+        )
         return cls(
-            zone_id=str(_first_present(r, "zone_id", "frozen_event_id") or ""),
+            zone_id=zone_id,
+            event_key=event_key,
             symbol=str(_first_present(r, "symbol", "instId", "instrument") or ""),
-            direction=normalize_direction(_first_present(r, "direction", "side")),
+            direction=direction,
             frozen_ts=frozen_ts,
             reaction_event_ts=reaction_ts,
             event_ts=event_ts,
-            frozen_low=parse_float(_first_present(r, "frozen_low", "zone_low", "low")),
-            frozen_high=parse_float(_first_present(r, "frozen_high", "zone_high", "high")),
+            frozen_low=frozen_low,
+            frozen_high=frozen_high,
             last_price=parse_float(_first_present(r, "last_price", "reaction_event_price", "price", "close")),
-            a1_reaction_type=str(_first_present(r, "a1_reaction_type", "reaction_type") or "A1_REACTION_UNKNOWN"),
-            reaction_event_kind=str(_first_present(r, "reaction_event_kind", "event_kind") or "UNKNOWN"),
+            a1_reaction_type=a1_reaction_type,
+            reaction_event_kind=reaction_event_kind,
             legacy_phase2_type=str(_first_present(r, "legacy_phase2_type", "phase2_type") or "UNKNOWN_RESEARCH"),
             frozen_reason=str(_first_present(r, "frozen_reason") or ""),
             frozen_state=str(_first_present(r, "frozen_state", "state") or ""),
@@ -177,6 +224,7 @@ A1_EDGE_EVENT_FIELDS = [field.name for field in fields(A1EdgeEvent)]
 @dataclass(frozen=True)
 class ForwardMetricResult:
     zone_id: str = ""
+    event_key: str = ""
     symbol: str = ""
     direction: str = "UNKNOWN"
     event_ts: float = 0.0
@@ -225,10 +273,13 @@ FORWARD_METRIC_FIELDS = [field.name for field in fields(ForwardMetricResult)]
 class RandomBaselineEvent:
     baseline_id: str = ""
     source_zone_id: str = ""
+    source_event_key: str = ""
     symbol: str = ""
     direction: str = "UNKNOWN"
     random_event_ts: float = 0.0
     entry_price: float = 0.0
+    source_risk_u: float = 0.0
+    risk_mode: str = "SOURCE_A1_RISK"
     window_sec: int = 0
     directional_mfe_r: float = 0.0
     directional_mae_r: float = 0.0
@@ -251,6 +302,7 @@ RANDOM_BASELINE_FIELDS = [field.name for field in fields(RandomBaselineEvent)]
 class HypothesisResult:
     hypothesis_id: str = ""
     zone_id: str = ""
+    event_key: str = ""
     symbol: str = ""
     direction: str = "UNKNOWN"
     hypothesis_type: str = ""

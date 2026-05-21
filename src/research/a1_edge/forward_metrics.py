@@ -71,18 +71,24 @@ def compute_forward_metric(
     min_risk_pct: float = 0.0003,
     entry_price: Optional[float] = None,
     event_ts: Optional[float] = None,
+    risk_u_override: Optional[float] = None,
 ) -> ForwardMetricResult:
     ts = float(event.event_ts if event_ts is None else event_ts)
     entry = float(event.last_price if entry_price is None else entry_price)
     if entry <= 0 and bars:
         entry = bars[0]["open"]
-    risk = compute_proxy_risk(event, entry, min_risk_u, min_risk_pct)
+    risk = (
+        float(risk_u_override)
+        if risk_u_override is not None and float(risk_u_override) > 0
+        else compute_proxy_risk(event, entry, min_risk_u, min_risk_pct)
+    )
     risk_pct = risk / entry if entry else 0.0
     timestamps = [bar["timestamp"] for bar in bars]
     start_idx = bisect_right(timestamps, ts)
     if not bars or start_idx >= len(bars):
         return ForwardMetricResult(
             zone_id=event.zone_id,
+            event_key=event.event_key,
             symbol=event.symbol,
             direction=event.direction,
             event_ts=ts,
@@ -130,6 +136,7 @@ def compute_forward_metric(
     partial = bool(future[-1]["timestamp"] < end_ts)
     return ForwardMetricResult(
         zone_id=event.zone_id,
+        event_key=event.event_key,
         symbol=event.symbol,
         direction=event.direction,
         event_ts=ts,

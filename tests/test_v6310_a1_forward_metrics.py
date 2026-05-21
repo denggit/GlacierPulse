@@ -1,4 +1,4 @@
-from src.research.a1_edge.forward_metrics import A1ForwardMetricsAnalyzer
+from src.research.a1_edge.forward_metrics import A1ForwardMetricsAnalyzer, compute_forward_metric
 from src.research.a1_edge.schema import A1EdgeEvent
 
 
@@ -25,5 +25,22 @@ def test_buy_sell_hits_partial_and_insufficient():
     assert buy_60.hit_plus_1r is True
     assert sell_60.directional_mfe_u == 1
     assert sell_60.hit_minus_1r is True
+    assert buy_60.event_key == buy.event_key
     assert next(r for r in rows if r.zone_id == "b" and r.window_sec == 300).partial_window is True
     assert late_60.insufficient_future_data is True
+
+
+def test_risk_u_override_controls_r_denominator():
+    event = A1EdgeEvent.from_mapping({
+        "zone_id": "risk",
+        "direction": "BUY",
+        "reaction_event_ts": 30,
+        "last_price": 100,
+        "frozen_low": 1,
+        "frozen_high": 2,
+    })
+    metric = compute_forward_metric(event, _klines(), 60, entry_price=100, event_ts=30, risk_u_override=2)
+    assert metric.risk_u == 2
+    assert metric.directional_mfe_u == 3
+    assert metric.directional_mfe_r == 1.5
+    assert metric.event_key == event.event_key

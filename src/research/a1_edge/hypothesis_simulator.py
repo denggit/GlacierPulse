@@ -124,12 +124,13 @@ class A1HypothesisSimulator:
         for event_idx, event in enumerate(events or []):
             for hypothesis in HYPOTHESES:
                 skipped, reason, entry_ts, entry_price, direction = self._entry(hypothesis, event, bars)
-                hypothesis_id = f"{event_idx}-{hypothesis}"
+                hypothesis_id = f"{event.event_key}-{hypothesis}"
                 if skipped or not bars or entry_price <= 0 or direction == "UNKNOWN":
                     results.append(
                         HypothesisResult(
                             hypothesis_id=hypothesis_id,
                             zone_id=event.zone_id,
+                            event_key=event.event_key,
                             symbol=event.symbol,
                             direction=direction,
                             hypothesis_type=hypothesis,
@@ -149,6 +150,7 @@ class A1HypothesisSimulator:
                 fee_share_r = entry_price * self.roundtrip_fee_pct / risk if risk else 0.0
                 metric_event = A1EdgeEvent(
                     zone_id=event.zone_id,
+                    event_key=event.event_key,
                     symbol=event.symbol,
                     direction=direction,
                     event_ts=entry_ts,
@@ -161,7 +163,16 @@ class A1HypothesisSimulator:
                     frozen_reason=event.frozen_reason,
                     frozen_state=event.frozen_state,
                 )
-                metric = compute_forward_metric(metric_event, bars, self.window_sec, self.min_risk_u, self.min_risk_pct, entry_price, entry_ts)
+                metric = compute_forward_metric(
+                    metric_event,
+                    bars,
+                    self.window_sec,
+                    self.min_risk_u,
+                    self.min_risk_pct,
+                    entry_price,
+                    entry_ts,
+                    risk_u_override=risk,
+                )
                 hit_stop = metric.hit_minus_1r
                 if metric.first_hit_minus_1r and (not metric.first_hit_plus_1r or metric.time_to_minus_1r_sec <= metric.time_to_plus_1r_sec):
                     realized = -1.0 - fee_share_r
@@ -178,6 +189,7 @@ class A1HypothesisSimulator:
                     HypothesisResult(
                         hypothesis_id=hypothesis_id,
                         zone_id=event.zone_id,
+                        event_key=event.event_key,
                         symbol=event.symbol,
                         direction=direction,
                         hypothesis_type=hypothesis,

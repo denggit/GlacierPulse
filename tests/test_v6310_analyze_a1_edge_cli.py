@@ -6,6 +6,7 @@ import sys
 OUTPUTS = {
     "a1_edge_events.csv",
     "a1_edge_events.jsonl",
+    "a1_edge_dataset_summary.json",
     "a1_edge_summary.json",
     "a1_forward_metrics.csv",
     "a1_random_baseline.csv",
@@ -38,6 +39,13 @@ def test_cli_generates_all_outputs_and_no_main_import(tmp_path):
     assert result.returncode == 0, result.stderr
     assert OUTPUTS.issubset({p.name for p in out.iterdir()})
     assert "import main" not in (__import__("pathlib").Path("tools/analyze_a1_edge.py").read_text(encoding="utf-8"))
+    assert "offline-only" in subprocess.run(
+        [sys.executable, "tools/analyze_a1_edge.py", "--help"],
+        cwd=str(__import__("pathlib").Path(__file__).resolve().parents[1]),
+        text=True,
+        capture_output=True,
+        check=False,
+    ).stdout.lower()
 
 
 def test_cli_missing_input_and_empty_events(tmp_path):

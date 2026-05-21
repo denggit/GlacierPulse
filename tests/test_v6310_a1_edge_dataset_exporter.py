@@ -23,6 +23,8 @@ def test_jsonl_csv_empty_dedup_summary_and_column_order(tmp_path):
     summary = exporter.export(events, out)
     assert summary["total_events"] == 1
     assert summary["confirmed_count"] == 1
+    assert (out / "a1_edge_dataset_summary.json").exists()
+    assert not (out / "a1_edge_summary.json").exists()
     with (out / "a1_edge_events.csv").open(newline="", encoding="utf-8") as f:
         assert next(csv.reader(f)) == A1_EDGE_EVENT_FIELDS
     csv_path = tmp_path / "events.csv"
@@ -34,3 +36,19 @@ def test_jsonl_csv_empty_dedup_summary_and_column_order(tmp_path):
     empty_summary = exporter.export([], tmp_path / "empty")
     assert empty_summary["total_events"] == 0
     assert (tmp_path / "empty" / "a1_edge_events.jsonl").exists()
+    assert (tmp_path / "empty" / "a1_edge_dataset_summary.json").exists()
+
+
+def test_deduplicate_uses_event_key_not_zone_id_only():
+    exporter = A1EdgeDatasetExporter()
+    rows = [
+        {"zone_id": "z1", "reaction_event_ts": 1000, "a1_reaction_type": "A", "reaction_event_kind": "CONFIRMED"},
+        {"zone_id": "z1", "reaction_event_ts": 1000, "a1_reaction_type": "A", "reaction_event_kind": "FAILED"},
+        {"zone_id": "z1", "reaction_event_ts": 1000, "a1_reaction_type": "A", "reaction_event_kind": "CONFIRMED"},
+        {"direction": "BUY", "reaction_event_ts": 1000, "frozen_low": 99, "frozen_high": 101, "a1_reaction_type": "A", "reaction_event_kind": "CONFIRMED"},
+        {"direction": "BUY", "reaction_event_ts": 1001, "frozen_low": 99, "frozen_high": 101, "a1_reaction_type": "A", "reaction_event_kind": "CONFIRMED"},
+    ]
+    events = exporter.normalize_records(rows)
+    assert len(events) == 4
+    keys = {event.event_key for event in events}
+    assert len(keys) == 4

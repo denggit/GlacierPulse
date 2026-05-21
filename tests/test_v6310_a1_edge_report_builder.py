@@ -1,3 +1,5 @@
+import json
+
 from src.research.a1_edge.report_builder import A1EdgeReportBuilder
 
 
@@ -39,3 +41,20 @@ def test_go_partial_and_no_go_decisions(tmp_path):
     no_go = _build(tmp_path / "nog", events, [{"dimension": "ALL", "edge_label": "NO_EDGE", "a1_sample_count": 1}], [])
     assert no_go.decision == "A1_NO_GO"
     assert (tmp_path / "go" / "a1_edge_summary.json").exists()
+
+
+def test_report_builder_does_not_overwrite_dataset_summary_and_event_key_is_safe(tmp_path):
+    dataset_summary = tmp_path / "a1_edge_dataset_summary.json"
+    dataset_summary.write_text(json.dumps({"dataset": True}), encoding="utf-8")
+    event = {"zone_id": "z1", "event_key": "z1|A|CONFIRMED|1.0", "direction": "BUY", "event_ts": 1, "a1_reaction_type": "A"}
+    report = _build(
+        tmp_path,
+        [event],
+        [{"dimension": "ALL", "edge_label": "NO_EDGE", "a1_sample_count": 1}],
+        [],
+    )
+    assert report.decision == "A1_NO_GO"
+    assert json.loads(dataset_summary.read_text(encoding="utf-8")) == {"dataset": True}
+    summary = json.loads((tmp_path / "a1_edge_summary.json").read_text(encoding="utf-8"))
+    assert summary["decision"] == "A1_NO_GO"
+    assert "Run Summary" in (tmp_path / "a1_go_no_go_report.md").read_text(encoding="utf-8")
