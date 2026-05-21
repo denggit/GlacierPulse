@@ -1,4 +1,4 @@
-"""Semantic aliases for current A1 iceberg absorption research modules."""
+"""Semantic package exports for A1 iceberg absorption research modules."""
 
 from .engine import A1AbsorptionEngine
 from .outcome_evaluator import A1ZoneOutcomeEvaluator
