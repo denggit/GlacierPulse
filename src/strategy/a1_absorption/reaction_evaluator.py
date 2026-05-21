@@ -1260,6 +1260,8 @@ class A1ReactionEvaluator:
 
 
     def _append_research_event(self, zone: A1ReactionTrackedZone, reaction_type: str, event_kind: str, reason: str = "") -> None:
+        if not bool(getattr(cfg, "A1_REACTION_RESEARCH_COVERAGE_ENABLED", True)):
+            return
         if not zone:
             return
         normalized_type = normalize_a1_reaction_type(reaction_type, zone.phase2_type)
@@ -1271,16 +1273,31 @@ class A1ReactionEvaluator:
         event = zone.to_snapshot().copy()
         event_ts = zone.confirmed_ts or zone.failed_ts or zone.timeout_ts or zone.last_book_ts or zone.state_updated_ts or time.time()
         event.update({"zone_id": zone.zone_id, "direction": zone.direction, "state": zone.state, "a1_reaction_type": normalized_type, "legacy_phase2_type": zone.phase2_type, "phase2_type": zone.phase2_type, "reaction_event_kind": kind, "reaction_event_ts": event_ts, "reaction_event_price": zone.last_price, "a1_reaction_score": zone.phase2_total_score, "legacy_phase2_total_score": zone.phase2_total_score, "a1_reaction_reason": reason or zone.phase2_reason, "phase2_reason": zone.phase2_reason, "has_confirmed": zone.has_confirmed, "has_failed": zone.has_failed})
+        event.setdefault("frozen_reason", "")
+        event.setdefault("frozen_state", "")
+        event.setdefault("iceberg_count", 0)
+        event.setdefault("net_score", 0.0)
         self.research_events.append(event)
         self.total_research_events += 1
 
     def _maybe_append_fast_move_research_event(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
+        if not bool(getattr(cfg, "A1_REACTION_RESEARCH_COVERAGE_ENABLED", True)):
+            return
         if not bool(getattr(cfg, "A1_REACTION_FAST_MOVE_ENABLED", True)):
             return
         if zone.has_confirmed or zone.has_failed or zone.phase2_registered_ts <= 0:
             return
         if now_ts - zone.phase2_registered_ts > float(getattr(cfg, "A1_REACTION_FAST_MOVE_WINDOW_SEC", 3.0)):
             return
+        threshold = float(getattr(cfg, "A1_REACTION_FAST_MOVE_MIN_ACTIVE_NOTIONAL_3S", 0.0))
+        if threshold > 0:
+            directional_notional = (
+                zone.active_buy_notional_3s
+                if zone.direction == "BUY"
+                else zone.active_sell_notional_3s
+            )
+            if directional_notional < threshold:
+                return
         price = zone.last_price
         if price <= 0:
             return

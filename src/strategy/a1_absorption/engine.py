@@ -80,8 +80,10 @@ class A1AbsorptionEngine:
             and ((not REAL_EXECUTION_ENABLED) or VIRTUAL_SHADOW_MODE)
         )
         self.virtual_position_manager = ResearchVirtualPositionManager() if virtual_should_run else None
+        coverage_enabled = bool(getattr(cfg, "A1_REACTION_RESEARCH_COVERAGE_ENABLED", True))
+        recorder_enabled = coverage_enabled and bool(getattr(cfg, "A1_REACTION_EVENT_RECORDER_ENABLED", True))
         self.a1_reaction_event_recorder = A1ReactionEventRecorder(
-            enabled=bool(getattr(cfg, "A1_REACTION_EVENT_RECORDER_ENABLED", True)),
+            enabled=recorder_enabled,
             write_jsonl=bool(getattr(cfg, "A1_REACTION_EVENT_RECORDER_WRITE_JSONL", False)),
             jsonl_path=str(getattr(cfg, "A1_REACTION_EVENT_RECORDER_JSONL_PATH", "logs/research/a1_reaction_events.jsonl")),
             max_recent_events=int(getattr(cfg, "A1_REACTION_EVENT_RECORDER_MAX_RECENT_EVENTS", 5000)),
@@ -652,6 +654,8 @@ class A1AbsorptionEngine:
 
     def _drain_a1_reaction_research_events(self) -> None:
         if not self.a1_reaction_evaluator:
+            return
+        if not bool(getattr(cfg, "A1_REACTION_RESEARCH_COVERAGE_ENABLED", True)):
             return
         try:
             pop_events = getattr(self.a1_reaction_evaluator, "pop_research_events", None)

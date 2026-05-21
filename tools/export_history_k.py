@@ -22,8 +22,8 @@ from src.data_feed.okx_loader import OKXDataLoader
 
 DEFAULT_SYMBOL = "ETH-USDT-SWAP"
 DEFAULT_TIMEFRAME = "1m"
-DEFAULT_START = "2026-05-18 16:00"
-DEFAULT_END = "2026-05-20 23:00"
+DEFAULT_START = "2026-05-20 00:00"
+DEFAULT_END = "2026-05-21 20:00"
 
 
 def parse_minute_timestamp(value: str, *, end_of_day: bool = False) -> pd.Timestamp:
