@@ -31,9 +31,16 @@ from src.strategy.a1_reaction.reaction_evaluator import (
     Phase2TrackedZone,
 )
 
-from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
+from src.strategy.execution_research import (
+    ExecutionResearchCandidateEvaluator as PackageExecutionResearchCandidateEvaluator,
+    Phase3CandidateEvaluator as PackagePhase3CandidateEvaluator,
+)
+from src.strategy.phase3_candidate_evaluator import (
+    Phase3CandidateEvaluator as LegacyPhase3CandidateEvaluator,
+)
 from src.strategy.execution_research.candidate_evaluator import (
     ExecutionResearchCandidateEvaluator,
+    Phase3CandidateEvaluator as NewPathPhase3CandidateEvaluator,
 )
 
 from src.strategy.virtual_position_manager import VirtualPositionManager
@@ -80,7 +87,8 @@ def test_a1_reaction_dataclass_aliases_match_legacy_exports():
 
 
 def test_execution_research_candidate_evaluator_alias():
-    assert ExecutionResearchCandidateEvaluator is Phase3CandidateEvaluator
+    assert ExecutionResearchCandidateEvaluator is NewPathPhase3CandidateEvaluator
+    assert LegacyPhase3CandidateEvaluator is NewPathPhase3CandidateEvaluator
 
 
 def test_research_virtual_position_manager_alias():
@@ -100,3 +108,8 @@ def test_a1_metadata_reexport_contains_existing_fields():
 def test_a1_reaction_package_exports_match_new_path():
     assert PackageA1ReactionEvaluator is A1ReactionEvaluator
     assert PackagePhase2OrderflowEvaluator is NewPathPhase2OrderflowEvaluator
+
+
+def test_execution_research_package_exports_match_new_path():
+    assert PackageExecutionResearchCandidateEvaluator is ExecutionResearchCandidateEvaluator
+    assert PackagePhase3CandidateEvaluator is NewPathPhase3CandidateEvaluator
