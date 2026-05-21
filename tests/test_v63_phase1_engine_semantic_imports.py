@@ -34,9 +34,9 @@ def test_phase1_engine_instantiates_with_semantic_imports_when_research_componen
         iceberg_detector=object(),
     )
 
-    assert engine.phase2_orderflow_evaluator is None
-    assert engine.phase3_candidate_evaluator is None
-    assert engine.phase3_trade_outcome_evaluator is None
+    assert engine.a1_reaction_evaluator is None
+    assert engine.candidate_risk_evaluator is None
+    assert engine.execution_outcome_evaluator is None
     assert engine.virtual_position_manager is None
 
 
@@ -53,8 +53,8 @@ def test_phase1_engine_instantiates_semantic_research_components(monkeypatch):
         iceberg_detector=object(),
     )
 
-    assert isinstance(engine.phase2_orderflow_evaluator, A1ReactionEvaluator)
+    assert isinstance(engine.a1_reaction_evaluator, A1ReactionEvaluator)
     assert isinstance(
-        engine.phase3_candidate_evaluator,
+        engine.candidate_risk_evaluator,
         CandidateRiskEvaluator,
     )

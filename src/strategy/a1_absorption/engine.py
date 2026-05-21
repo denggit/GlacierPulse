@@ -59,17 +59,17 @@ class A1AbsorptionEngine:
         self._event_seq = 0
         self.zone_tracker = A1ZoneTracker()
         self.outcome_evaluator = A1OutcomeEvaluator()
-        self.phase2_orderflow_evaluator = (
+        self.a1_reaction_evaluator = (
             A1ReactionEvaluator()
             if PHASE2_ORDERFLOW_EVALUATOR_ENABLED
             else None
         )
-        self.phase3_candidate_evaluator = (
+        self.candidate_risk_evaluator = (
             CandidateRiskEvaluator()
             if PHASE3_CANDIDATE_EVALUATOR_ENABLED
             else None
         )
-        self.phase3_trade_outcome_evaluator = (
+        self.execution_outcome_evaluator = (
             ExecutionResearchOutcomeEvaluator()
             if PHASE3_OUTCOME_EVALUATOR_ENABLED
             else None
@@ -112,7 +112,7 @@ class A1AbsorptionEngine:
             self.outcome_evaluator.on_price(price=price, ts=trade_ts)
         except Exception:
             logger.exception("[ICEBERG-ZONE-OUTCOME] evaluator_on_price_failed")
-        self._update_phase2_orderflow(trade_data=trade_data, price=price, trade_ts=trade_ts)
+        self._update_a1_reaction_orderflow(trade_data=trade_data, price=price, trade_ts=trade_ts)
         if self.virtual_position_manager:
             try:
                 self.virtual_position_manager.on_price(price=price, ts=trade_ts)
@@ -261,7 +261,7 @@ class A1AbsorptionEngine:
         book_recv_ts = float(book_data.get("recv_ts") or time.time())
         current_price = float(getattr(self.ctx, "current_price", 0.0) or 0.0)
         self.zone_tracker.expire_old_zones(book_recv_ts)
-        self._update_phase2_book(book_data=book_data)
+        self._update_a1_reaction_book(book_data=book_data)
 
         remaining_events = []
         candidate_signals = []
@@ -554,64 +554,64 @@ class A1AbsorptionEngine:
                     "[ICEBERG-ZONE-OUTCOME] evaluator_upsert_failed id=%s",
                     zone.get("zone_id"),
                 )
-            self._register_phase2_frozen_zone(zone)
+            self._register_a1_frozen_zone_for_reaction(zone)
         return zone
 
-    def _register_phase2_frozen_zone(self, zone: Dict[str, Any]) -> None:
-        if not self.phase2_orderflow_evaluator or not zone.get("is_frozen"):
+    def _register_a1_frozen_zone_for_reaction(self, zone: Dict[str, Any]) -> None:
+        if not self.a1_reaction_evaluator or not zone.get("is_frozen"):
             return
         try:
             public_zone = A1ZoneTracker._public_zone(zone)
-            self.phase2_orderflow_evaluator.register_frozen_zone(public_zone)
+            self.a1_reaction_evaluator.register_frozen_zone(public_zone)
         except Exception:
             logger.exception(
                 "[PHASE2-REGISTER-FAILED] zone_id=%s",
                 zone.get("zone_id"),
             )
 
-    def _update_phase2_orderflow(self, trade_data: Dict[str, Any], price: float, trade_ts: float) -> None:
-        if not self.phase2_orderflow_evaluator:
+    def _update_a1_reaction_orderflow(self, trade_data: Dict[str, Any], price: float, trade_ts: float) -> None:
+        if not self.a1_reaction_evaluator:
             return
         try:
             enriched_trade = dict(trade_data)
             enriched_trade.setdefault("price", price)
             enriched_trade.setdefault("ts", trade_ts)
-            self.phase2_orderflow_evaluator.on_trade(enriched_trade)
-            self._drain_phase2_confirmed_events()
+            self.a1_reaction_evaluator.on_trade(enriched_trade)
+            self._drain_a1_reaction_confirmed_events()
         except Exception:
             logger.exception("[PHASE2-ORDERFLOW-FAILED]")
 
-    def _update_phase2_book(self, book_data: Dict[str, Any]) -> None:
-        if not self.phase2_orderflow_evaluator:
+    def _update_a1_reaction_book(self, book_data: Dict[str, Any]) -> None:
+        if not self.a1_reaction_evaluator:
             return
         try:
-            phase2_book_data = dict(book_data) if isinstance(book_data, dict) else {}
+            a1_reaction_book_data = dict(book_data) if isinstance(book_data, dict) else {}
             ctx_bids = getattr(self.ctx, "bids", None)
             ctx_asks = getattr(self.ctx, "asks", None)
             if ctx_bids:
-                phase2_book_data["bids"] = ctx_bids
+                a1_reaction_book_data["bids"] = ctx_bids
             if ctx_asks:
-                phase2_book_data["asks"] = ctx_asks
-            self.phase2_orderflow_evaluator.on_book_update(phase2_book_data)
-            self._drain_phase2_confirmed_events()
+                a1_reaction_book_data["asks"] = ctx_asks
+            self.a1_reaction_evaluator.on_book_update(a1_reaction_book_data)
+            self._drain_a1_reaction_confirmed_events()
         except Exception:
             logger.exception("[PHASE2-BOOK-FAILED]")
 
-    def _drain_phase2_confirmed_events(self) -> None:
-        if not self.phase2_orderflow_evaluator or not self.phase3_candidate_evaluator:
+    def _drain_a1_reaction_confirmed_events(self) -> None:
+        if not self.a1_reaction_evaluator or not self.candidate_risk_evaluator:
             return
         try:
-            pop_events = getattr(self.phase2_orderflow_evaluator, "pop_confirmed_events", None)
+            pop_events = getattr(self.a1_reaction_evaluator, "pop_confirmed_events", None)
             if not callable(pop_events):
                 return
-            phase2_events = pop_events()
+            a1_reaction_events = pop_events()
         except Exception:
             logger.exception("[PHASE3-CANDIDATE-FAILED] stage=pop_confirmed_events")
             return
 
-        for event in phase2_events or []:
+        for event in a1_reaction_events or []:
             try:
-                result = self.phase3_candidate_evaluator.evaluate_phase2_confirmed(event)
+                result = self.candidate_risk_evaluator.evaluate_phase2_confirmed(event)
                 if (
                     result
                     and self.virtual_position_manager
@@ -642,7 +642,7 @@ class A1AbsorptionEngine:
                 )
 
     def _drain_virtual_position_closed_events(self) -> None:
-        if not self.virtual_position_manager or not self.phase3_trade_outcome_evaluator:
+        if not self.virtual_position_manager or not self.execution_outcome_evaluator:
             return
         try:
             pop_events = getattr(self.virtual_position_manager, "pop_closed_events", None)
@@ -651,7 +651,7 @@ class A1AbsorptionEngine:
             closed_events = pop_events()
             for closed_event in closed_events or []:
                 try:
-                    self.phase3_trade_outcome_evaluator.on_virtual_position_closed(closed_event)
+                    self.execution_outcome_evaluator.on_virtual_position_closed(closed_event)
                 except Exception:
                     logger.exception("[PHASE3-OUTCOME-FAILED] position_id=%s", closed_event.get("position_id") if isinstance(closed_event, dict) else None)
         except Exception:

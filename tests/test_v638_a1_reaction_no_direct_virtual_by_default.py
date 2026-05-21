@@ -43,14 +43,14 @@ def test_v638_a1_reaction_confirmed_research_only_by_default(monkeypatch, caplog
         "phase2_type": "SWEEP_RECLAIM",
         "a1_reaction_type": "SWEEP_RECLAIM",
     }
-    engine.phase2_orderflow_evaluator = type("Reaction", (), {"pop_confirmed_events": lambda self: [event]})()
-    engine.phase3_candidate_evaluator = _CandidateRiskSpy()
+    engine.a1_reaction_evaluator = type("Reaction", (), {"pop_confirmed_events": lambda self: [event]})()
+    engine.candidate_risk_evaluator = _CandidateRiskSpy()
     engine.virtual_position_manager = _VirtualSpy()
-    engine.phase3_trade_outcome_evaluator = None
+    engine.execution_outcome_evaluator = None
 
     with caplog.at_level(logging.INFO):
-        engine._drain_phase2_confirmed_events()
+        engine._drain_a1_reaction_confirmed_events()
 
-    assert engine.phase3_candidate_evaluator.events == [event]
+    assert engine.candidate_risk_evaluator.events == [event]
     assert engine.virtual_position_manager.calls == []
     assert "[VIRTUAL-POSITION-BLOCKED] reason=a1_reaction_to_virtual_position_disabled" in caplog.text

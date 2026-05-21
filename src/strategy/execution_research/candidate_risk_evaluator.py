@@ -341,11 +341,16 @@ class CandidateRiskEvaluator:
         if not bool(getattr(research_config, "V62_LOG_PHASE3_CANDIDATE_ENABLED", True)):
             return
         logger.info(
-            "[PHASE3-CANDIDATE] zone_id=%s direction=%s phase2_type=%s candidate_type=%s decision=%s decision_reason=%s candidate_ts=%s candidate_price=%s suggested_stop=%s risk_distance_u=%s risk_distance_pct=%s total_loss_pct=%s leverage=%s max_account_loss_pct=%s roundtrip_fee_pct=%s slippage_buffer_pct=%s raw_margin_usage_pct=%s final_margin_usage_pct=%s notional_equity_multiple=%s expected_account_loss_if_sl=%s phase2_total_score=%s absorption_score=%s pressure_decay_score=%s reclaim_score=%s retest_score=%s book_absorption_score=%s relevant_book_depth_available=%s reload_score=%s has_swept_boundary=%s has_absorbed_after_sweep=%s has_reclaimed_boundary=%s has_retested_inside_zone=%s frozen_reason=%s frozen_state=%s iceberg_count=%s high_count=%s net_score=%s",
+            "[PHASE3-CANDIDATE] zone_id=%s direction=%s phase2_type=%s candidate_type=%s candidate_source=%s a1_reaction_type=%s a1_reaction_score=%s a1_reaction_reason=%s a1_reaction_confirmed_ts=%s decision=%s decision_reason=%s candidate_ts=%s candidate_price=%s suggested_stop=%s risk_distance_u=%s risk_distance_pct=%s total_loss_pct=%s leverage=%s max_account_loss_pct=%s roundtrip_fee_pct=%s slippage_buffer_pct=%s raw_margin_usage_pct=%s final_margin_usage_pct=%s notional_equity_multiple=%s expected_account_loss_if_sl=%s phase2_total_score=%s absorption_score=%s pressure_decay_score=%s reclaim_score=%s retest_score=%s book_absorption_score=%s relevant_book_depth_available=%s reload_score=%s has_swept_boundary=%s has_absorbed_after_sweep=%s has_reclaimed_boundary=%s has_retested_inside_zone=%s frozen_reason=%s frozen_state=%s iceberg_count=%s high_count=%s net_score=%s",
             result.get("zone_id"),
             result.get("direction"),
             result.get("phase2_type"),
             result.get("candidate_type"),
+            result.get("candidate_source"),
+            result.get("a1_reaction_type"),
+            result.get("a1_reaction_score"),
+            result.get("a1_reaction_reason"),
+            result.get("a1_reaction_confirmed_ts"),
             result.get("decision"),
             result.get("decision_reason"),
             result.get("candidate_ts"),

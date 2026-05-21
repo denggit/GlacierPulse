@@ -35,9 +35,16 @@ LEGACY_FILES = (
 )
 
 
+def _find_spec_or_none(module_name: str):
+    try:
+        return importlib.util.find_spec(module_name)
+    except ModuleNotFoundError:
+        return None
+
+
 def test_v638_legacy_strategy_modules_are_not_importable():
     for module_name in LEGACY_MODULES:
-        assert importlib.util.find_spec(module_name) is None
+        assert _find_spec_or_none(module_name) is None
 
 
 def test_v638_legacy_strategy_paths_are_removed():

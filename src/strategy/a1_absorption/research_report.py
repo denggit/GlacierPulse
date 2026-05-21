@@ -28,6 +28,23 @@ def _safe_str(value: Any, default: str = "") -> str:
     return str(value)
 
 
+def _safe_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "n", "off"}:
+            return False
+    try:
+        return bool(value)
+    except Exception:
+        return default
+
+
 def _round6(value: float) -> float:
     return round(float(value), 6)
 
@@ -118,7 +135,7 @@ class A1ResearchSample:
             iceberg_count_bucket=_count_bucket(record.get("iceberg_count")),
             high_count_bucket=_count_bucket(record.get("high_count")),
             net_score_bucket=_net_score_bucket(record.get("net_score")),
-            relevant_book_depth_available=str(bool(record.get("relevant_book_depth_available"))),
+            relevant_book_depth_available=str(_safe_bool(record.get("relevant_book_depth_available"))),
             reload_score_bucket=_score_bucket(record.get("reload_score")),
             absorption_score_bucket=_score_bucket(record.get("absorption_score")),
             reclaim_score_bucket=_score_bucket(record.get("reclaim_score")),

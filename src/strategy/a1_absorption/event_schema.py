@@ -156,15 +156,23 @@ class A1ReactionSnapshot:
 
     @classmethod
     def from_phase2_confirmed_event(cls, event: Mapping[str, Any]) -> "A1ReactionSnapshot":
-        phase2_type = _as_str(event.get("phase2_type"))
-        phase2_total_score = _as_float(event.get("phase2_total_score"))
+        legacy_phase2_type = _as_str(event.get("phase2_type"))
+        reaction_type = _as_str(
+            _first_present(event, "a1_reaction_type", "reaction_type"),
+            legacy_phase2_type,
+        )
+        legacy_phase2_total_score = _as_float(event.get("phase2_total_score"))
+        reaction_total_score = _as_float(
+            event.get("a1_reaction_score", legacy_phase2_total_score),
+            legacy_phase2_total_score,
+        )
         return cls(
             zone_id=_as_str(event.get("zone_id")),
             direction=_as_str(event.get("direction")),
             state=_as_str(event.get("state")),
-            reaction_type=phase2_type,
-            legacy_phase2_type=phase2_type,
-            confirmed_ts=_as_optional_float(event.get("confirmed_ts")),
+            reaction_type=reaction_type,
+            legacy_phase2_type=legacy_phase2_type,
+            confirmed_ts=_as_optional_float(_first_present(event, "a1_reaction_confirmed_ts", "confirmed_ts")),
             last_price=_as_float(event.get("last_price")),
             frozen_low=_as_float(event.get("frozen_low")),
             frozen_high=_as_float(event.get("frozen_high")),
@@ -174,8 +182,8 @@ class A1ReactionSnapshot:
             suggested_stop=_as_float(event.get("suggested_stop")),
             risk_to_stop_u=_as_float(event.get("risk_to_stop_u")),
             risk_to_stop_pct=_as_float(event.get("risk_to_stop_pct")),
-            reaction_total_score=phase2_total_score,
-            legacy_phase2_total_score=phase2_total_score,
+            reaction_total_score=reaction_total_score,
+            legacy_phase2_total_score=legacy_phase2_total_score,
             absorption_score=_as_float(event.get("absorption_score")),
             pressure_decay_score=_as_float(event.get("pressure_decay_score")),
             reclaim_score=_as_float(event.get("reclaim_score")),

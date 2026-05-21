@@ -225,15 +225,27 @@ class ResearchRuntimeMonitor:
 
     def _collect_component_status(self) -> Dict[str, Any]:
         engine = self.phase1_engine
+        a1_reaction_active = getattr(engine, "a1_reaction_evaluator", None) is not None
+        candidate_risk_active = getattr(engine, "candidate_risk_evaluator", None) is not None
+        execution_outcome_active = getattr(engine, "execution_outcome_evaluator", None) is not None
+        a1_zone_tracker_active = getattr(engine, "zone_tracker", None) is not None
+        a1_outcome_evaluator_active = getattr(engine, "outcome_evaluator", None) is not None
         return {
             "label": self.label,
-            "phase2_orderflow_evaluator_active": getattr(engine, "phase2_orderflow_evaluator", None) is not None,
-            "phase3_candidate_evaluator_active": getattr(engine, "phase3_candidate_evaluator", None) is not None,
+            "a1_reaction_evaluator_active": a1_reaction_active,
+            "candidate_risk_evaluator_active": candidate_risk_active,
+            "execution_outcome_evaluator_active": execution_outcome_active,
+            "a1_zone_tracker_active": a1_zone_tracker_active,
+            "a1_outcome_evaluator_active": a1_outcome_evaluator_active,
+            # Legacy compatibility only: downstream dashboards still grep these
+            # V6.2/V6.3 field names while V6.3.8.x moves code to A1 semantics.
+            "phase2_orderflow_evaluator_active": a1_reaction_active,
+            "phase3_candidate_evaluator_active": candidate_risk_active,
             "virtual_position_manager_active": getattr(engine, "virtual_position_manager", None) is not None,
             "a1_to_virtual_chain_enabled": bool(getattr(cfg, "A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", False)),
-            "phase3_outcome_evaluator_active": getattr(engine, "phase3_trade_outcome_evaluator", None) is not None,
-            "iceberg_zone_tracker_active": getattr(engine, "zone_tracker", None) is not None,
-            "iceberg_outcome_evaluator_active": getattr(engine, "outcome_evaluator", None) is not None,
+            "phase3_outcome_evaluator_active": execution_outcome_active,
+            "iceberg_zone_tracker_active": a1_zone_tracker_active,
+            "iceberg_outcome_evaluator_active": a1_outcome_evaluator_active,
             "real_execution_enabled": bool(getattr(cfg, "REAL_EXECUTION_ENABLED", False)),
             "phase3_real_trading_enabled": bool(getattr(cfg, "PHASE3_REAL_TRADING_ENABLED", False)),
             "virtual_shadow_mode": bool(getattr(cfg, "VIRTUAL_SHADOW_MODE", False)),
@@ -314,7 +326,7 @@ class ResearchRuntimeMonitor:
         return {key: int(snapshot.get(key, 0)) for key in keys}
 
     def _phase2_summary(self) -> Dict[str, Any]:
-        evaluator = getattr(self.phase1_engine, "phase2_orderflow_evaluator", None)
+        evaluator = getattr(self.phase1_engine, "a1_reaction_evaluator", None)
         if evaluator is None:
             return {}
         try:
@@ -334,7 +346,7 @@ class ResearchRuntimeMonitor:
             return {}
 
     def _phase3_candidate_summary(self) -> Dict[str, Any]:
-        evaluator = getattr(self.phase1_engine, "phase3_candidate_evaluator", None)
+        evaluator = getattr(self.phase1_engine, "candidate_risk_evaluator", None)
         if evaluator is None:
             return {}
         try:
@@ -368,7 +380,7 @@ class ResearchRuntimeMonitor:
             return {}
 
     def _outcome_summary(self) -> Dict[str, Any]:
-        evaluator = getattr(self.phase1_engine, "phase3_trade_outcome_evaluator", None)
+        evaluator = getattr(self.phase1_engine, "execution_outcome_evaluator", None)
         if evaluator is None:
             return {}
         try:

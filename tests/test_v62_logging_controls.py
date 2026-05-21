@@ -138,9 +138,9 @@ def _phase1_engine_for_quality_signal():
     engine.min_book_updates_after_cutoff = 2
     engine.zone_tracker = _ZoneTracker()
     engine.outcome_evaluator = SimpleNamespace(finalize_zone=lambda *args, **kwargs: None)
-    engine.phase2_orderflow_evaluator = None
-    engine.phase3_candidate_evaluator = None
-    engine.phase3_trade_outcome_evaluator = None
+    engine.a1_reaction_evaluator = None
+    engine.candidate_risk_evaluator = None
+    engine.execution_outcome_evaluator = None
     engine.virtual_position_manager = None
     engine.research_runtime_monitor = None
     return engine
@@ -275,9 +275,9 @@ def test_safety_check_failed_always_logs(monkeypatch, caplog):
     monkeypatch.setattr(research_config, "V62_REQUIRE_RESEARCH_ONLY_MODE", True)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
-        phase3_trade_outcome_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
+        execution_outcome_evaluator = None
         virtual_position_manager = None
         zone_tracker = None
         outcome_evaluator = None
@@ -297,9 +297,9 @@ def test_heartbeat_includes_suppressed_log_counts(monkeypatch):
     suppressed_log_counter.inc("suppressed_zone_new_count", 1)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
-        phase3_trade_outcome_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
+        execution_outcome_evaluator = None
         virtual_position_manager = None
         zone_tracker = None
         outcome_evaluator = None
@@ -324,9 +324,9 @@ def test_suppressed_log_summary_extended_keys(monkeypatch):
     suppressed_log_counter.inc("suppressed_pending_drop_count", 7)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
-        phase3_trade_outcome_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
+        execution_outcome_evaluator = None
         virtual_position_manager = None
         zone_tracker = None
         outcome_evaluator = None

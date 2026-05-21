@@ -368,12 +368,12 @@ def test_phase1_book_update_bypasses_phase2_and_catches_failures(caplog):
 
     engine = Phase1Engine(_Ctx(), iceberg_detector=None)
     spy = _Phase2Spy()
-    engine.phase2_orderflow_evaluator = spy
+    engine.a1_reaction_evaluator = spy
     assert engine.on_book_update({"ts": 101.0, "recv_ts": 101.0, "bids": [], "asks": []}) is None
     assert spy.payload["bids"] is engine.ctx.bids
     assert spy.payload["asks"] is engine.ctx.asks
 
-    engine.phase2_orderflow_evaluator = _Phase2Boom()
+    engine.a1_reaction_evaluator = _Phase2Boom()
     with caplog.at_level(logging.ERROR):
         assert engine.on_book_update({"ts": 102.0, "recv_ts": 102.0, "bids": [], "asks": []}) is None
 
@@ -960,19 +960,19 @@ def test_phase1_forwards_phase2_confirmed_events_and_catches_phase3_failures(cap
     engine = Phase1Engine(_Ctx(), iceberg_detector=None)
     phase2 = _Phase2WithEvent()
     phase3 = _Phase3Spy()
-    engine.phase2_orderflow_evaluator = phase2
-    engine.phase3_candidate_evaluator = phase3
+    engine.a1_reaction_evaluator = phase2
+    engine.candidate_risk_evaluator = phase3
 
-    engine._update_phase2_orderflow(
+    engine._update_a1_reaction_orderflow(
         trade_data={"price": 3000.0, "size": 1.0, "side": "buy", "ts": 101.0},
         price=3000.0,
         trade_ts=101.0,
     )
     assert phase3.events == [phase2.event]
 
-    engine.phase3_candidate_evaluator = _Phase3Boom()
+    engine.candidate_risk_evaluator = _Phase3Boom()
     with caplog.at_level(logging.ERROR):
-        engine._update_phase2_orderflow(
+        engine._update_a1_reaction_orderflow(
             trade_data={"price": 3000.0, "size": 1.0, "side": "buy", "ts": 102.0},
             price=3000.0,
             trade_ts=102.0,
@@ -1588,10 +1588,10 @@ def test_phase1_integration_drains_closed_events():
 
     eng = Phase1Engine(_Ctx(), iceberg_detector=None)
     eng.virtual_position_manager = _V()
-    eng.phase3_trade_outcome_evaluator = _Outcome()
+    eng.execution_outcome_evaluator = _Outcome()
     eng._drain_virtual_position_closed_events()
 
-    assert len(eng.phase3_trade_outcome_evaluator.closed) == 1
+    assert len(eng.execution_outcome_evaluator.closed) == 1
 
 
 def test_phase1_catches_outcome_exception(caplog):
@@ -1610,7 +1610,7 @@ def test_phase1_catches_outcome_exception(caplog):
 
     eng = Phase1Engine(_Ctx(), iceberg_detector=None)
     eng.virtual_position_manager = _V()
-    eng.phase3_trade_outcome_evaluator = _Outcome()
+    eng.execution_outcome_evaluator = _Outcome()
 
     with caplog.at_level(logging.ERROR):
         eng._drain_virtual_position_closed_events()
@@ -2003,9 +2003,9 @@ def test_phase1_virtual_integration_and_execution_modes(monkeypatch):
         def on_candidate(self, r): self.c.append(r)
         def on_price(self, **kw): self.p.append(kw)
     eng=Phase1Engine(_Ctx(), iceberg_detector=None)
-    eng.phase2_orderflow_evaluator=_P2(); eng.phase3_candidate_evaluator=_P3(); eng.virtual_position_manager=_V()
+    eng.a1_reaction_evaluator=_P2(); eng.candidate_risk_evaluator=_P3(); eng.virtual_position_manager=_V()
     monkeypatch.setattr("src.strategy.a1_absorption.engine.A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", True)
-    eng._drain_phase2_confirmed_events(); assert len(eng.virtual_position_manager.c)==1
+    eng._drain_a1_reaction_confirmed_events(); assert len(eng.virtual_position_manager.c)==1
     eng.on_trade({"price":3000,"size":200,"side":"sell","ts":10}); assert eng.virtual_position_manager.p
     monkeypatch.setattr("src.strategy.a1_absorption.engine.REAL_EXECUTION_ENABLED", True)
     monkeypatch.setattr("src.strategy.a1_absorption.engine.VIRTUAL_POSITION_MANAGER_ENABLED", True)
@@ -2021,9 +2021,9 @@ def test_v62_startup_safety_check_passes_in_research_mode(monkeypatch, caplog):
     monkeypatch.setattr(research_config, "V62_REQUIRE_RESEARCH_ONLY_MODE", True)
 
     class _Engine:
-        phase2_orderflow_evaluator = object()
-        phase3_candidate_evaluator = object()
-        phase3_trade_outcome_evaluator = object()
+        a1_reaction_evaluator = object()
+        candidate_risk_evaluator = object()
+        execution_outcome_evaluator = object()
         virtual_position_manager = object()
         zone_tracker = object()
         outcome_evaluator = object()
@@ -2044,9 +2044,9 @@ def test_v62_startup_safety_check_fails_if_real_execution_enabled(monkeypatch, c
     monkeypatch.setattr(research_config, "VIRTUAL_SHADOW_MODE", False)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
-        phase3_trade_outcome_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
+        execution_outcome_evaluator = None
         virtual_position_manager = None
         zone_tracker = None
         outcome_evaluator = None
@@ -2063,9 +2063,9 @@ def test_v62_startup_safety_check_fails_if_real_execution_enabled(monkeypatch, c
 
 def test_v62_component_status_logs(caplog):
     class _Engine:
-        phase2_orderflow_evaluator = object()
-        phase3_candidate_evaluator = object()
-        phase3_trade_outcome_evaluator = object()
+        a1_reaction_evaluator = object()
+        candidate_risk_evaluator = object()
+        execution_outcome_evaluator = object()
         virtual_position_manager = object()
         zone_tracker = object()
         outcome_evaluator = object()
@@ -2074,7 +2074,7 @@ def test_v62_component_status_logs(caplog):
     with caplog.at_level(logging.INFO):
         result = monitor.log_component_status()
 
-    assert result["phase2_orderflow_evaluator_active"] is True
+    assert result["a1_reaction_evaluator_active"] is True
     assert result["virtual_position_manager_active"] is True
     assert "a1_to_virtual_chain_enabled" in result
     assert any("[V62-COMPONENT-STATUS]" in r.message for r in caplog.records)
@@ -2099,9 +2099,9 @@ def test_v62_heartbeat_throttled(monkeypatch, caplog):
     monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 999999.0)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
-        phase3_trade_outcome_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
+        execution_outcome_evaluator = None
         virtual_position_manager = None
 
     monitor = ResearchRuntimeMonitor(_Engine(), label="test-heartbeat")
@@ -2149,10 +2149,10 @@ def test_v62_heartbeat_includes_virtual_and_outcome_summary(monkeypatch, caplog)
             }
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
         virtual_position_manager = _Virtual()
-        phase3_trade_outcome_evaluator = _Outcome()
+        execution_outcome_evaluator = _Outcome()
 
     monitor = ResearchRuntimeMonitor(_Engine(), label="test-summary")
     with caplog.at_level(logging.INFO):
@@ -2208,10 +2208,10 @@ def test_phase1_research_runtime_heartbeat_does_not_break_early_return():
 
 def test_v62_final_summary_logs(caplog):
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
         virtual_position_manager = VirtualPositionManager()
-        phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        execution_outcome_evaluator = Phase3OutcomeEvaluator()
         zone_tracker = object()
         outcome_evaluator = object()
 
@@ -2229,10 +2229,10 @@ def test_research_runtime_final_summary_respects_disabled_config(monkeypatch, ca
     monkeypatch.setattr(research_config, "V62_ENABLE_FINAL_RUN_SUMMARY", False)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
         virtual_position_manager = VirtualPositionManager()
-        phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        execution_outcome_evaluator = Phase3OutcomeEvaluator()
         zone_tracker = object()
         outcome_evaluator = object()
 
@@ -2340,9 +2340,9 @@ def test_v62_monitor_does_not_call_trader_or_order_api(monkeypatch):
     monkeypatch.setattr(research_config, "V62_INTEGRATION_HEARTBEAT_INTERVAL_SEC", 0.0)
 
     class _Engine:
-        phase2_orderflow_evaluator = None
-        phase3_candidate_evaluator = None
-        phase3_trade_outcome_evaluator = Phase3OutcomeEvaluator()
+        a1_reaction_evaluator = None
+        candidate_risk_evaluator = None
+        execution_outcome_evaluator = Phase3OutcomeEvaluator()
         virtual_position_manager = VirtualPositionManager()
         zone_tracker = object()
         outcome_evaluator = object()
