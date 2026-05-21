@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from src.strategy.phase1_zone_engine import Phase1Engine
+from src.strategy import phase1_zone_engine
 from src.strategy.a1_absorption.engine import A1AbsorptionEngine
 
 from src.strategy.iceberg.zone_tracker import IcebergZoneTracker
@@ -135,3 +136,11 @@ def test_execution_research_package_exports_virtual_position_names():
 def test_execution_research_package_exports_outcome_names():
     assert PackageExecutionResearchOutcomeEvaluator is ExecutionResearchOutcomeEvaluator
     assert PackagePhase3OutcomeEvaluator is Phase3OutcomeEvaluator
+
+
+def test_phase1_engine_runtime_imports_use_semantic_paths():
+    assert phase1_zone_engine.A1ReactionEvaluator is A1ReactionEvaluator
+    assert (
+        phase1_zone_engine.ExecutionResearchCandidateEvaluator
+        is ExecutionResearchCandidateEvaluator
+    )

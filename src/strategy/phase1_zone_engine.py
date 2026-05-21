@@ -28,8 +28,10 @@ from config.research_evaluator import (
 )
 from src.strategy.iceberg.zone_tracker import IcebergZoneTracker
 from src.strategy.iceberg.outcome_evaluator import IcebergOutcomeEvaluator
-from src.strategy.phase2_orderflow_evaluator import Phase2OrderflowEvaluator
-from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
+from src.strategy.a1_reaction.reaction_evaluator import A1ReactionEvaluator
+from src.strategy.execution_research.candidate_evaluator import (
+    ExecutionResearchCandidateEvaluator,
+)
 from src.strategy.phase3_trade_outcome_evaluator import Phase3OutcomeEvaluator
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
 from src.strategy.virtual_position_manager import VirtualPositionManager
@@ -59,12 +61,12 @@ class Phase1Engine:
         self.zone_tracker = IcebergZoneTracker()
         self.outcome_evaluator = IcebergOutcomeEvaluator()
         self.phase2_orderflow_evaluator = (
-            Phase2OrderflowEvaluator()
+            A1ReactionEvaluator()
             if PHASE2_ORDERFLOW_EVALUATOR_ENABLED
             else None
         )
         self.phase3_candidate_evaluator = (
-            Phase3CandidateEvaluator()
+            ExecutionResearchCandidateEvaluator()
             if PHASE3_CANDIDATE_EVALUATOR_ENABLED
             else None
         )
