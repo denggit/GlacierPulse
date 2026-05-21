@@ -140,3 +140,89 @@ def test_string_number_fields_convert_safely():
     assert ctx.frozen_low == 3000.1
     assert ctx.iceberg_count == 2
     assert ctx.net_score == 3.5
+
+
+def test_a1_outcome_record_from_iceberg_outcome_fields():
+    record = {
+        "zone_id": "iz-iceberg",
+        "direction": "BUY",
+        "label": "SWEPT_THEN_RECLAIMED",
+        "mfe": 4.2,
+        "mae": -1.3,
+        "frozen_reason": "HIGH_ICEBERG",
+        "frozen_state": "DISCOVERED",
+        "iceberg_count": 2,
+        "high_count": 1,
+        "medium_count": 1,
+        "low_count": 0,
+        "net_score": 3.5,
+    }
+
+    outcome = A1OutcomeRecord.from_mapping(record)
+    assert outcome.outcome_label == "SWEPT_THEN_RECLAIMED"
+    assert outcome.mfe_u == 4.2
+    assert outcome.mae_u == -1.3
+    assert outcome.reaction_type == ""
+    assert outcome.legacy_phase2_type == ""
+
+
+def test_a1_outcome_record_from_virtual_position_outcome_fields():
+    record = {
+        "zone_id": "iz-vp",
+        "direction": "LONG",
+        "outcome_bucket": "WIN",
+        "close_reason": "TAKE_PROFIT_R_MULTIPLE",
+        "phase2_type": "SWEEP_RECLAIM",
+        "candidate_type": "SWEEP_RECLAIM_RETEST_ENTRY",
+        "realized_pnl_u": 15.0,
+        "realized_r_multiple": 1.5,
+        "max_favorable_u": 18.0,
+        "max_adverse_u": -2.0,
+        "frozen_reason": "STATE_RELOADING",
+        "frozen_state": "RELOADING",
+        "iceberg_count": 3,
+        "high_count": 1,
+        "medium_count": 2,
+        "low_count": 0,
+        "net_score": 4.3,
+    }
+
+    outcome = A1OutcomeRecord.from_mapping(record)
+    assert outcome.outcome_label == "WIN"
+    assert outcome.reaction_type == "SWEEP_RECLAIM"
+    assert outcome.legacy_phase2_type == "SWEEP_RECLAIM"
+    assert outcome.candidate_type == "SWEEP_RECLAIM_RETEST_ENTRY"
+    assert outcome.mfe_u == 18.0
+    assert outcome.mae_u == -2.0
+    assert outcome.realized_r_multiple == 1.5
+
+
+def test_a1_outcome_record_field_precedence():
+    record = {
+        "mfe_u": 10.0,
+        "mfe": 4.0,
+        "max_favorable_u": 6.0,
+        "mae_u": -5.0,
+        "mae": -2.0,
+        "max_adverse_u": -3.0,
+        "outcome_label": "PRIMARY",
+        "label": "SECONDARY",
+        "outcome_bucket": "THIRD",
+    }
+
+    outcome = A1OutcomeRecord.from_mapping(record)
+    assert outcome.mfe_u == 10.0
+    assert outcome.mae_u == -5.0
+    assert outcome.outcome_label == "PRIMARY"
+
+
+def test_as_int_supports_float_like_string_values():
+    zone = {
+        "zone_id": "iz-float-int",
+        "iceberg_count": "2.0",
+        "event_count": 3.0,
+    }
+
+    ctx = A1AbsorptionContext.from_public_zone(zone)
+    assert ctx.iceberg_count == 2
+    assert ctx.event_count == 3

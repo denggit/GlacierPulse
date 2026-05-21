@@ -28,7 +28,17 @@ def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except Exception:
-        return default
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+
+
+def _first_present(mapping: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in mapping and mapping.get(key) is not None:
+            return mapping.get(key)
+    return None
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -210,15 +220,15 @@ class A1OutcomeRecord:
         return cls(
             zone_id=_as_str(record.get("zone_id")),
             direction=_as_str(record.get("direction")),
-            outcome_label=_as_str(record.get("outcome_label") or record.get("label")),
+            outcome_label=_as_str(_first_present(record, "outcome_label", "label", "outcome_bucket")),
             close_reason=_as_str(record.get("close_reason")),
-            reaction_type=_as_str(record.get("reaction_type") or phase2_type),
+            reaction_type=_as_str(_first_present(record, "reaction_type", "phase2_type")),
             legacy_phase2_type=phase2_type,
             candidate_type=_as_str(record.get("candidate_type")),
             realized_pnl_u=_as_float(record.get("realized_pnl_u")),
             realized_r_multiple=_as_float(record.get("realized_r_multiple")),
-            mfe_u=_as_float(record.get("mfe_u")),
-            mae_u=_as_float(record.get("mae_u")),
+            mfe_u=_as_float(_first_present(record, "mfe_u", "mfe", "max_favorable_u")),
+            mae_u=_as_float(_first_present(record, "mae_u", "mae", "max_adverse_u")),
             frozen_reason=_as_str(record.get("frozen_reason")),
             frozen_state=_as_str(record.get("frozen_state")),
             iceberg_count=_as_int(record.get("iceberg_count")),
