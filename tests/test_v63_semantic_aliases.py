@@ -144,3 +144,23 @@ def test_phase1_engine_runtime_imports_use_semantic_paths():
         phase1_zone_engine.ExecutionResearchCandidateEvaluator
         is ExecutionResearchCandidateEvaluator
     )
+
+from src.strategy.a1_absorption import (
+    A1ScoreBreakdown as PackageA1ScoreBreakdown,
+    A1ScoreRecord as PackageA1ScoreRecord,
+    A1UnifiedScoreModel as PackageA1UnifiedScoreModel,
+    bucket_for_score as package_bucket_for_score,
+)
+from src.strategy.a1_absorption.score_model import (
+    A1ScoreBreakdown,
+    A1ScoreRecord,
+    A1UnifiedScoreModel,
+    bucket_for_score,
+)
+
+
+def test_a1_absorption_package_exports_score_model():
+    assert PackageA1ScoreBreakdown is A1ScoreBreakdown
+    assert PackageA1ScoreRecord is A1ScoreRecord
+    assert PackageA1UnifiedScoreModel is A1UnifiedScoreModel
+    assert package_bucket_for_score is bucket_for_score

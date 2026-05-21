@@ -3,6 +3,12 @@
 from .engine import A1AbsorptionEngine
 from .outcome_evaluator import A1ZoneOutcomeEvaluator
 from .schema import A1AbsorptionContext, A1OutcomeRecord, A1ReactionSnapshot
+from .score_model import (
+    A1ScoreBreakdown,
+    A1ScoreRecord,
+    A1UnifiedScoreModel,
+    bucket_for_score,
+)
 from .zone_tracker import A1ZoneTracker
 
 __all__ = [
@@ -12,4 +18,8 @@ __all__ = [
     "A1AbsorptionContext",
     "A1ReactionSnapshot",
     "A1OutcomeRecord",
+    "A1ScoreBreakdown",
+    "A1ScoreRecord",
+    "A1UnifiedScoreModel",
+    "bucket_for_score",
 ]

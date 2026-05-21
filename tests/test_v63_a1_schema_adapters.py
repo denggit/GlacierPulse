@@ -6,6 +6,7 @@ from src.strategy.a1_absorption.schema import (
     A1OutcomeRecord,
     A1ReactionSnapshot,
 )
+from src.strategy.a1_absorption.score_model import A1UnifiedScoreModel
 
 
 def test_a1_absorption_context_from_public_zone_legacy_keys():
@@ -271,3 +272,38 @@ def test_as_int_supports_float_like_string_values():
     ctx = A1AbsorptionContext.from_public_zone(zone)
     assert ctx.iceberg_count == 2
     assert ctx.event_count == 3
+
+
+def test_a1_score_model_accepts_schema_adapter_outputs():
+    absorption = A1AbsorptionContext.from_public_zone(
+        {
+            "zone_id": "iz-integ",
+            "direction": "BUY",
+            "frozen_reason": "HIGH_ICEBERG",
+            "frozen_state": "DISCOVERED",
+            "iceberg_count": 2,
+            "high_count": 1,
+            "medium_count": 1,
+            "positive_score": 4,
+            "negative_score": 1,
+            "net_score": 3,
+        }
+    )
+    reaction = A1ReactionSnapshot.from_phase2_confirmed_event(
+        {
+            "zone_id": "iz-integ",
+            "direction": "BUY",
+            "phase2_type": "SWEEP_RECLAIM",
+            "phase2_total_score": 0.7,
+            "absorption_score": 0.7,
+            "reclaim_score": 0.6,
+            "retest_score": 0.6,
+            "reload_score": 0.2,
+            "risk_to_stop_pct": 0.002,
+            "relevant_book_depth_available": True,
+        }
+    )
+    record = A1UnifiedScoreModel.score(absorption, reaction)
+    assert record.zone_id == absorption.zone_id == reaction.zone_id
+    assert record.reaction_type == reaction.reaction_type
+    assert record.legacy_phase2_type == reaction.legacy_phase2_type
