@@ -392,6 +392,16 @@ class CandidateRiskEvaluator:
             result.get("net_score"),
         )
 
+    def _update_counters(self, result: Dict[str, Any]) -> None:
+        self.total_candidates += 1
+        decision = str(result.get("decision") or "")
+        if decision == "ACCEPT_RESEARCH_CANDIDATE":
+            self.accepted_candidates += 1
+        elif decision.startswith("WAIT_"):
+            self.wait_candidates += 1
+        else:
+            self.rejected_candidates += 1
+
     def summary(self) -> Dict[str, Any]:
         return {
             "active": True,

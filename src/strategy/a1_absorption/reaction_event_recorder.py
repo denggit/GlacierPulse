@@ -34,14 +34,21 @@ class A1ReactionEventRecorder:
         return e
 
     def record_many(self, events: Iterable[Dict[str, Any]]) -> int:
+        if events is None:
+            return 0
+        try:
+            iterator = iter(events)
+        except TypeError:
+            return 0
         count = 0
-        for event in events:
+        for event in iterator:
             if self.record(event) is not None:
                 count += 1
         return count
 
     def summary(self) -> Dict[str, Any]:
         return {
+            "active": self.enabled,
             "total_events": self.total_events,
             "total_confirmed": self.by_event_kind.get("CONFIRMED", 0),
             "total_failed": self.by_event_kind.get("FAILED", 0),
