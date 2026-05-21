@@ -1,4 +1,4 @@
-"""A1 absorption runtime and research modules for V6.3.8."""
+"""A1 absorption runtime and research modules for V6.3.x."""
 
 from .engine import A1AbsorptionEngine
 from .event_schema import A1AbsorptionContext, A1OutcomeRecord, A1ReactionSnapshot

@@ -49,6 +49,7 @@ from src.strategy.a1_absorption.reaction_taxonomy import (
     A1_REACTION_SWEEP_RECLAIM_NO_RETEST,
     A1_REACTION_SWEEP_RECLAIM_RETEST,
     A1_REACTION_TIMEOUT,
+    legacy_phase2_type_for_reaction,
     normalize_a1_reaction_type,
 )
 
@@ -1265,6 +1266,9 @@ class A1ReactionEvaluator:
         if not zone:
             return
         normalized_type = normalize_a1_reaction_type(reaction_type, zone.phase2_type)
+        legacy_type = str(zone.phase2_type or "").strip()
+        if not legacy_type or legacy_type == "UNKNOWN_RESEARCH":
+            legacy_type = legacy_phase2_type_for_reaction(normalized_type)
         kind = str(event_kind or "UNKNOWN").strip() or "UNKNOWN"
         key = (zone.zone_id, normalized_type, kind)
         if key in self._research_event_keys:
@@ -1272,10 +1276,17 @@ class A1ReactionEvaluator:
         self._research_event_keys.add(key)
         event = zone.to_snapshot().copy()
         event_ts = zone.confirmed_ts or zone.failed_ts or zone.timeout_ts or zone.last_book_ts or zone.state_updated_ts or time.time()
-        event.update({"zone_id": zone.zone_id, "direction": zone.direction, "state": zone.state, "a1_reaction_type": normalized_type, "legacy_phase2_type": zone.phase2_type, "phase2_type": zone.phase2_type, "reaction_event_kind": kind, "reaction_event_ts": event_ts, "reaction_event_price": zone.last_price, "a1_reaction_score": zone.phase2_total_score, "legacy_phase2_total_score": zone.phase2_total_score, "a1_reaction_reason": reason or zone.phase2_reason, "phase2_reason": zone.phase2_reason, "has_confirmed": zone.has_confirmed, "has_failed": zone.has_failed})
+        event.update({"zone_id": zone.zone_id, "direction": zone.direction, "state": zone.state, "a1_reaction_type": normalized_type, "legacy_phase2_type": legacy_type, "phase2_type": legacy_type, "reaction_event_kind": kind, "reaction_event_ts": event_ts, "reaction_event_price": zone.last_price, "a1_reaction_score": zone.phase2_total_score, "legacy_phase2_total_score": zone.phase2_total_score, "a1_reaction_reason": reason or zone.phase2_reason, "phase2_reason": zone.phase2_reason, "has_confirmed": zone.has_confirmed, "has_failed": zone.has_failed})
         event.setdefault("frozen_reason", "")
         event.setdefault("frozen_state", "")
+        event.setdefault("frozen_event_id", "")
+        event.setdefault("event_count", 0)
         event.setdefault("iceberg_count", 0)
+        event.setdefault("high_count", 0)
+        event.setdefault("medium_count", 0)
+        event.setdefault("low_count", 0)
+        event.setdefault("positive_score", 0.0)
+        event.setdefault("negative_score", 0.0)
         event.setdefault("net_score", 0.0)
         self.research_events.append(event)
         self.total_research_events += 1

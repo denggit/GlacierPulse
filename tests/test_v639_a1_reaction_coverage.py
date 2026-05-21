@@ -30,6 +30,40 @@ def test_append_research_and_dedup_and_fields():
         assert field in ev[0]
 
 
+def test_research_event_legacy_phase2_falls_back_from_taxonomy():
+    e=A1ReactionEvaluator(); z=_zone(); z.phase2_type='UNKNOWN_RESEARCH'
+    e._append_research_event(
+        z,
+        'A1_REACTION_SWEEP_RECLAIM_NO_RETEST',
+        'RECLAIM_NO_RETEST',
+    )
+    event=e.pop_research_events()[0]
+    assert event['a1_reaction_type']=='A1_REACTION_SWEEP_RECLAIM_NO_RETEST'
+    assert event['legacy_phase2_type']=='SWEEP_RECLAIM'
+    assert event['phase2_type']=='SWEEP_RECLAIM'
+
+
+def test_research_event_metadata_defaults_are_stable():
+    e=A1ReactionEvaluator(); z=_zone(); z.metadata={}
+    e._append_research_event(z,'A1_REACTION_NO_RESPONSE','NO_RESPONSE')
+    event=e.pop_research_events()[0]
+    expected_defaults={
+        'frozen_reason': '',
+        'frozen_state': '',
+        'frozen_event_id': '',
+        'event_count': 0,
+        'iceberg_count': 0,
+        'high_count': 0,
+        'medium_count': 0,
+        'low_count': 0,
+        'positive_score': 0.0,
+        'negative_score': 0.0,
+        'net_score': 0.0,
+    }
+    for field, default in expected_defaults.items():
+        assert event[field] == default
+
+
 def test_coverage_disabled_blocks_research_event_helpers(monkeypatch):
     monkeypatch.setattr(reaction_evaluator_module.cfg, 'A1_REACTION_RESEARCH_COVERAGE_ENABLED', False)
     e=A1ReactionEvaluator(); z=_zone(); z.phase2_type='CLEAN_HOLD'

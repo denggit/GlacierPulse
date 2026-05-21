@@ -22,6 +22,8 @@ def test_legacy_phase2_mapping():
 def test_package_exports_research_components():
     import src.strategy.a1_absorption as pkg
 
+    assert "V6.3.8" not in pkg.__doc__
     assert pkg.A1ReactionEventRecorder
+    assert pkg.A1_REACTION_SWEEP_RECLAIM_NO_RETEST
     assert pkg.A1_REACTION_CLEAN_HOLD == A1_REACTION_CLEAN_HOLD
     assert pkg.normalize_a1_reaction_type("CLEAN_HOLD") == A1_REACTION_CLEAN_HOLD
