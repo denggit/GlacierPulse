@@ -2004,6 +2004,7 @@ def test_phase1_virtual_integration_and_execution_modes(monkeypatch):
         def on_price(self, **kw): self.p.append(kw)
     eng=Phase1Engine(_Ctx(), iceberg_detector=None)
     eng.phase2_orderflow_evaluator=_P2(); eng.phase3_candidate_evaluator=_P3(); eng.virtual_position_manager=_V()
+    monkeypatch.setattr("src.strategy.phase1_zone_engine.A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", True)
     eng._drain_phase2_confirmed_events(); assert len(eng.virtual_position_manager.c)==1
     eng.on_trade({"price":3000,"size":200,"side":"sell","ts":10}); assert eng.virtual_position_manager.p
     monkeypatch.setattr("src.strategy.phase1_zone_engine.REAL_EXECUTION_ENABLED", True)
@@ -2075,6 +2076,7 @@ def test_v62_component_status_logs(caplog):
 
     assert result["phase2_orderflow_evaluator_active"] is True
     assert result["virtual_position_manager_active"] is True
+    assert "a1_to_virtual_chain_enabled" in result
     assert any("[V62-COMPONENT-STATUS]" in r.message for r in caplog.records)
 
 
@@ -2087,6 +2089,7 @@ def test_v62_config_snapshot_logs(caplog):
         result = monitor.log_config_snapshot()
 
     assert "PHASE2_ORDERFLOW_EVALUATOR_ENABLED" in result
+    assert "A1_REACTION_TO_VIRTUAL_POSITION_ENABLED" in result
     assert "V62_SHADOW_RUN_LABEL" in result
     assert any("[V62-CONFIG-SNAPSHOT]" in r.message for r in caplog.records)
 

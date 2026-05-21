@@ -18,6 +18,7 @@ from config.research_evaluator import (
     PHASE3_CANDIDATE_EVALUATOR_ENABLED,
     PHASE3_OUTCOME_EVALUATOR_ENABLED,
     VIRTUAL_POSITION_MANAGER_ENABLED,
+    A1_REACTION_TO_VIRTUAL_POSITION_ENABLED,
     REAL_EXECUTION_ENABLED,
     VIRTUAL_SHADOW_MODE,
     V62_INTEGRATION_HEARTBEAT_ENABLED,
@@ -613,12 +614,29 @@ class Phase1Engine:
         for event in phase2_events or []:
             try:
                 result = self.phase3_candidate_evaluator.evaluate_phase2_confirmed(event)
-                if result and self.virtual_position_manager:
+                if (
+                    result
+                    and self.virtual_position_manager
+                    and A1_REACTION_TO_VIRTUAL_POSITION_ENABLED
+                ):
                     try:
                         self.virtual_position_manager.on_candidate(result)
                         self._drain_virtual_position_closed_events()
                     except Exception:
                         logger.exception("[VIRTUAL-POSITION-FAILED] stage=on_candidate zone_id=%s", event.get("zone_id") if isinstance(event, dict) else None)
+                elif (
+                    result
+                    and self.virtual_position_manager
+                    and not A1_REACTION_TO_VIRTUAL_POSITION_ENABLED
+                    and bool(getattr(cfg, "V62_LOG_VIRTUAL_POSITION_BLOCKED_ENABLED", True))
+                ):
+                    logger.info(
+                        "[VIRTUAL-POSITION-BLOCKED] reason=a1_reaction_to_virtual_position_disabled zone_id=%s phase2_type=%s candidate_type=%s decision=%s",
+                        result.get("zone_id") if isinstance(result, dict) else None,
+                        result.get("phase2_type") if isinstance(result, dict) else None,
+                        result.get("candidate_type") if isinstance(result, dict) else None,
+                        result.get("decision") if isinstance(result, dict) else None,
+                    )
             except Exception:
                 logger.exception(
                     "[PHASE3-CANDIDATE-FAILED] zone_id=%s",

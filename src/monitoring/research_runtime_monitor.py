@@ -230,6 +230,7 @@ class ResearchRuntimeMonitor:
             "phase2_orderflow_evaluator_active": getattr(engine, "phase2_orderflow_evaluator", None) is not None,
             "phase3_candidate_evaluator_active": getattr(engine, "phase3_candidate_evaluator", None) is not None,
             "virtual_position_manager_active": getattr(engine, "virtual_position_manager", None) is not None,
+            "a1_to_virtual_chain_enabled": bool(getattr(cfg, "A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", False)),
             "phase3_outcome_evaluator_active": getattr(engine, "phase3_trade_outcome_evaluator", None) is not None,
             "iceberg_zone_tracker_active": getattr(engine, "zone_tracker", None) is not None,
             "iceberg_outcome_evaluator_active": getattr(engine, "outcome_evaluator", None) is not None,
@@ -244,6 +245,7 @@ class ResearchRuntimeMonitor:
             "PHASE3_CANDIDATE_EVALUATOR_ENABLED",
             "PHASE3_OUTCOME_EVALUATOR_ENABLED",
             "VIRTUAL_POSITION_MANAGER_ENABLED",
+            "A1_REACTION_TO_VIRTUAL_POSITION_ENABLED",
             "REAL_EXECUTION_ENABLED",
             "PHASE3_REAL_TRADING_ENABLED",
             "VIRTUAL_SHADOW_MODE",
@@ -280,6 +282,7 @@ class ResearchRuntimeMonitor:
             "V62_LOG_PHASE3_CANDIDATE_ENABLED",
             "V62_LOG_VIRTUAL_POSITION_UPDATE_ENABLED",
             "V62_LOG_VIRTUAL_POSITION_SKIP_ENABLED",
+            "V62_LOG_VIRTUAL_POSITION_BLOCKED_ENABLED",
             "V62_LOG_PHASE3_OUTCOME_ENABLED",
         )
         snapshot = {key: getattr(cfg, key, None) for key in keys}
