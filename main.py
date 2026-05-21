@@ -13,6 +13,11 @@ import os
 # 确保能正确导入 src 模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from src.config.runtime_profile_loader import load_runtime_profile
+
+
+load_runtime_profile()
+
 from config import research_evaluator as research_config
 from src.utils.log import get_logger
 from src.context.market_context import MarketContext

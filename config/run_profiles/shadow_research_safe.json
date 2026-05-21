@@ -1,0 +1,19 @@
+{
+  "name": "shadow_research_safe",
+  "description": "Safe shadow research profile without real trading",
+  "allow_override_env": false,
+  "env": {
+    "V62_LOG_PROFILE": "RESEARCH_KEY_EVENTS",
+    "LOG_TO_CONSOLE": false,
+    "LOG_TO_FILE": true,
+
+    "A1_REACTION_RESEARCH_COVERAGE_ENABLED": true,
+    "A1_REACTION_EVENT_RECORDER_ENABLED": true,
+    "A1_REACTION_EVENT_RECORDER_WRITE_JSONL": false,
+
+    "A1_REACTION_TO_VIRTUAL_POSITION_ENABLED": false,
+    "REAL_EXECUTION_ENABLED": false,
+    "PHASE3_REAL_TRADING_ENABLED": false,
+    "VIRTUAL_SHADOW_MODE": false
+  }
+}

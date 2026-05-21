@@ -1,0 +1,20 @@
+{
+  "name": "a1_edge_capture",
+  "description": "Default safe runtime profile for A1 edge event capture and offline validation",
+  "allow_override_env": false,
+  "env": {
+    "V62_LOG_PROFILE": "RESEARCH_KEY_EVENTS",
+    "LOG_TO_CONSOLE": false,
+    "LOG_TO_FILE": true,
+
+    "A1_REACTION_RESEARCH_COVERAGE_ENABLED": true,
+    "A1_REACTION_EVENT_RECORDER_ENABLED": true,
+    "A1_REACTION_EVENT_RECORDER_WRITE_JSONL": true,
+    "A1_REACTION_EVENT_RECORDER_JSONL_PATH": "logs/research/a1_reaction_events.jsonl",
+
+    "A1_REACTION_TO_VIRTUAL_POSITION_ENABLED": false,
+    "REAL_EXECUTION_ENABLED": false,
+    "PHASE3_REAL_TRADING_ENABLED": false,
+    "VIRTUAL_SHADOW_MODE": false
+  }
+}
