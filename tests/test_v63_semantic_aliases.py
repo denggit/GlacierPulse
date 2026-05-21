@@ -10,8 +10,22 @@ from src.strategy.a1_absorption.zone_tracker import A1ZoneTracker
 from src.strategy.iceberg.outcome_evaluator import IcebergOutcomeEvaluator
 from src.strategy.a1_absorption.outcome_evaluator import A1ZoneOutcomeEvaluator
 
-from src.strategy.phase2_orderflow_evaluator import Phase2OrderflowEvaluator
-from src.strategy.a1_reaction.reaction_evaluator import A1ReactionEvaluator
+from src.strategy.phase2_orderflow_evaluator import (
+    Phase2BookSample as LegacyPhase2BookSample,
+    Phase2FlowBucket as LegacyPhase2FlowBucket,
+    Phase2OrderflowEvaluator as LegacyPhase2OrderflowEvaluator,
+    Phase2TrackedZone as LegacyPhase2TrackedZone,
+)
+from src.strategy.a1_reaction.reaction_evaluator import (
+    A1ReactionBookSample,
+    A1ReactionEvaluator,
+    A1ReactionFlowBucket,
+    A1ReactionTrackedZone,
+    Phase2BookSample,
+    Phase2FlowBucket,
+    Phase2OrderflowEvaluator as NewPathPhase2OrderflowEvaluator,
+    Phase2TrackedZone,
+)
 
 from src.strategy.phase3_candidate_evaluator import Phase3CandidateEvaluator
 from src.strategy.execution_research.candidate_evaluator import (
@@ -44,7 +58,21 @@ def test_a1_zone_outcome_evaluator_alias():
 
 
 def test_a1_reaction_evaluator_alias():
-    assert A1ReactionEvaluator is Phase2OrderflowEvaluator
+    assert A1ReactionEvaluator is LegacyPhase2OrderflowEvaluator
+
+
+def test_a1_reaction_new_path_is_runtime_implementation():
+    assert A1ReactionEvaluator is NewPathPhase2OrderflowEvaluator
+    assert LegacyPhase2OrderflowEvaluator is NewPathPhase2OrderflowEvaluator
+
+
+def test_a1_reaction_dataclass_aliases_match_legacy_exports():
+    assert A1ReactionTrackedZone is Phase2TrackedZone
+    assert A1ReactionFlowBucket is Phase2FlowBucket
+    assert A1ReactionBookSample is Phase2BookSample
+    assert LegacyPhase2TrackedZone is Phase2TrackedZone
+    assert LegacyPhase2FlowBucket is Phase2FlowBucket
+    assert LegacyPhase2BookSample is Phase2BookSample
 
 
 def test_execution_research_candidate_evaluator_alias():
