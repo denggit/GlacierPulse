@@ -255,8 +255,11 @@ def normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(score, Mapping):
         row.setdefault("truth_score_total", score.get("truth_score_total"))
         row.setdefault("truth_label", score.get("truth_label"))
+        row.setdefault("score_warnings", score.get("score_warnings"))
         if isinstance(score.get("post_data_coverage"), Mapping):
             row.setdefault("post_data_coverage", score.get("post_data_coverage"))
+    if isinstance(row.get("score_warnings"), list):
+        row["score_warnings"] = "|".join(str(x) for x in row["score_warnings"])
     coverage = row.get("post_data_coverage")
     if isinstance(coverage, Mapping):
         row["post_has_any_post_trade"] = bool(coverage.get("has_any_post_trade"))
@@ -358,6 +361,7 @@ def candidate_fields(records: list[Mapping[str, Any]]) -> list[str]:
         "behavior", "quality", "cancel_reason", "trigger_ts", "settle_ts", "wait_ms",
         "trigger_price", "settle_price", "zone_lower", "zone_upper", "active_notional",
         "hidden_volume", "absorption_rate", "truth_score_total", "truth_label",
+        "score_warnings",
         "post_has_any_post_trade", "post_has_5s_trade_data", "post_has_30s_trade_data",
         "post_observed_through_5s", "post_observed_through_30s", "post_observed_through_120s",
         "post_has_book_recovery_data", "post_has_cvd_data", "post_has_sweep_data",

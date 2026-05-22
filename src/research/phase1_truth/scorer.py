@@ -35,13 +35,19 @@ class IcebergTruthScorer:
 
         width = max(0.000001, c.f("local_zone_width", 0.0) or abs(c.f("zone_upper") - c.f("zone_lower")) or 1.5)
         insufficient_post_data = self._insufficient_post_data(coverage)
+        hard_cap, hard_cap_warnings = self._hard_caps(c)
+        warnings.extend(hard_cap_warnings)
         if abs(c.f("price_displacement")) > width * 2.0:
             total = min(total, 64.0)
         if c.f("active_notional") < 150_000:
             total = min(total, 49.0)
+        if hard_cap is not None:
+            total = min(total, hard_cap)
         if insufficient_post_data:
             total = min(total, 49.0)
             label = self.LABEL_INSUFFICIENT
+        elif hard_cap is not None:
+            label = self.LABEL_NOT
         else:
             label = self.label_for_score(total)
 
@@ -64,6 +70,37 @@ class IcebergTruthScorer:
         if total >= 30:
             return IcebergTruthScorer.LABEL_LOW
         return IcebergTruthScorer.LABEL_NOT
+
+    def _hard_caps(self, c: "_Merged") -> tuple[float | None, list[str]]:
+        cap: float | None = None
+        warnings: list[str] = []
+
+        hidden = c.f("hidden_volume")
+        if hidden < 0:
+            cap = 49.0 if cap is None else min(cap, 49.0)
+            warnings.append("negative_hidden_volume_cap")
+        if hidden <= -500_000:
+            cap = 39.0 if cap is None else min(cap, 39.0)
+            warnings.append("strong_negative_hidden_volume_cap")
+
+        if c.f("absorption_rate") < 0:
+            cap = 49.0 if cap is None else min(cap, 49.0)
+            warnings.append("negative_absorption_rate_cap")
+
+        if c.s("behavior") == "SPOOFING_WITHDRAWAL":
+            cap = 49.0 if cap is None else min(cap, 49.0)
+            warnings.append("spoofing_withdrawal_cap")
+
+        if c.s("result") == "SPOOFING":
+            cap = 49.0 if cap is None else min(cap, 49.0)
+            warnings.append("spoofing_result_cap")
+
+        active = c.f("active_notional")
+        if active > 0 and c.f("book_reduction") > active * 1.2:
+            cap = 49.0 if cap is None else min(cap, 49.0)
+            warnings.append("excessive_book_reduction_cap")
+
+        return cap, warnings
 
     def _attack_strength(self, c: "_Merged") -> float:
         score = 0.0

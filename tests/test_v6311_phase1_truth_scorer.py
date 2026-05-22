@@ -110,6 +110,101 @@ def test_valid_post_data_can_score_high():
     assert result["truth_label"] == "HIGH_CONFIDENCE_ICEBERG"
 
 
+def test_negative_hidden_volume_caps_score_to_not_iceberg():
+    result = IcebergTruthScorer().score(
+        _candidate("BUY", hidden_volume=-2_000_000, absorption_rate=0.9)
+    )
+    assert result["truth_score_total"] <= 49
+    assert result["truth_label"] == "NOT_ICEBERG"
+    assert "negative_hidden_volume_cap" in result["score_warnings"]
+
+
+def test_negative_absorption_rate_caps_score_to_not_iceberg():
+    result = IcebergTruthScorer().score(
+        _candidate("BUY", hidden_volume=2_000_000, absorption_rate=-1.0)
+    )
+    assert result["truth_score_total"] <= 49
+    assert result["truth_label"] == "NOT_ICEBERG"
+    assert "negative_absorption_rate_cap" in result["score_warnings"]
+
+
+def test_spoofing_withdrawal_behavior_caps_score_even_with_good_post_reaction():
+    result = IcebergTruthScorer().score(
+        _candidate(
+            "BUY",
+            behavior="SPOOFING_WITHDRAWAL",
+            hidden_volume=-2_000_000,
+            absorption_rate=-1.5,
+        )
+    )
+    assert result["truth_score_total"] <= 49
+    assert result["truth_label"] == "NOT_ICEBERG"
+    assert "spoofing_withdrawal_cap" in result["score_warnings"]
+
+
+def test_spoofing_result_caps_score_even_with_good_post_reaction():
+    result = IcebergTruthScorer().score(
+        _candidate("BUY", result="SPOOFING", behavior="", hidden_volume=2_000_000)
+    )
+    assert result["truth_score_total"] <= 49
+    assert result["truth_label"] == "NOT_ICEBERG"
+    assert "spoofing_result_cap" in result["score_warnings"]
+
+
+def test_excessive_book_reduction_caps_total_score():
+    result = IcebergTruthScorer().score(
+        _candidate(
+            "BUY",
+            active_notional=1_000_000,
+            book_reduction=1_500_000,
+            hidden_volume=100_000,
+        )
+    )
+    assert result["truth_score_total"] <= 49
+    assert result["truth_label"] == "NOT_ICEBERG"
+    assert "excessive_book_reduction_cap" in result["score_warnings"]
+
+
+def test_insufficient_post_data_label_has_priority_over_spoofing_cap():
+    result = IcebergTruthScorer().score(
+        _candidate(
+            "BUY",
+            result="SPOOFING",
+            behavior="SPOOFING_WITHDRAWAL",
+            hidden_volume=-2_000_000,
+            post_features={},
+        )
+    )
+    assert result["truth_score_total"] <= 49
+    assert result["truth_label"] == "INSUFFICIENT_POST_DATA"
+    assert "insufficient_post_trade_data" in result["score_warnings"]
+    assert "negative_hidden_volume_cap" in result["score_warnings"]
+    assert "spoofing_result_cap" in result["score_warnings"]
+    assert "spoofing_withdrawal_cap" in result["score_warnings"]
+
+
+def test_valid_positive_hidden_iceberg_not_capped():
+    result = IcebergTruthScorer().score(
+        _candidate(
+            "BUY",
+            result="ICEBERG",
+            behavior="ICEBERG_ABSORPTION",
+            hidden_volume=2_200_000,
+            absorption_rate=0.9,
+        )
+    )
+    assert result["truth_score_total"] >= 80
+    assert result["truth_label"] == "HIGH_CONFIDENCE_ICEBERG"
+    cap_warnings = {
+        "negative_hidden_volume_cap",
+        "negative_absorption_rate_cap",
+        "spoofing_withdrawal_cap",
+        "spoofing_result_cap",
+        "excessive_book_reduction_cap",
+    }
+    assert cap_warnings.isdisjoint(result["score_warnings"])
+
+
 def test_no_sweep_does_not_get_sweep_reclaim_score():
     candidate = _candidate(
         "BUY",

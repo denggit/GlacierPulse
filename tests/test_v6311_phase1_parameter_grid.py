@@ -116,6 +116,25 @@ def test_parameter_grid_outputs_insufficient_post_data_ratio(tmp_path):
     assert any(float(row["selected_insufficient_post_data_ratio"]) > 0 for row in rows)
 
 
+def test_analyzer_flattens_score_warnings(tmp_path):
+    finalized = [
+        {
+            **_record("warned", "candidate_finalized", "SPOOFING", 49, label="NOT_ICEBERG"),
+            "truth_score": {
+                **_record("warned", "candidate_finalized", "SPOOFING", 49, label="NOT_ICEBERG")["truth_score"],
+                "score_warnings": ["negative_hidden_volume_cap", "spoofing_withdrawal_cap"],
+            },
+        }
+    ]
+    out = tmp_path / "out"
+    Phase1TruthAnalyzer(min_sample=1).export(finalized, out)
+    with (out / "phase1_candidate_events.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert "score_warnings" in rows[0]
+    assert "negative_hidden_volume_cap" in rows[0]["score_warnings"]
+    assert "spoofing_withdrawal_cap" in rows[0]["score_warnings"]
+
+
 def test_parameter_grid_insufficient_coverage_label():
     analyzer = Phase1TruthAnalyzer(min_sample=30)
     label = analyzer.parameter_score_label(
