@@ -77,11 +77,14 @@ class Phase1TruthAnalyzer:
         spoofing = by_result.get("SPOOFING", {})
         cancel = by_result.get("CANCEL", {})
         result_distribution = dict(Counter(str(r.get("result") or "UNKNOWN") for r in finalized))
+        insufficient_total = sum(1 for r in finalized if is_insufficient_post_data(r))
         summary = {
             "candidate_total": len(records),
             "settled_total": len(settled),
             "finalized_total": len(finalized),
             "settled_but_not_finalized_total": max(0, len(settled) - len(finalized)),
+            "insufficient_post_data_total": insufficient_total,
+            "insufficient_post_data_ratio": round(insufficient_total / len(finalized), 6) if finalized else 0.0,
             "result_distribution": result_distribution,
             "direction_distribution": dict(Counter(str(r.get("direction") or "UNKNOWN") for r in finalized)),
             "session_distribution": dict(Counter(str(r.get("session_tag") or "UNKNOWN") for r in finalized)),
@@ -114,6 +117,7 @@ class Phase1TruthAnalyzer:
         for key in sorted(groups):
             scores = [truth_score(r) for r in groups[key]]
             row = score_stats(scores)
+            row.update(insufficient_stats(groups[key]))
             row[field] = key
             rows.append(row)
         return rows
@@ -144,6 +148,7 @@ class Phase1TruthAnalyzer:
                             "min_absorption_rate": abs_rate,
                             "min_local_depth_usdt": depth,
                             **score_stats(scores, selected_count_name="selected_count"),
+                            **insufficient_stats(selected, count_name="selected_insufficient_post_data_count", ratio_name="selected_insufficient_post_data_ratio"),
                             "selected_iceberg_count": count_result(selected, "ICEBERG"),
                             "selected_ignore_count": count_result(selected, "IGNORE"),
                             "selected_spoofing_count": count_result(selected, "SPOOFING"),
@@ -214,6 +219,8 @@ class Phase1TruthAnalyzer:
             f"- settled_total: {summary.get('settled_total')}",
             f"- finalized_total: {summary.get('finalized_total')}",
             f"- settled_but_not_finalized_total: {summary.get('settled_but_not_finalized_total')}",
+            f"- insufficient_post_data_total: {summary.get('insufficient_post_data_total')}",
+            f"- insufficient_post_data_ratio: {summary.get('insufficient_post_data_ratio')}",
             f"- current_iceberg_precision_proxy: {summary.get('current_iceberg_precision_proxy')}",
             f"- current_iceberg_high_conf_proxy: {summary.get('current_iceberg_high_conf_proxy')}",
             f"- too_loose_warning: {summary.get('too_loose_warning')}",
@@ -237,6 +244,17 @@ def normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(score, Mapping):
         row.setdefault("truth_score_total", score.get("truth_score_total"))
         row.setdefault("truth_label", score.get("truth_label"))
+        if isinstance(score.get("post_data_coverage"), Mapping):
+            row.setdefault("post_data_coverage", score.get("post_data_coverage"))
+    coverage = row.get("post_data_coverage")
+    if isinstance(coverage, Mapping):
+        row["post_has_any_post_trade"] = bool(coverage.get("has_any_post_trade"))
+        row["post_has_5s_trade_window"] = bool(coverage.get("has_5s_trade_window"))
+        row["post_has_30s_trade_window"] = bool(coverage.get("has_30s_trade_window"))
+        row["post_has_120s_observation"] = bool(coverage.get("has_120s_observation"))
+        row["post_has_book_recovery_data"] = bool(coverage.get("has_book_recovery_data"))
+        row["post_has_cvd_data"] = bool(coverage.get("has_cvd_data"))
+        row["post_has_sweep_data"] = bool(coverage.get("has_sweep_data"))
     return row
 
 
@@ -298,12 +316,34 @@ def count_result(records: Iterable[Mapping[str, Any]], result: str) -> int:
     return sum(1 for r in records if str(r.get("result") or "").upper() == result)
 
 
+def is_insufficient_post_data(record: Mapping[str, Any]) -> bool:
+    score = record.get("truth_score")
+    nested_label = score.get("truth_label") if isinstance(score, Mapping) else None
+    return str(record.get("truth_label") or nested_label or "").upper() == IcebergTruthScorer.LABEL_INSUFFICIENT
+
+
+def insufficient_stats(
+    records: Iterable[Mapping[str, Any]],
+    count_name: str = "insufficient_post_data_count",
+    ratio_name: str = "insufficient_post_data_ratio",
+) -> dict[str, Any]:
+    rows = list(records)
+    count = sum(1 for r in rows if is_insufficient_post_data(r))
+    return {
+        count_name: count,
+        ratio_name: round(count / len(rows), 6) if rows else 0.0,
+    }
+
+
 def candidate_fields(records: list[Mapping[str, Any]]) -> list[str]:
     base = [
         "schema_version", "record_type", "event_key", "symbol", "direction", "result",
         "behavior", "quality", "cancel_reason", "trigger_ts", "settle_ts", "wait_ms",
         "trigger_price", "settle_price", "zone_lower", "zone_upper", "active_notional",
         "hidden_volume", "absorption_rate", "truth_score_total", "truth_label",
+        "post_has_any_post_trade", "post_has_5s_trade_window", "post_has_30s_trade_window",
+        "post_has_120s_observation", "post_has_book_recovery_data", "post_has_cvd_data",
+        "post_has_sweep_data",
         "session_tag", "is_weekend",
     ]
     extras = sorted({k for r in records for k in r.keys() if isinstance(k, str) and k not in base and not isinstance(r.get(k), (dict, list))})
@@ -315,6 +355,7 @@ def group_fields(group_name: str = "result") -> list[str]:
         group_name, "count", "avg_truth_score", "median_truth_score",
         "p75_truth_score", "p90_truth_score", "pct_score_ge_65", "pct_score_ge_80",
         "pct_truth_ge_65", "pct_truth_ge_80", "pct_truth_lt_50",
+        "insufficient_post_data_count", "insufficient_post_data_ratio",
     ]
 
 
@@ -324,5 +365,6 @@ def parameter_grid_fields() -> list[str]:
         "min_local_depth_usdt", "selected_count", "avg_truth_score", "median_truth_score",
         "pct_truth_ge_65", "pct_truth_ge_80", "pct_truth_lt_50", "selected_iceberg_count",
         "selected_ignore_count", "selected_spoofing_count", "selected_cancel_count",
-        "missed_high_truth_count", "score_label",
+        "missed_high_truth_count", "selected_insufficient_post_data_count",
+        "selected_insufficient_post_data_ratio", "score_label",
     ]

@@ -7,3 +7,4 @@
 /tests/.pytest_cache/
 /tools/logs/
 /reports/
+/runtime_state/

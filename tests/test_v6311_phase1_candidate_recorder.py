@@ -69,6 +69,12 @@ def test_tracker_finalizes_after_120s_window(tmp_path):
     rows = _read_jsonl(path)
     assert rows[-1]["record_type"] == "candidate_finalized"
     assert rows[-1]["post_features"]["finalize_reason"] == "finalize_after_sec"
+    assert "observation_age_sec" in rows[-1]["post_features"]
+    assert "has_any_post_trade" in rows[-1]["post_features"]
+    assert "has_book_recovery_data" in rows[-1]["post_features"]
+    assert "has_5s_trade_window" in rows[-1]["post_features"]
+    assert "has_30s_trade_window" in rows[-1]["post_features"]
+    assert "has_120s_observation" in rows[-1]["post_features"]
 
 
 def test_tracker_capacity_guard_does_not_crash(tmp_path):

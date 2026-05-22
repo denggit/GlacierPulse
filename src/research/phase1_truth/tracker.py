@@ -286,8 +286,39 @@ class Phase1TruthTracker:
             logger.warning("[PHASE1-TRUTH-FALLBACK] reason=finalize_failed error=%s", exc)
 
     def _post_features(self, obs: Phase1Observation, reason: str) -> Dict[str, Any]:
+        last_observed_ts = max(obs._last_trade_ts, obs._last_book_ts)
+        observation_age_sec = max(0.0, last_observed_ts - obs.settle_ts) if last_observed_ts > 0 else 0.0
+        if last_observed_ts > 0 and reason == "finalize_after_sec":
+            observation_age_sec = max(observation_age_sec, self.finalize_after_sec)
+        has_any_post_trade = obs.post_trade_count > 0
+        has_book_recovery_data = (
+            obs.local_depth_last > 0
+            or obs.local_depth_max > 0
+            or obs.depth_recovery_ratio_1s > 0
+            or obs.depth_recovery_ratio_5s > 0
+            or obs.depth_recovery_ratio_30s > 0
+        )
+        has_5s_trade_window = (
+            obs.post_5s_min_price > 0
+            and obs.post_5s_max_price > 0
+        ) or (has_any_post_trade and _has_checkpoint(obs.checkpoints, 5))
+        has_30s_trade_window = (
+            obs.post_30s_min_price > 0
+            and obs.post_30s_max_price > 0
+        ) or _has_checkpoint(obs.checkpoints, 30)
+        has_120s_observation = (
+            reason == "finalize_after_sec"
+            or _has_checkpoint(obs.checkpoints, 120)
+            or (has_any_post_trade and observation_age_sec >= 120)
+        )
         return {
             "finalize_reason": reason,
+            "observation_age_sec": round(observation_age_sec, 6),
+            "has_any_post_trade": has_any_post_trade,
+            "has_book_recovery_data": has_book_recovery_data,
+            "has_5s_trade_window": has_5s_trade_window,
+            "has_30s_trade_window": has_30s_trade_window,
+            "has_120s_observation": has_120s_observation,
             "post_trade_count": obs.post_trade_count,
             "post_total_notional": round(obs.post_total_notional, 6),
             "post_buy_notional": round(obs.post_buy_notional, 6),
@@ -365,3 +396,13 @@ def get_session_tag(dt: datetime) -> str:
     if minutes < 21 * 60 + 30:
         return "EUROPE_PRE_US"
     return "US_OPEN"
+
+
+def _has_checkpoint(checkpoints: Mapping[Any, Any], window: int) -> bool:
+    if not isinstance(checkpoints, Mapping):
+        return False
+    for key in (window, str(window)):
+        value = checkpoints.get(key)
+        if isinstance(value, Mapping) and value:
+            return True
+    return False

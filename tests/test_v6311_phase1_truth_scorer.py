@@ -20,6 +20,9 @@ def _candidate(direction="BUY", **overrides):
         "zone_upper": 100.5,
         "local_zone_width": 1.5,
         "post_features": {
+            "post_trade_count": 42,
+            "post_total_notional": 1_100_000,
+            "observation_age_sec": 120,
             "post_5s_min_price": 99.4,
             "post_5s_max_price": 100.3,
             "post_30s_min_price": 99.3,
@@ -31,6 +34,8 @@ def _candidate(direction="BUY", **overrides):
             "post_30s_cvd_delta": -700_000 if direction == "BUY" else 700_000,
             "depth_recovery_ratio_1s": 0.35,
             "depth_recovery_ratio_5s": 0.60,
+            "local_depth_last": 900_000,
+            "local_depth_max": 1_100_000,
             "replenish_count": 3,
             "reload_interval_ms": 1500,
             "has_sweep": True,
@@ -43,6 +48,66 @@ def _candidate(direction="BUY", **overrides):
         base.update({"zone_lower": 100, "zone_upper": 101.5, "settle_price": 101, "trigger_price": 101})
     base.update(overrides)
     return base
+
+
+def test_no_post_data_caps_score_and_labels_insufficient():
+    candidate = _candidate("BUY", post_features={})
+    result = IcebergTruthScorer().score(candidate)
+    assert result["truth_label"] == "INSUFFICIENT_POST_DATA"
+    assert result["truth_score_total"] <= 49
+    assert "insufficient_post_trade_data" in result["score_warnings"]
+
+
+def test_no_post_data_does_not_get_non_acceptance_points():
+    result = IcebergTruthScorer().score(_candidate("BUY", post_features={}))
+    assert result["score_components"]["non_acceptance_score"] == 0
+
+
+def test_no_cvd_data_does_not_get_cvd_divergence_points():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 0,
+            "post_total_notional": 0,
+            "post_5s_min_price": 99.4,
+            "post_5s_max_price": 100.3,
+            "post_30s_min_price": 99.3,
+            "post_30s_max_price": 100.4,
+            "post_min_price": 99.3,
+            "post_max_price": 100.4,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["cvd_divergence_score"] == 0
+
+
+def test_no_book_data_does_not_get_reload_replenish_points():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 10,
+            "post_total_notional": 250_000,
+            "post_5s_min_price": 99.4,
+            "post_5s_max_price": 100.3,
+            "post_30s_min_price": 99.3,
+            "post_30s_max_price": 100.4,
+            "post_min_price": 99.3,
+            "post_max_price": 100.4,
+            "local_depth_last": 0,
+            "local_depth_max": 0,
+            "depth_recovery_ratio_1s": 0,
+            "depth_recovery_ratio_5s": 0,
+            "depth_recovery_ratio_30s": 0,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["reload_replenish_score"] == 0
+
+
+def test_valid_post_data_can_score_high():
+    result = IcebergTruthScorer().score(_candidate("BUY"))
+    assert result["truth_score_total"] >= 80
+    assert result["truth_label"] == "HIGH_CONFIDENCE_ICEBERG"
 
 
 def test_strong_buy_iceberg_scores_high():
@@ -62,7 +127,10 @@ def test_buy_candidate_that_accepts_lower_price_scores_low():
             "post_5s_min_price": 94,
             "post_30s_min_price": 93,
             "post_min_price": 93,
+            "post_max_price": 100,
             "post_last_price": 94,
+            "post_trade_count": 20,
+            "post_total_notional": 900_000,
             "post_5s_cvd_delta": -500_000,
             "post_30s_cvd_delta": -900_000,
             "time_outside_zone_30s": 30,
