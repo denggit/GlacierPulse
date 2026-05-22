@@ -1,0 +1,40 @@
+{
+  "active_params": {
+    "params": {
+      "local_zone_width": 1.5,
+      "max_wait_ms": 700.0,
+      "min_event_start_notional_usdt": 300000.0,
+      "min_hidden_notional_usdt": 1000000.0,
+      "min_local_depth_usdt": 300000.0
+    },
+    "source": "static"
+  },
+  "computed_at_local": "2026-05-22T19:57:15.525301+08:00",
+  "computed_at_utc": "2026-05-22T11:57:15.525301+00:00",
+  "dynamic_preview_params": {
+    "local_zone_width": 1.5,
+    "max_wait_ms": 700.0,
+    "min_event_start_notional_usdt": 300000.0,
+    "min_hidden_notional_usdt": 1000000.0,
+    "min_local_depth_usdt": 300000.0
+  },
+  "is_weekend": false,
+  "mode": "preview_only",
+  "safety": {
+    "dynamic_params_active": false,
+    "mode_requested": "preview_only",
+    "preview_only_enforced": true
+  },
+  "schema_version": "v6.3.11.a1_dynamic_preview.1",
+  "session_tag": "EUROPE_PRE_US",
+  "source_stats": {},
+  "static_params": {
+    "local_zone_width": 1.5,
+    "max_wait_ms": 700.0,
+    "min_event_start_notional_usdt": 300000.0,
+    "min_hidden_notional_usdt": 1000000.0,
+    "min_local_depth_usdt": 300000.0
+  },
+  "symbol": "ETH-USDT-SWAP",
+  "timezone": "Asia/Shanghai"
+}

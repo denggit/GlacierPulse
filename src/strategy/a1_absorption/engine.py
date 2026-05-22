@@ -36,12 +36,15 @@ from src.strategy.execution_research.trade_outcome_evaluator import ExecutionRes
 from src.monitoring.research_runtime_monitor import ResearchRuntimeMonitor
 from src.strategy.execution_research.virtual_position_manager import ResearchVirtualPositionManager
 from src.utils.log_noise import suppressed_log_counter
+from src.research.phase1_truth.models import SCHEMA_VERSION
+from src.research.phase1_truth.tracker import Phase1TruthTracker, session_snapshot
+from src.research.a1_dynamic_params.previewer import A1DynamicParamPreviewer
 
 logger = logging.getLogger(__name__)
 
 
 class A1AbsorptionEngine:
-    def __init__(self, market_context, iceberg_detector):
+    def __init__(self, market_context, iceberg_detector, phase1_truth_tracker=None):
         self.ctx = market_context
         self.iceberg_radar = iceberg_detector
 
@@ -58,6 +61,14 @@ class A1AbsorptionEngine:
 
         self.pending_events = collections.deque()
         self._event_seq = 0
+        self.phase1_truth_tracker = phase1_truth_tracker
+        if self.phase1_truth_tracker is None:
+            self.phase1_truth_tracker = Phase1TruthTracker.from_config()
+        self.a1_dynamic_param_previewer = A1DynamicParamPreviewer.from_config()
+        try:
+            self.a1_dynamic_param_previewer.maybe_write(force=True)
+        except Exception:
+            logger.warning("[PHASE1-TRUTH-FALLBACK] reason=dynamic_preview_startup_failed")
         self.zone_tracker = A1ZoneTracker()
         self.outcome_evaluator = A1OutcomeEvaluator()
         self.a1_reaction_evaluator = (
@@ -117,6 +128,8 @@ class A1AbsorptionEngine:
         side = str(trade_data['side']).lower()
         trade_ts = float(trade_data['ts'])
         recv_ts = float(trade_data.get('recv_ts', time.time()))
+        self._update_phase1_truth_trade(trade_data)
+        self._maybe_write_a1_dynamic_preview(trade_ts)
         try:
             self.outcome_evaluator.on_price(price=price, ts=trade_ts)
         except Exception:
@@ -269,6 +282,8 @@ class A1AbsorptionEngine:
         book_ts = float(book_data.get("ts") or 0)
         book_recv_ts = float(book_data.get("recv_ts") or time.time())
         current_price = float(getattr(self.ctx, "current_price", 0.0) or 0.0)
+        self._update_phase1_truth_book(book_data)
+        self._maybe_write_a1_dynamic_preview(book_ts or book_recv_ts)
         self.zone_tracker.expire_old_zones(book_recv_ts)
         self._update_a1_reaction_book(book_data=book_data)
 
@@ -550,6 +565,18 @@ class A1AbsorptionEngine:
             settle_ts=settle_ts,
             settle_recv_ts=settle_recv_ts,
         )
+        self._register_phase1_truth_candidate(
+            event=event,
+            result=result,
+            signal=signal,
+            quality=quality,
+            current_price=current_price,
+            book_reduction=book_reduction,
+            wait_ms=wait_ms,
+            cancel_reason=cancel_reason,
+            settle_ts=settle_ts,
+            settle_recv_ts=settle_recv_ts,
+        )
         zone = self.zone_tracker.update(zone_event, current_price=current_price)
         if zone:
             try:
@@ -565,6 +592,79 @@ class A1AbsorptionEngine:
                 )
             self._register_a1_frozen_zone_for_reaction(zone)
         return zone
+
+    def _update_phase1_truth_trade(self, trade_data: Dict[str, Any]) -> None:
+        tracker = getattr(self, "phase1_truth_tracker", None)
+        if not tracker:
+            return
+        try:
+            tracker.on_trade(trade_data)
+        except Exception as exc:
+            logger.warning("[PHASE1-TRUTH-FALLBACK] reason=engine_on_trade error=%s", exc)
+
+    def _update_phase1_truth_book(self, book_data: Dict[str, Any]) -> None:
+        tracker = getattr(self, "phase1_truth_tracker", None)
+        if not tracker:
+            return
+        try:
+            enriched_book = dict(book_data) if isinstance(book_data, dict) else {}
+            ctx_bids = getattr(self.ctx, "bids", None)
+            ctx_asks = getattr(self.ctx, "asks", None)
+            if ctx_bids is not None:
+                enriched_book["bids"] = ctx_bids
+            if ctx_asks is not None:
+                enriched_book["asks"] = ctx_asks
+            tracker.on_book_update(enriched_book)
+        except Exception as exc:
+            logger.warning("[PHASE1-TRUTH-FALLBACK] reason=engine_on_book error=%s", exc)
+
+    def _register_phase1_truth_candidate(
+        self,
+        event: Dict[str, Any],
+        result: str,
+        signal: Optional[Dict[str, Any]] = None,
+        quality: Optional[str] = None,
+        current_price: float = 0.0,
+        book_reduction: float = 0.0,
+        wait_ms: float = 0.0,
+        cancel_reason: Optional[str] = None,
+        settle_ts: float = 0.0,
+        settle_recv_ts: float = 0.0,
+    ) -> None:
+        tracker = getattr(self, "phase1_truth_tracker", None)
+        if not tracker:
+            return
+        try:
+            snapshot = self._build_phase1_truth_candidate_snapshot(
+                event=event,
+                result=result,
+                signal=signal,
+                quality=quality,
+                current_price=current_price,
+                book_reduction=book_reduction,
+                wait_ms=wait_ms,
+                cancel_reason=cancel_reason,
+                settle_ts=settle_ts,
+                settle_recv_ts=settle_recv_ts,
+            )
+            tracker.register_candidate_settlement(snapshot)
+        except Exception as exc:
+            logger.warning("[PHASE1-TRUTH-FALLBACK] reason=engine_register_candidate error=%s", exc)
+
+    def _maybe_write_a1_dynamic_preview(self, now_ts: float) -> None:
+        previewer = getattr(self, "a1_dynamic_param_previewer", None)
+        if not previewer:
+            return
+        try:
+            previewer.maybe_write(
+                now_ts=now_ts or time.time(),
+                source_stats={
+                    "pending_events": len(getattr(self, "pending_events", []) or []),
+                    "active_truth_observations": len(getattr(getattr(self, "phase1_truth_tracker", None), "active_observations", {}) or {}),
+                },
+            )
+        except Exception as exc:
+            logger.warning("[PHASE1-TRUTH-FALLBACK] reason=dynamic_preview_tick_failed error=%s", exc)
 
     def _register_a1_frozen_zone_for_reaction(self, zone: Dict[str, Any]) -> None:
         if not self.a1_reaction_evaluator or not zone.get("is_frozen"):
@@ -753,6 +853,98 @@ class A1AbsorptionEngine:
             "wait_ms": self._safe_float(wait_ms, 0.0),
             "behavior": str(signal.get("behavior") or ("CANCEL" if result == "CANCEL" else "")),
             "cancel_reason": cancel_reason,
+        }
+
+    def _build_phase1_truth_candidate_snapshot(
+        self,
+        event: Dict[str, Any],
+        result: str,
+        signal: Optional[Dict[str, Any]] = None,
+        quality: Optional[str] = None,
+        current_price: float = 0.0,
+        book_reduction: float = 0.0,
+        wait_ms: float = 0.0,
+        cancel_reason: Optional[str] = None,
+        settle_ts: float = 0.0,
+        settle_recv_ts: float = 0.0,
+    ) -> Dict[str, Any]:
+        signal = signal or {}
+        recv_ts = self._safe_float(settle_recv_ts, time.time()) or time.time()
+        ts = (
+            self._safe_float(settle_ts, 0.0)
+            or self._safe_float(event.get("last_trade_ts"), 0.0)
+            or self._safe_float(event.get("trigger_ts"), 0.0)
+            or recv_ts
+        )
+        start_thickness = self._safe_float(event.get("start_thickness_usdt"), 0.0)
+        end_thickness = start_thickness - self._safe_float(book_reduction, 0.0)
+        trigger_price = self._safe_float(event.get("trigger_price"), 0.0)
+        settle_price = self._safe_float(current_price, 0.0) or trigger_price
+        session = session_snapshot(ts)
+        direction = str(event.get("direction", ""))
+        event_id = str(event.get("event_id", ""))
+        event_key = f"{event_id}|{direction}|{result}|{recv_ts:.6f}"
+        min_trade_price = self._safe_float(event.get("min_trade_price"), trigger_price)
+        max_trade_price = self._safe_float(event.get("max_trade_price"), trigger_price)
+        active_notional = self._safe_float(event.get("active_notional"), 0.0)
+        active_size = self._safe_float(event.get("active_size"), 0.0)
+        active_side_ratio = 1.0 if active_notional > 0 else 0.0
+        detector = getattr(self, "iceberg_radar", None)
+
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "record_type": "candidate_settled",
+            "event_key": event_key,
+            "event_id": event_id,
+            "symbol": str(getattr(self, "symbol", "ETH-USDT-SWAP")),
+            "direction": direction,
+            "result": result,
+            "behavior": str(signal.get("behavior") or ("CANCEL" if result == "CANCEL" else "")),
+            "quality": quality,
+            "cancel_reason": cancel_reason,
+            "trigger_ts": self._safe_float(event.get("trigger_ts"), 0.0),
+            "settle_ts": ts,
+            "trigger_recv_ts": self._safe_float(event.get("trigger_recv_ts"), 0.0),
+            "settle_recv_ts": recv_ts,
+            "wait_ms": self._safe_float(wait_ms, 0.0),
+            "trigger_price": trigger_price,
+            "settle_price": settle_price,
+            "zone_lower": self._safe_float(event.get("zone_lower"), 0.0),
+            "zone_upper": self._safe_float(event.get("zone_upper"), 0.0),
+            "local_zone_width": self._safe_float(self.local_zone_width, 1.5),
+            "active_notional": active_notional,
+            "active_size": active_size,
+            "trade_count": self._safe_int(event.get("trade_count"), 0),
+            "active_side_ratio": active_side_ratio,
+            "min_trade_price": min_trade_price,
+            "max_trade_price": max_trade_price,
+            "start_thickness_usdt": start_thickness,
+            "end_thickness_usdt": end_thickness,
+            "book_reduction": self._safe_float(book_reduction, 0.0),
+            "hidden_volume": self._safe_float(signal.get("hidden_volume"), 0.0),
+            "absorption_rate": self._safe_float(signal.get("absorption_rate"), 0.0),
+            "confidence": self._safe_float(signal.get("confidence"), 0.0),
+            "price_displacement": settle_price - trigger_price,
+            "book_updates_after_cutoff": self._safe_int(event.get("book_updates_after_cutoff"), 0),
+            "max_price_deviation": self._safe_float(self.max_price_deviation, 2.0),
+            "runtime_params": {
+                "min_event_start_notional_usdt": self._safe_float(self.min_event_start_notional_usdt, 300000.0),
+                "min_event_merge_notional_usdt": self._safe_float(self.min_event_merge_notional_usdt, 20000.0),
+                "accumulate_window_ms": self._safe_float(self.accumulate_window_ms, 100.0),
+                "merge_price_tolerance": self._safe_float(self.merge_price_tolerance, 0.5),
+                "local_zone_width": self._safe_float(self.local_zone_width, 1.5),
+                "min_local_depth_usdt": self._safe_float(self.min_local_depth_usdt, 300000.0),
+                "min_book_updates_after_cutoff": self._safe_int(self.min_book_updates_after_cutoff, 2),
+                "max_wait_ms": self._safe_float(self.max_wait_ms, 700.0),
+                "max_price_deviation": self._safe_float(self.max_price_deviation, 2.0),
+                "min_hidden_notional_usdt": self._safe_float(getattr(detector, "min_hidden_notional", 1000000.0), 1000000.0),
+                "min_absorption_rate": self._safe_float(getattr(detector, "min_absorption_rate", 0.7), 0.7),
+            },
+            "session": session,
+            "timezone": session.get("timezone"),
+            "local_time": session.get("local_time"),
+            "session_tag": session.get("session_tag"),
+            "is_weekend": session.get("is_weekend"),
         }
 
     @staticmethod

@@ -55,6 +55,21 @@ def _str_config(name: str, default: str) -> str:
     return str(value)
 
 
+def _int_list_config(name: str, default: list[int]) -> list[int]:
+    value = _raw_value(name, ",".join(str(v) for v in default))
+    if isinstance(value, (list, tuple)):
+        raw_parts = value
+    else:
+        raw_parts = str(value).split(",")
+    result: list[int] = []
+    for part in raw_parts:
+        try:
+            result.append(int(str(part).strip()))
+        except (TypeError, ValueError):
+            continue
+    return result or list(default)
+
+
 V62_LOG_PROFILE = _str_config(
     "V62_LOG_PROFILE",
     "RESEARCH_DETAILED",
@@ -354,3 +369,23 @@ A1_REACTION_EVENT_RECORDER_JSONL_PATH = _str_config(
 A1_REACTION_EVENT_RECORDER_MAX_RECENT_EVENTS = _int_config("A1_REACTION_EVENT_RECORDER_MAX_RECENT_EVENTS", 5000)
 
 V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED = _bool_config("V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED", _log_default_for_profile(True, True, False))
+
+
+PHASE1_TRUTH_SHADOW_ENABLED = _bool_config("PHASE1_TRUTH_SHADOW_ENABLED", True)
+PHASE1_CANDIDATE_RECORDER_ENABLED = _bool_config("PHASE1_CANDIDATE_RECORDER_ENABLED", True)
+PHASE1_CANDIDATE_RECORDER_WRITE_JSONL = _bool_config("PHASE1_CANDIDATE_RECORDER_WRITE_JSONL", True)
+PHASE1_CANDIDATE_RECORDER_JSONL_PATH = _str_config(
+    "PHASE1_CANDIDATE_RECORDER_JSONL_PATH",
+    "logs/research/phase1_candidates.jsonl",
+)
+PHASE1_TRUTH_POST_WINDOWS_SEC = _int_list_config("PHASE1_TRUTH_POST_WINDOWS_SEC", [1, 5, 30, 120])
+PHASE1_TRUTH_MAX_ACTIVE_OBSERVATIONS = _int_config("PHASE1_TRUTH_MAX_ACTIVE_OBSERVATIONS", 500)
+PHASE1_TRUTH_FINALIZE_AFTER_SEC = _float_config("PHASE1_TRUTH_FINALIZE_AFTER_SEC", 120.0)
+
+A1_DYNAMIC_PARAM_PREVIEW_ENABLED = _bool_config("A1_DYNAMIC_PARAM_PREVIEW_ENABLED", True)
+A1_DYNAMIC_PARAM_PREVIEW_JSON_PATH = _str_config(
+    "A1_DYNAMIC_PARAM_PREVIEW_JSON_PATH",
+    "runtime_state/a1_dynamic_params.json",
+)
+A1_DYNAMIC_PARAM_PREVIEW_INTERVAL_SEC = _float_config("A1_DYNAMIC_PARAM_PREVIEW_INTERVAL_SEC", 300.0)
+A1_DYNAMIC_PARAM_MODE = _str_config("A1_DYNAMIC_PARAM_MODE", "preview_only")
