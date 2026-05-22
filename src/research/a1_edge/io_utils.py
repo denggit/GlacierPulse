@@ -17,6 +17,8 @@ KLINE_FIELDS = ["timestamp", "open", "high", "low", "close", "volume"]
 TIMESTAMP_ALIASES = ("timestamp", "ts", "datetime", "time")
 TIMESTAMP_EPOCH_SEC_ALIASES = ("timestamp_epoch_sec", "timestamp_sec", "epoch_sec")
 TIMESTAMP_MS_ALIASES = ("timestamp_ms", "ts_ms")
+MS_EPOCH_THRESHOLD = 10_000_000_000
+MIN_REASONABLE_KLINE_EPOCH_SEC = 1_500_000_000
 KLINE_ALIASES = {
     "open": ("open",),
     "high": ("high",),
@@ -105,6 +107,22 @@ def _is_present(value: Any) -> bool:
     return value is not None and value != ""
 
 
+def _parse_numeric(value: Any) -> float | None:
+    if not _is_present(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_okx_ts_ms_to_epoch_sec(ts_ms: Any) -> float:
+    ts = float(ts_ms)
+    if ts > MS_EPOCH_THRESHOLD:
+        return ts / 1000.0
+    return ts
+
+
 def parse_kline_timestamp(value: Any, kline_timezone: str | None = "Asia/Shanghai") -> float:
     if value is None or value == "":
         return 0.0
@@ -134,13 +152,40 @@ def parse_kline_timestamp(value: Any, kline_timezone: str | None = "Asia/Shangha
 
 def _parse_row_timestamp(row: Mapping[str, Any], columns: Sequence[str], kline_timezone: str | None) -> float:
     epoch_col = _find_optional_column(columns, TIMESTAMP_EPOCH_SEC_ALIASES)
-    if epoch_col and _is_present(row.get(epoch_col)):
-        return float(row.get(epoch_col))
     ms_col = _find_optional_column(columns, TIMESTAMP_MS_ALIASES)
-    if ms_col and _is_present(row.get(ms_col)):
-        return float(row.get(ms_col)) / 1000.0
-    ts_col = _find_column(columns, TIMESTAMP_ALIASES, "timestamp")
-    return parse_kline_timestamp(row.get(ts_col), kline_timezone=kline_timezone)
+    ms_value = _parse_numeric(row.get(ms_col)) if ms_col else None
+    if ms_value is not None and ms_value > MS_EPOCH_THRESHOLD:
+        return ms_value / 1000.0
+
+    if epoch_col and _is_present(row.get(epoch_col)):
+        ts = float(row.get(epoch_col))
+        if MIN_REASONABLE_KLINE_EPOCH_SEC <= ts < MS_EPOCH_THRESHOLD:
+            return ts
+        if 1_000_000 < ts < 10_000_000 and ms_value is not None and ms_value > MS_EPOCH_THRESHOLD:
+            return ms_value / 1000.0
+        if ts > MS_EPOCH_THRESHOLD:
+            return ts / 1000.0
+
+    ts_col = _find_optional_column(columns, TIMESTAMP_ALIASES)
+    ts = parse_kline_timestamp(row.get(ts_col), kline_timezone=kline_timezone) if ts_col else 0.0
+    if ts <= 0:
+        utc_col = _find_optional_column(columns, ("timestamp_utc",))
+        ts = parse_kline_timestamp(row.get(utc_col), kline_timezone="UTC") if utc_col else 0.0
+    if ts <= 0:
+        local_col = _find_optional_column(columns, ("timestamp_local",))
+        ts = parse_kline_timestamp(row.get(local_col), kline_timezone=kline_timezone) if local_col else 0.0
+    if ts < MIN_REASONABLE_KLINE_EPOCH_SEC:
+        if epoch_col and _is_present(row.get(epoch_col)):
+            raise ValueError(
+                "Kline timestamp_epoch_sec looks too small, possible ms/sec double conversion. "
+                "Regenerate the CSV or include a valid timestamp_ms/timestamp_utc column."
+            )
+        if ms_value is not None:
+            raise ValueError("Kline timestamp_ms looks too small for milliseconds and no valid timestamp string was available.")
+        raise ValueError(
+            "Kline timestamp looks too small, possible ms/sec double conversion or invalid timezone source."
+        )
+    return ts
 
 
 def normalize_klines(rows: Iterable[Mapping[str, Any]], kline_timezone: str | None = "Asia/Shanghai") -> List[Dict[str, float]]:

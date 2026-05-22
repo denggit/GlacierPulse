@@ -64,7 +64,7 @@ def test_no_overlap_cli_emits_time_warning(tmp_path):
         writer = csv.writer(f)
         writer.writerow(["timestamp_epoch_sec", "timestamp", "open", "high", "low", "close", "volume"])
         for i in range(5):
-            writer.writerow([i * 60, "1970-01-01 00:00:00", 100, 101, 99, 100, 1])
+            writer.writerow([1779300000 + i * 60, "2026-05-21 02:00:00", 100, 101, 99, 100, 1])
     out = tmp_path / "out"
     result = subprocess.run(
         [

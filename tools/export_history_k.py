@@ -75,6 +75,24 @@ def _isoformat_series(values: pd.Series) -> list[str]:
     return [ts.isoformat() for ts in values]
 
 
+def normalize_okx_ts_ms_to_epoch_sec(ts_ms):
+    ts = float(ts_ms)
+    if ts > 10_000_000_000:
+        return ts / 1000.0
+    return ts
+
+
+def _timestamp_ms_from_local_timestamp(values: pd.Series, timezone_name: str) -> tuple[pd.Series, pd.Series]:
+    parsed = pd.to_datetime(values, errors="raise")
+    if parsed.dt.tz is None:
+        local_ts = parsed.dt.tz_localize(timezone_name)
+    else:
+        local_ts = parsed.dt.tz_convert(timezone_name)
+    utc_ts = local_ts.dt.tz_convert("UTC")
+    timestamp_ms = (utc_ts.astype("int64") // 1_000_000).astype("int64")
+    return timestamp_ms, utc_ts
+
+
 def prepare_export_dataframe(df: pd.DataFrame, timezone_name: str = DEFAULT_TIMEZONE) -> pd.DataFrame:
     ZoneInfo(timezone_name)
     if df.empty:
@@ -88,24 +106,29 @@ def prepare_export_dataframe(df: pd.DataFrame, timezone_name: str = DEFAULT_TIME
 
     if "timestamp_ms" in out.columns:
         timestamp_ms = pd.to_numeric(out["timestamp_ms"], errors="raise").astype("int64")
-        utc_ts = pd.to_datetime(timestamp_ms, unit="ms", utc=True)
+        if (timestamp_ms < 10_000_000_000).any() and "timestamp_epoch_sec" in out.columns:
+            epoch_sec = pd.to_numeric(out["timestamp_epoch_sec"], errors="raise")
+            if (epoch_sec >= 1_500_000_000).all():
+                timestamp_ms = (epoch_sec.astype("float64") * 1000).round().astype("int64")
+        if (timestamp_ms < 10_000_000_000).any():
+            timestamp_ms, utc_ts = _timestamp_ms_from_local_timestamp(out["timestamp"], timezone_name)
+        else:
+            utc_ts = pd.to_datetime(timestamp_ms, unit="ms", utc=True)
+        out["timestamp_ms"] = timestamp_ms
     elif "ts_ms" in out.columns:
         timestamp_ms = pd.to_numeric(out["ts_ms"], errors="raise").astype("int64")
-        utc_ts = pd.to_datetime(timestamp_ms, unit="ms", utc=True)
+        if (timestamp_ms < 10_000_000_000).any():
+            timestamp_ms, utc_ts = _timestamp_ms_from_local_timestamp(out["timestamp"], timezone_name)
+        else:
+            utc_ts = pd.to_datetime(timestamp_ms, unit="ms", utc=True)
         out["timestamp_ms"] = timestamp_ms
     else:
-        parsed = pd.to_datetime(out["timestamp"], errors="raise")
-        if parsed.dt.tz is None:
-            local_ts = parsed.dt.tz_localize(timezone_name)
-        else:
-            local_ts = parsed.dt.tz_convert(timezone_name)
-        utc_ts = local_ts.dt.tz_convert("UTC")
-        timestamp_ms = (utc_ts.astype("int64") // 1_000_000).astype("int64")
+        timestamp_ms, utc_ts = _timestamp_ms_from_local_timestamp(out["timestamp"], timezone_name)
         out["timestamp_ms"] = timestamp_ms
 
     local_ts = utc_ts.dt.tz_convert(timezone_name)
     out["timestamp"] = local_ts.dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
-    out["timestamp_epoch_sec"] = out["timestamp_ms"].astype("float64") / 1000.0
+    out["timestamp_epoch_sec"] = [normalize_okx_ts_ms_to_epoch_sec(value) for value in out["timestamp_ms"]]
     out["timestamp_utc"] = _isoformat_series(utc_ts)
     out["timestamp_local"] = _isoformat_series(local_ts)
     out["timezone"] = timezone_name

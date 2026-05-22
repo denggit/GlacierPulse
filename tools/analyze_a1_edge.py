@@ -113,13 +113,20 @@ def _print_time_diagnostics(data_quality: dict[str, Any], kline_timezone: str) -
     kline_max = float(data_quality.get("kline_max_ts", 0.0))
     event_min = float(data_quality.get("event_min_ts", 0.0))
     event_max = float(data_quality.get("event_max_ts", 0.0))
-    overlap = max(0.0, min(kline_max, event_max) - max(kline_min, event_min)) if event_min and kline_min else 0.0
+    overlap = 0.0
+    if event_min and kline_min and kline_max >= event_min and event_max >= kline_min:
+        overlap = max(1.0, min(kline_max, event_max) - max(kline_min, event_min))
     print(f"[A1-EDGE-TIME] kline_timezone={kline_timezone}")
     print(f"[A1-EDGE-TIME] kline_min_ts={kline_min} kline_min_local={_local_time(kline_min, kline_timezone)}")
     print(f"[A1-EDGE-TIME] kline_max_ts={kline_max} kline_max_local={_local_time(kline_max, kline_timezone)}")
     print(f"[A1-EDGE-TIME] event_min_ts={event_min} event_min_local={_local_time(event_min, kline_timezone)}")
     print(f"[A1-EDGE-TIME] event_max_ts={event_max} event_max_local={_local_time(event_max, kline_timezone)}")
     print(f"[A1-EDGE-TIME] overlap_sec={overlap}")
+    if kline_min and kline_min < 1_500_000_000:
+        print("[A1-EDGE-TIME-ERROR] kline timestamps look too small, possible ms/sec double conversion")
+    outside = int(data_quality.get("events_outside_kline_range", 0) or 0)
+    if outside > 0:
+        print(f"[A1-EDGE-TIME-WARN] events_outside_kline_range={outside}")
     if event_min and kline_min and overlap <= 0:
         print("[A1-EDGE-TIME-WARN] no overlap between event timestamps and kline timestamps")
 
