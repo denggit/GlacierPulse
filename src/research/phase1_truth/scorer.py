@@ -96,7 +96,7 @@ class IcebergTruthScorer:
             score += 8
         direction = c.s("direction")
         settle = c.f("settle_price") or c.f("trigger_price")
-        if coverage.get("has_5s_trade_window"):
+        if coverage.get("has_5s_trade_data"):
             if direction == "BUY":
                 post_attack_extension = max(0.0, settle - c.f("post_5s_min_price"))
             else:
@@ -150,13 +150,15 @@ class IcebergTruthScorer:
             return 0.0
         score = 0.0
         sweep = c.b("has_sweep") or c.b("seen_sweep") or c.f("time_outside_zone") > 0
+        if not sweep:
+            return 0.0
         reclaim = c.f("reclaim_time_sec", -1.0)
         if sweep and 0 <= reclaim <= 10:
             score += 8
         elif sweep and 0 <= reclaim <= 30:
             score += 5
         outside_30 = c.f("time_outside_zone_30s")
-        if coverage.get("has_30s_trade_window") and outside_30 <= 7.5:
+        if coverage.get("observed_through_30s") and outside_30 <= 7.5:
             score += 3
         direction = c.s("direction")
         if 0 <= reclaim and not self._continued_extreme_after_reclaim(c, direction):
@@ -180,16 +182,24 @@ class IcebergTruthScorer:
             attack_30s = c.f("post_30s_cvd_delta") > 0
             no_follow_5s = ((c.f("post_5s_max_price") or settle) - settle) <= width
             no_follow_30s = ((c.f("post_30s_max_price") or settle) - settle) <= width
-        if attack_5s and no_follow_5s:
+        if coverage.get("has_5s_trade_data") and attack_5s and no_follow_5s:
             score += 4
-        if attack_30s and (no_follow_30s or self._inside_zone(c, c.f("post_last_price") or settle)):
+        has_30s_price = c.f("post_30s_min_price") > 0 and c.f("post_30s_max_price") > 0
+        if (
+            coverage.get("has_30s_trade_data")
+            and (coverage.get("observed_through_30s") or has_30s_price)
+            and attack_30s
+            and (no_follow_30s or self._inside_zone(c, c.f("post_last_price") or settle))
+        ):
             score += 6
         if c.b("cvd_extreme_price_not_extreme"):
             score = 10
         return min(10.0, score)
 
     def _non_acceptance(self, c: "_Merged", coverage: Mapping[str, bool]) -> float:
-        if not (coverage.get("has_120s_observation") or coverage.get("has_30s_trade_window")):
+        if not coverage.get("has_post_price_data"):
+            return 0.0
+        if not (coverage.get("observed_through_120s") or coverage.get("observed_through_30s")):
             return 0.0
         score = 0.0
         if self._inside_or_favorable(c, c.f("post_60s_last_price") or c.f("post_last_price")):
@@ -222,20 +232,25 @@ class IcebergTruthScorer:
 
     def _coverage(self, c: "_Merged") -> dict[str, bool]:
         has_any_post_trade = c.i("post_trade_count") > 0
-        has_5s_trade_window = (
+        has_5s_trade_data = c.b("has_5s_trade_data") or (
             c.f("post_5s_min_price") > 0
             and c.f("post_5s_max_price") > 0
         ) or (has_any_post_trade and self._has_checkpoint(c, 5))
-        has_30s_trade_window = (
+        has_30s_trade_data = c.b("has_30s_trade_data") or (
             c.f("post_30s_min_price") > 0
             and c.f("post_30s_max_price") > 0
         ) or self._has_checkpoint(c, 30)
-        has_120s_observation = (
-            c.s("finalize_reason") == "FINALIZE_AFTER_SEC"
+        observed_through_5s = c.b("observed_through_5s") or c.f("observation_age_sec") >= 5 or self._has_checkpoint(c, 5)
+        observed_through_30s = c.b("observed_through_30s") or c.f("observation_age_sec") >= 30 or self._has_checkpoint(c, 30)
+        observed_through_120s = (
+            c.b("observed_through_120s")
+            or c.b("has_120s_observation")
+            or c.f("observation_age_sec") >= 120
             or self._has_checkpoint(c, 120)
-            or (has_any_post_trade and c.f("observation_age_sec") >= 120)
         )
         has_book_recovery_data = (
+            c.b("has_book_recovery_data")
+            or
             c.f("local_depth_last") > 0
             or c.f("local_depth_max") > 0
             or c.f("depth_recovery_ratio_1s") > 0
@@ -250,14 +265,25 @@ class IcebergTruthScorer:
             and c.f("post_min_price") > 0
             and c.f("post_max_price") > 0
         )
+        has_post_price_data = (
+            c.f("post_last_price") > 0
+            or c.f("post_min_price") > 0
+            or c.f("post_max_price") > 0
+        )
         return {
             "has_any_post_trade": has_any_post_trade,
-            "has_5s_trade_window": has_5s_trade_window,
-            "has_30s_trade_window": has_30s_trade_window,
-            "has_120s_observation": has_120s_observation,
+            "has_5s_trade_data": has_5s_trade_data,
+            "has_30s_trade_data": has_30s_trade_data,
+            "observed_through_5s": observed_through_5s,
+            "observed_through_30s": observed_through_30s,
+            "observed_through_120s": observed_through_120s,
             "has_book_recovery_data": has_book_recovery_data,
             "has_cvd_data": has_cvd_data,
             "has_sweep_data": has_sweep_data,
+            "has_post_price_data": has_post_price_data,
+            "has_5s_trade_window": has_5s_trade_data,
+            "has_30s_trade_window": has_30s_trade_data,
+            "has_120s_observation": observed_through_120s,
         }
 
     @staticmethod
@@ -276,13 +302,23 @@ class IcebergTruthScorer:
         warnings: list[str] = []
         if not coverage.get("has_any_post_trade"):
             warnings.append("insufficient_post_trade_data")
+        if not coverage.get("has_5s_trade_data"):
+            warnings.append("insufficient_5s_trade_data")
+        if not coverage.get("has_30s_trade_data"):
+            warnings.append("insufficient_30s_trade_data")
+        if not coverage.get("observed_through_30s"):
+            warnings.append("insufficient_observed_through_30s")
+        if not coverage.get("observed_through_120s"):
+            warnings.append("insufficient_observed_through_120s")
         if not coverage.get("has_book_recovery_data"):
             warnings.append("insufficient_book_recovery_data")
         if not coverage.get("has_sweep_data"):
             warnings.append("insufficient_sweep_data")
         if not coverage.get("has_cvd_data"):
             warnings.append("insufficient_cvd_data")
-        if not (coverage.get("has_120s_observation") or coverage.get("has_30s_trade_window")):
+        if not coverage.get("has_post_price_data"):
+            warnings.append("insufficient_post_price_data")
+        if not (coverage.get("observed_through_120s") or coverage.get("observed_through_30s")):
             warnings.append("insufficient_non_acceptance_window")
         return warnings
 
@@ -293,9 +329,10 @@ class IcebergTruthScorer:
             and not coverage.get("has_book_recovery_data")
         )
         no_post_windows = (
-            not coverage.get("has_5s_trade_window")
-            and not coverage.get("has_30s_trade_window")
-            and not coverage.get("has_120s_observation")
+            not coverage.get("has_5s_trade_data")
+            and not coverage.get("has_30s_trade_data")
+            and not coverage.get("observed_through_30s")
+            and not coverage.get("observed_through_120s")
         )
         return severe_missing or no_post_windows
 

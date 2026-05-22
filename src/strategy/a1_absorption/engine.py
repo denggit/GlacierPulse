@@ -916,6 +916,7 @@ class A1AbsorptionEngine:
             "active_size": active_size,
             "trade_count": self._safe_int(event.get("trade_count"), 0),
             "active_side_ratio": active_side_ratio,
+            "active_side_ratio_source": "constructed_same_side_pending_event",
             "min_trade_price": min_trade_price,
             "max_trade_price": max_trade_price,
             "start_thickness_usdt": start_thickness,

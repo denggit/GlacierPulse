@@ -173,9 +173,20 @@ class Phase1TruthAnalyzer:
     def parameter_score_label(self, row: Mapping[str, Any]) -> str:
         if safe_float(row.get("selected_count")) < self.min_sample:
             return "INSUFFICIENT_SAMPLE"
-        if safe_float(row.get("pct_truth_ge_80")) >= 0.35 and safe_float(row.get("avg_truth_score")) >= 65:
+        insufficient_ratio = safe_float(row.get("selected_insufficient_post_data_ratio"))
+        if insufficient_ratio > 0.40:
+            return "INSUFFICIENT_COVERAGE"
+        if (
+            safe_float(row.get("pct_truth_ge_80")) >= 0.35
+            and safe_float(row.get("avg_truth_score")) >= 65
+            and insufficient_ratio <= 0.25
+        ):
             return "HIGH_QUALITY_PARAM_SET"
-        if safe_float(row.get("pct_truth_ge_65")) >= 0.50 and safe_float(row.get("avg_truth_score")) >= 60:
+        if (
+            safe_float(row.get("pct_truth_ge_65")) >= 0.50
+            and safe_float(row.get("avg_truth_score")) >= 60
+            and insufficient_ratio <= 0.40
+        ):
             return "PROMISING_PARAM_SET"
         return "WEAK_PARAM_SET"
 
@@ -249,12 +260,18 @@ def normalize_record(record: Mapping[str, Any]) -> dict[str, Any]:
     coverage = row.get("post_data_coverage")
     if isinstance(coverage, Mapping):
         row["post_has_any_post_trade"] = bool(coverage.get("has_any_post_trade"))
-        row["post_has_5s_trade_window"] = bool(coverage.get("has_5s_trade_window"))
-        row["post_has_30s_trade_window"] = bool(coverage.get("has_30s_trade_window"))
-        row["post_has_120s_observation"] = bool(coverage.get("has_120s_observation"))
+        row["post_has_5s_trade_data"] = bool(coverage.get("has_5s_trade_data", coverage.get("has_5s_trade_window")))
+        row["post_has_30s_trade_data"] = bool(coverage.get("has_30s_trade_data", coverage.get("has_30s_trade_window")))
+        row["post_observed_through_5s"] = bool(coverage.get("observed_through_5s"))
+        row["post_observed_through_30s"] = bool(coverage.get("observed_through_30s"))
+        row["post_observed_through_120s"] = bool(coverage.get("observed_through_120s", coverage.get("has_120s_observation")))
+        row["post_has_5s_trade_window"] = bool(coverage.get("has_5s_trade_window", coverage.get("has_5s_trade_data")))
+        row["post_has_30s_trade_window"] = bool(coverage.get("has_30s_trade_window", coverage.get("has_30s_trade_data")))
+        row["post_has_120s_observation"] = bool(coverage.get("has_120s_observation", coverage.get("observed_through_120s")))
         row["post_has_book_recovery_data"] = bool(coverage.get("has_book_recovery_data"))
         row["post_has_cvd_data"] = bool(coverage.get("has_cvd_data"))
         row["post_has_sweep_data"] = bool(coverage.get("has_sweep_data"))
+        row["post_has_post_price_data"] = bool(coverage.get("has_post_price_data"))
     return row
 
 
@@ -341,9 +358,11 @@ def candidate_fields(records: list[Mapping[str, Any]]) -> list[str]:
         "behavior", "quality", "cancel_reason", "trigger_ts", "settle_ts", "wait_ms",
         "trigger_price", "settle_price", "zone_lower", "zone_upper", "active_notional",
         "hidden_volume", "absorption_rate", "truth_score_total", "truth_label",
-        "post_has_any_post_trade", "post_has_5s_trade_window", "post_has_30s_trade_window",
-        "post_has_120s_observation", "post_has_book_recovery_data", "post_has_cvd_data",
-        "post_has_sweep_data",
+        "post_has_any_post_trade", "post_has_5s_trade_data", "post_has_30s_trade_data",
+        "post_observed_through_5s", "post_observed_through_30s", "post_observed_through_120s",
+        "post_has_book_recovery_data", "post_has_cvd_data", "post_has_sweep_data",
+        "post_has_post_price_data", "post_has_5s_trade_window", "post_has_30s_trade_window",
+        "post_has_120s_observation",
         "session_tag", "is_weekend",
     ]
     extras = sorted({k for r in records for k in r.keys() if isinstance(k, str) and k not in base and not isinstance(r.get(k), (dict, list))})

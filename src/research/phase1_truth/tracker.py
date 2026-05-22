@@ -235,10 +235,9 @@ class Phase1TruthTracker:
 
     def _capture_checkpoints(self, obs: Phase1Observation, age: float) -> None:
         for window in self.post_windows_sec:
-            if age <= window and window not in obs.checkpoints:
-                obs.checkpoints[window] = {}
-            if age <= window:
+            if age >= window and window not in obs.checkpoints:
                 obs.checkpoints[window] = {
+                    "captured_at_age_sec": age,
                     "last_price": obs.post_last_price,
                     "cvd_delta": obs.post_cvd_delta,
                     "min_price": obs.post_min_price,
@@ -288,7 +287,7 @@ class Phase1TruthTracker:
     def _post_features(self, obs: Phase1Observation, reason: str) -> Dict[str, Any]:
         last_observed_ts = max(obs._last_trade_ts, obs._last_book_ts)
         observation_age_sec = max(0.0, last_observed_ts - obs.settle_ts) if last_observed_ts > 0 else 0.0
-        if last_observed_ts > 0 and reason == "finalize_after_sec":
+        if reason == "finalize_after_sec":
             observation_age_sec = max(observation_age_sec, self.finalize_after_sec)
         has_any_post_trade = obs.post_trade_count > 0
         has_book_recovery_data = (
@@ -298,27 +297,30 @@ class Phase1TruthTracker:
             or obs.depth_recovery_ratio_5s > 0
             or obs.depth_recovery_ratio_30s > 0
         )
-        has_5s_trade_window = (
+        has_5s_trade_data = (
             obs.post_5s_min_price > 0
             and obs.post_5s_max_price > 0
         ) or (has_any_post_trade and _has_checkpoint(obs.checkpoints, 5))
-        has_30s_trade_window = (
+        has_30s_trade_data = (
             obs.post_30s_min_price > 0
             and obs.post_30s_max_price > 0
         ) or _has_checkpoint(obs.checkpoints, 30)
-        has_120s_observation = (
-            reason == "finalize_after_sec"
-            or _has_checkpoint(obs.checkpoints, 120)
-            or (has_any_post_trade and observation_age_sec >= 120)
-        )
+        observed_through_5s = observation_age_sec >= 5 or _has_checkpoint(obs.checkpoints, 5)
+        observed_through_30s = observation_age_sec >= 30 or _has_checkpoint(obs.checkpoints, 30)
+        observed_through_120s = observation_age_sec >= 120 or _has_checkpoint(obs.checkpoints, 120)
         return {
             "finalize_reason": reason,
             "observation_age_sec": round(observation_age_sec, 6),
             "has_any_post_trade": has_any_post_trade,
             "has_book_recovery_data": has_book_recovery_data,
-            "has_5s_trade_window": has_5s_trade_window,
-            "has_30s_trade_window": has_30s_trade_window,
-            "has_120s_observation": has_120s_observation,
+            "has_5s_trade_data": has_5s_trade_data,
+            "has_30s_trade_data": has_30s_trade_data,
+            "observed_through_5s": observed_through_5s,
+            "observed_through_30s": observed_through_30s,
+            "observed_through_120s": observed_through_120s,
+            "has_5s_trade_window": has_5s_trade_data,
+            "has_30s_trade_window": has_30s_trade_data,
+            "has_120s_observation": observed_through_120s,
             "post_trade_count": obs.post_trade_count,
             "post_total_notional": round(obs.post_total_notional, 6),
             "post_buy_notional": round(obs.post_buy_notional, 6),

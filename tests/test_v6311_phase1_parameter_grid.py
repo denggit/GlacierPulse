@@ -34,12 +34,18 @@ def _record(
             "truth_label": label,
             "post_data_coverage": {
                 "has_any_post_trade": label != "INSUFFICIENT_POST_DATA",
+                "has_5s_trade_data": label != "INSUFFICIENT_POST_DATA",
+                "has_30s_trade_data": label != "INSUFFICIENT_POST_DATA",
+                "observed_through_5s": label != "INSUFFICIENT_POST_DATA",
+                "observed_through_30s": label != "INSUFFICIENT_POST_DATA",
+                "observed_through_120s": label != "INSUFFICIENT_POST_DATA",
                 "has_5s_trade_window": label != "INSUFFICIENT_POST_DATA",
                 "has_30s_trade_window": label != "INSUFFICIENT_POST_DATA",
                 "has_120s_observation": label != "INSUFFICIENT_POST_DATA",
                 "has_book_recovery_data": label != "INSUFFICIENT_POST_DATA",
                 "has_cvd_data": label != "INSUFFICIENT_POST_DATA",
                 "has_sweep_data": label != "INSUFFICIENT_POST_DATA",
+                "has_post_price_data": label != "INSUFFICIENT_POST_DATA",
             },
         },
     }
@@ -108,3 +114,31 @@ def test_parameter_grid_outputs_insufficient_post_data_ratio(tmp_path):
     assert "selected_insufficient_post_data_count" in rows[0]
     assert "selected_insufficient_post_data_ratio" in rows[0]
     assert any(float(row["selected_insufficient_post_data_ratio"]) > 0 for row in rows)
+
+
+def test_parameter_grid_insufficient_coverage_label():
+    analyzer = Phase1TruthAnalyzer(min_sample=30)
+    label = analyzer.parameter_score_label(
+        {
+            "selected_count": 40,
+            "selected_insufficient_post_data_ratio": 0.45,
+            "pct_truth_ge_80": 0.90,
+            "pct_truth_ge_65": 0.90,
+            "avg_truth_score": 90,
+        }
+    )
+    assert label == "INSUFFICIENT_COVERAGE"
+
+
+def test_high_quality_param_set_requires_low_insufficient_ratio():
+    analyzer = Phase1TruthAnalyzer(min_sample=30)
+    label = analyzer.parameter_score_label(
+        {
+            "selected_count": 40,
+            "selected_insufficient_post_data_ratio": 0.30,
+            "pct_truth_ge_80": 0.90,
+            "pct_truth_ge_65": 0.90,
+            "avg_truth_score": 90,
+        }
+    )
+    assert label != "HIGH_QUALITY_PARAM_SET"

@@ -77,6 +77,33 @@ def test_tracker_finalizes_after_120s_window(tmp_path):
     assert "has_120s_observation" in rows[-1]["post_features"]
 
 
+def test_checkpoints_are_not_created_before_window_age(tmp_path):
+    tracker = Phase1TruthTracker(
+        recorder=Phase1CandidateRecorder(jsonl_path=str(tmp_path / "phase1_candidates.jsonl")),
+        post_windows_sec=[1, 5, 30, 120],
+    )
+    tracker.register_candidate_settlement(_candidate(ts=100))
+    tracker.on_trade({"ts": 100.5, "recv_ts": 100.5, "price": 100.1, "size": 1, "side": "buy"})
+    obs = tracker.active_observations["e1"]
+    assert 1 not in obs.checkpoints
+    assert 5 not in obs.checkpoints
+    assert 30 not in obs.checkpoints
+    assert 120 not in obs.checkpoints
+
+
+def test_checkpoint_created_only_after_window_crossed(tmp_path):
+    tracker = Phase1TruthTracker(
+        recorder=Phase1CandidateRecorder(jsonl_path=str(tmp_path / "phase1_candidates.jsonl")),
+        post_windows_sec=[1, 5, 30, 120],
+    )
+    tracker.register_candidate_settlement(_candidate(ts=100))
+    tracker.on_trade({"ts": 105.1, "recv_ts": 105.1, "price": 100.1, "size": 1, "side": "buy"})
+    obs = tracker.active_observations["e1"]
+    assert 5 in obs.checkpoints
+    assert 30 not in obs.checkpoints
+    assert 120 not in obs.checkpoints
+
+
 def test_tracker_capacity_guard_does_not_crash(tmp_path):
     path = tmp_path / "phase1_candidates.jsonl"
     tracker = Phase1TruthTracker(

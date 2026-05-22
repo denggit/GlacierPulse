@@ -110,6 +110,77 @@ def test_valid_post_data_can_score_high():
     assert result["truth_label"] == "HIGH_CONFIDENCE_ICEBERG"
 
 
+def test_no_sweep_does_not_get_sweep_reclaim_score():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            **_candidate("BUY")["post_features"],
+            "has_sweep": False,
+            "seen_sweep": False,
+            "time_outside_zone": 0,
+            "time_outside_zone_30s": 0,
+            "reclaim_time_sec": -1,
+            "observed_through_30s": True,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["sweep_reclaim_score"] == 0
+
+
+def test_non_acceptance_requires_post_price_data():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "observed_through_120s": True,
+            "accepted_beyond_zone": False,
+            "post_trade_count": 0,
+            "post_total_notional": 0,
+            "post_last_price": 0,
+            "post_min_price": 0,
+            "post_max_price": 0,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["non_acceptance_score"] == 0
+
+
+def test_non_acceptance_can_score_with_valid_120s_price_data():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "observed_through_120s": True,
+            "post_trade_count": 10,
+            "post_total_notional": 500_000,
+            "post_last_price": 100.2,
+            "post_min_price": 99.3,
+            "post_max_price": 100.4,
+            "accepted_beyond_zone": False,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["non_acceptance_score"] > 0
+
+
+def test_cvd_30s_score_requires_30s_observation():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 10,
+            "post_total_notional": 500_000,
+            "post_5s_min_price": 99.4,
+            "post_5s_max_price": 100.3,
+            "post_min_price": 99.4,
+            "post_max_price": 100.3,
+            "post_last_price": 100.1,
+            "post_5s_cvd_delta": -300_000,
+            "post_30s_cvd_delta": -600_000,
+            "observed_through_30s": False,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["cvd_divergence_score"] <= 4
+
+
 def test_strong_buy_iceberg_scores_high():
     result = IcebergTruthScorer().score(_candidate("BUY"))
     assert result["truth_score_total"] >= 80
