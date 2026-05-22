@@ -16,13 +16,16 @@ OUTPUTS = {
     "a1_hypothesis_summary.csv",
     "a1_best_hypothesis_by_group.csv",
     "a1_go_no_go_report.md",
+    "a1_run_metadata.json",
 }
+
+BASE_TS = 1_779_373_200
 
 
 def _write_klines(path):
     path.write_text(
         "timestamp,open,high,low,close,volume\n"
-        + "\n".join(f"{i * 60},{100+i},{102+i},{99+i},{101+i},1" for i in range(40))
+        + "\n".join(f"{BASE_TS + i * 60},{100+i},{102+i},{99+i},{101+i},1" for i in range(40))
         + "\n",
         encoding="utf-8",
     )
@@ -30,7 +33,7 @@ def _write_klines(path):
 
 def test_cli_generates_all_outputs_and_no_main_import(tmp_path):
     events = tmp_path / "events.jsonl"
-    events.write_text(json.dumps({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": 300, "last_price": 105, "frozen_low": 104, "frozen_high": 106}) + "\n", encoding="utf-8")
+    events.write_text(json.dumps({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": BASE_TS + 300, "last_price": 105, "frozen_low": 104, "frozen_high": 106}) + "\n", encoding="utf-8")
     klines = tmp_path / "k.csv"
     _write_klines(klines)
     out = tmp_path / "out"

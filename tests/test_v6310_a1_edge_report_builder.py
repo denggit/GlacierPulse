@@ -34,7 +34,7 @@ def test_go_partial_and_no_go_decisions(tmp_path):
     partial = _build(
         tmp_path / "partial",
         events,
-        [{"dimension": "a1_reaction_type", "edge_label": "VOLATILITY_EDGE", "a1_sample_count": 1}],
+        [{"dimension": "a1_reaction_type", "edge_label": "STRONG_DIRECTIONAL_EDGE", "a1_sample_count": 1}],
         [],
     )
     assert partial.decision == "A1_PARTIAL_GO"

@@ -2,16 +2,18 @@ from src.research.a1_edge.forward_metrics import A1ForwardMetricsAnalyzer
 from src.research.a1_edge.random_baseline import A1RandomBaselineComparator, RandomBaselineSampler
 from src.research.a1_edge.schema import A1EdgeEvent
 
+BASE_TS = 1_779_373_200
 
-def _klines(n=30):
+
+def _klines(n=30, base=BASE_TS):
     return [
-        {"timestamp": i * 60, "open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100 + i, "volume": 1}
+        {"timestamp": base + i * 60, "open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100 + i, "volume": 1}
         for i in range(n)
     ]
 
 
 def test_random_samples_seed_exclusion_and_summary():
-    event = A1EdgeEvent.from_mapping({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": 300, "last_price": 105, "frozen_low": 104, "frozen_high": 106})
+    event = A1EdgeEvent.from_mapping({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": BASE_TS + 300, "last_price": 105, "frozen_low": 104, "frozen_high": 106})
     sampler = RandomBaselineSampler(samples_per_event=3, random_seed=7, exclude_near_a1_minutes=2, windows_sec=[900])
     first = sampler.sample([event], _klines())
     second = RandomBaselineSampler(samples_per_event=3, random_seed=7, exclude_near_a1_minutes=2, windows_sec=[900]).sample([event], _klines())
@@ -28,14 +30,14 @@ def test_random_samples_seed_exclusion_and_summary():
 
 def test_random_baseline_uses_source_a1_risk_not_distant_zone_risk():
     klines = [
-        {"timestamp": 0, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
-        {"timestamp": 60, "open": 150, "high": 153, "low": 149, "close": 152, "volume": 1},
-        {"timestamp": 120, "open": 151, "high": 154, "low": 150, "close": 153, "volume": 1},
+        {"timestamp": BASE_TS, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
+        {"timestamp": BASE_TS + 60, "open": 150, "high": 153, "low": 149, "close": 152, "volume": 1},
+        {"timestamp": BASE_TS + 120, "open": 151, "high": 154, "low": 150, "close": 153, "volume": 1},
     ]
     event = A1EdgeEvent.from_mapping({
         "zone_id": "z1",
         "direction": "BUY",
-        "reaction_event_ts": 0,
+        "reaction_event_ts": BASE_TS,
         "last_price": 100,
         "frozen_low": 99,
         "frozen_high": 101,

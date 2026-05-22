@@ -2,20 +2,23 @@ from src.research.a1_edge.forward_metrics import A1ForwardMetricsAnalyzer, compu
 from src.research.a1_edge.schema import A1EdgeEvent
 
 
-def _klines():
+BASE_TS = 1_779_373_200
+
+
+def _klines(base=0):
     return [
-        {"timestamp": 0, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
-        {"timestamp": 60, "open": 100, "high": 103, "low": 99, "close": 102, "volume": 1},
-        {"timestamp": 120, "open": 102, "high": 104, "low": 98, "close": 99, "volume": 1},
+        {"timestamp": base, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
+        {"timestamp": base + 60, "open": 100, "high": 103, "low": 99, "close": 102, "volume": 1},
+        {"timestamp": base + 120, "open": 102, "high": 104, "low": 98, "close": 99, "volume": 1},
     ]
 
 
 def test_buy_sell_hits_partial_and_insufficient():
     analyzer = A1ForwardMetricsAnalyzer(windows_sec=[60, 300], min_risk_u=1)
-    buy = A1EdgeEvent.from_mapping({"zone_id": "b", "direction": "BUY", "reaction_event_ts": 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
-    sell = A1EdgeEvent.from_mapping({"zone_id": "s", "direction": "SELL", "reaction_event_ts": 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
-    late = A1EdgeEvent.from_mapping({"zone_id": "late", "direction": "BUY", "reaction_event_ts": 999, "last_price": 100})
-    rows = analyzer.analyze([buy, sell, late], _klines())
+    buy = A1EdgeEvent.from_mapping({"zone_id": "b", "direction": "BUY", "reaction_event_ts": BASE_TS + 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
+    sell = A1EdgeEvent.from_mapping({"zone_id": "s", "direction": "SELL", "reaction_event_ts": BASE_TS + 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
+    late = A1EdgeEvent.from_mapping({"zone_id": "late", "direction": "BUY", "reaction_event_ts": BASE_TS + 999, "last_price": 100})
+    rows = analyzer.analyze([buy, sell, late], _klines(BASE_TS))
     buy_60 = next(r for r in rows if r.zone_id == "b" and r.window_sec == 60)
     sell_60 = next(r for r in rows if r.zone_id == "s" and r.window_sec == 60)
     late_60 = next(r for r in rows if r.zone_id == "late")

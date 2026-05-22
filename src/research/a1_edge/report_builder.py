@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
@@ -19,6 +20,15 @@ def _avg(rows: Iterable[Mapping[str, Any]], field: str) -> float:
 def _rate(rows: Iterable[Mapping[str, Any]], field: str) -> float:
     data = list(rows)
     return sum(1 for row in data if parse_bool(row.get(field))) / len(data) if data else 0.0
+
+
+def _metric(row: Mapping[str, Any], primary: str, fallback: str = "", default: float = 0.0) -> float:
+    value = row.get(primary)
+    if value not in (None, ""):
+        return parse_float(value)
+    if fallback:
+        return parse_float(row.get(fallback), default)
+    return default
 
 
 class A1EdgeReportBuilder:
@@ -45,9 +55,9 @@ class A1EdgeReportBuilder:
         if total_events < self.min_total_events or total_random < total_events * 5:
             return "INSUFFICIENT_SAMPLE"
         overall = next((r for r in random_summary if r.get("dimension") == "ALL"), {})
-        overall_edge = overall.get("edge_label") in {"STRONG_DIRECTIONAL_EDGE", "VOLATILITY_EDGE"}
+        overall_edge = overall.get("edge_label") == "STRONG_DIRECTIONAL_EDGE"
         subgroup_edge = any(
-            r.get("edge_label") in {"STRONG_DIRECTIONAL_EDGE", "VOLATILITY_EDGE"}
+            r.get("edge_label") == "STRONG_DIRECTIONAL_EDGE"
             and parse_int(r.get("a1_sample_count")) >= self.min_group_sample_size
             for r in random_summary
             if r.get("dimension") != "ALL"
@@ -76,6 +86,15 @@ class A1EdgeReportBuilder:
 
     def build_from_dir(self, out_dir: Path | str) -> A1EdgeReport:
         out = Path(out_dir)
+        metadata_path = out / "a1_run_metadata.json"
+        metadata = {}
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        fee_model = {
+            "fee_model": "roundtrip_notional_pct",
+            "roundtrip_fee_pct": parse_float(metadata.get("roundtrip_fee_pct"), 0.001),
+            "description": "Fee-aware net R subtracts entry_price * roundtrip_fee_pct from favorable movement.",
+        }
         return self.build(
             events=read_csv(out / "a1_edge_events.csv"),
             forward_metrics=read_csv(out / "a1_forward_metrics.csv"),
@@ -84,6 +103,8 @@ class A1EdgeReportBuilder:
             hypothesis_results=read_csv(out / "a1_hypothesis_results.csv"),
             hypothesis_summary=read_csv(out / "a1_hypothesis_summary.csv"),
             out_dir=out,
+            metadata=metadata,
+            fee_model=fee_model,
         )
 
     def build(
@@ -96,6 +117,8 @@ class A1EdgeReportBuilder:
         hypothesis_summary: Iterable[Mapping[str, Any]],
         out_dir: Path | str,
         data_quality: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        fee_model: Mapping[str, Any] | None = None,
     ) -> A1EdgeReport:
         event_rows = [dict(row) for row in events or []]
         forward_rows = [dict(row) for row in forward_metrics or []]
@@ -114,11 +137,27 @@ class A1EdgeReportBuilder:
             total_hypothesis_rows=len(hypothesis_rows),
             recommended_next_step=recommendation,
         )
-        summary = self._summary_json(report, event_rows, random_summary_rows, hypothesis_summary_rows, quality)
+        fee = dict(
+            fee_model
+            or {
+                "fee_model": "roundtrip_notional_pct",
+                "roundtrip_fee_pct": 0.001,
+                "description": "Fee-aware net R subtracts entry_price * roundtrip_fee_pct from favorable movement.",
+            }
+        )
+        summary = self._summary_json(
+            report,
+            event_rows,
+            random_summary_rows,
+            hypothesis_summary_rows,
+            quality,
+            metadata=metadata,
+            fee_model=fee,
+        )
         out = Path(out_dir)
         write_json(out / "a1_edge_summary.json", summary)
         (out / "a1_go_no_go_report.md").write_text(
-            self._markdown(report, event_rows, forward_rows, random_summary_rows, hypothesis_summary_rows, quality),
+            self._markdown(report, event_rows, forward_rows, random_summary_rows, hypothesis_summary_rows, quality, metadata, fee),
             encoding="utf-8",
         )
         return report
@@ -150,13 +189,29 @@ class A1EdgeReportBuilder:
         random_summary: List[Dict[str, Any]],
         hypothesis_summary: List[Dict[str, Any]],
         data_quality: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None = None,
+        fee_model: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         event_ts = [parse_float(row.get("event_ts")) for row in events if parse_float(row.get("event_ts")) > 0]
         return {
             **report.to_dict(),
             "total_events": len(events),
             "time_range": {"min_event_ts": min(event_ts) if event_ts else 0.0, "max_event_ts": max(event_ts) if event_ts else 0.0},
+            "metadata": dict(metadata or {}),
             "data_quality": dict(data_quality),
+            "fee_model": dict(fee_model or {}),
+            "fee_model_name": dict(fee_model or {}).get("fee_model", "roundtrip_notional_pct"),
+            "roundtrip_fee_pct": dict(fee_model or {}).get("roundtrip_fee_pct", 0.001),
+            "decision_basis": {
+                "uses_fee_aware_metrics": True,
+                "raw_metrics_are_diagnostic_only": True,
+                "primary_edge_fields": [
+                    "a1_avg_net_mfe_r_15m",
+                    "random_avg_net_mfe_r_15m",
+                    "a1_net_hit_1r_rate_15m",
+                    "random_net_hit_1r_rate_15m",
+                ],
+            },
             "symbols": sorted({str(row.get("symbol") or "") for row in events if row.get("symbol")}),
             "by_direction": dict(Counter(str(row.get("direction") or "UNKNOWN") for row in events)),
             "by_a1_reaction_type": dict(Counter(str(row.get("a1_reaction_type") or "UNKNOWN") for row in events)),
@@ -199,18 +254,41 @@ class A1EdgeReportBuilder:
         random_summary: List[Dict[str, Any]],
         hypothesis_summary: List[Dict[str, Any]],
         data_quality: Mapping[str, Any],
+        metadata: Mapping[str, Any] | None = None,
+        fee_model: Mapping[str, Any] | None = None,
     ) -> str:
         event_ts = [parse_float(row.get("event_ts")) for row in events if parse_float(row.get("event_ts")) > 0]
         symbols = ", ".join(sorted({str(row.get("symbol") or "") for row in events if row.get("symbol")})) or "UNKNOWN"
         overall_random = next((row for row in random_summary if row.get("dimension") == "ALL"), {})
-        best_groups = sorted(random_summary, key=lambda row: parse_float(row.get("mfe_edge_15m")), reverse=True)[:5]
-        worst_groups = sorted(random_summary, key=lambda row: parse_float(row.get("mfe_edge_15m")))[:5]
+        best_groups = sorted(random_summary, key=lambda row: _metric(row, "net_mfe_edge_15m", "mfe_edge_15m"), reverse=True)[:5]
+        worst_groups = sorted(random_summary, key=lambda row: _metric(row, "net_mfe_edge_15m", "mfe_edge_15m"))[:5]
         best_hyp = sorted(hypothesis_summary, key=lambda row: parse_float(row.get("avg_realized_r_proxy")), reverse=True)[:5]
         worst_hyp = sorted(hypothesis_summary, key=lambda row: parse_float(row.get("avg_realized_r_proxy")))[:5]
         buy_15 = [r for r in forward_metrics if r.get("direction") == "BUY" and parse_int(r.get("window_sec")) == 900]
         sell_15 = [r for r in forward_metrics if r.get("direction") == "SELL" and parse_int(r.get("window_sec")) == 900]
+        meta = dict(metadata or {})
+        fee = dict(fee_model or {})
+        events_hash = str(meta.get("events_file_sha256") or "")
+        klines_hash = str(meta.get("klines_file_sha256") or "")
+        git_commit = str(meta.get("git_commit") or "UNKNOWN")
+        analysis_params = dict(meta.get("analysis_parameters") or {})
+        roundtrip_fee_pct = fee.get("roundtrip_fee_pct", analysis_params.get("roundtrip_fee_pct", 0.001))
+        fee_model_name = fee.get("fee_model", "roundtrip_notional_pct")
         lines = [
-            "# V6.3.10 A1 Edge Validation Report",
+            "# V6.3.10.4 A1 Edge Validation Report",
+            "",
+            "## Reproducibility Metadata",
+            "",
+            f"- events_file_name: {meta.get('events_file_name', 'UNKNOWN')}",
+            f"- events_file_sha256: {events_hash[:12] if events_hash else 'UNKNOWN'}",
+            f"- events_file_line_count: {meta.get('events_file_line_count', 'UNKNOWN')}",
+            f"- klines_file_name: {meta.get('klines_file_name', 'UNKNOWN')}",
+            f"- klines_file_sha256: {klines_hash[:12] if klines_hash else 'UNKNOWN'}",
+            f"- klines_file_row_count: {meta.get('klines_file_row_count', 'UNKNOWN')}",
+            f"- git_commit: {git_commit[:12] if git_commit and git_commit != 'UNKNOWN' else 'UNKNOWN'}",
+            f"- kline_timezone: {analysis_params.get('kline_timezone', 'UNKNOWN')}",
+            f"- roundtrip_fee_pct: {roundtrip_fee_pct}",
+            f"- fee_model: {fee_model_name}",
             "",
             "## Run Summary",
             "",
@@ -220,6 +298,15 @@ class A1EdgeReportBuilder:
             f"- time range: {(min(event_ts) if event_ts else 0.0)} - {(max(event_ts) if event_ts else 0.0)}",
             f"- symbol: {symbols}",
             f"- sample sufficiency: {report.decision != 'INSUFFICIENT_SAMPLE'}",
+            f"- decision basis: fee-aware net R; raw metrics are diagnostic only",
+            "",
+            "## Fee Model",
+            "",
+            f"- roundtrip_fee_pct: {roundtrip_fee_pct}",
+            "- Raw +1R only means price moved one risk unit before fees.",
+            "- Net +1R requires price movement to exceed 1R plus fee_share_r.",
+            "- 裸 +1R 只是价格走了一个风险单位，不代表扣费后赚到 +1R。",
+            "- 净 +1R 必须覆盖 1R + 手续费折算成的 R。",
             "",
             "## Data Quality",
             "",
@@ -248,24 +335,41 @@ class A1EdgeReportBuilder:
             [
                 "## A1 vs Random",
                 "",
-                f"- directional edge: {overall_random.get('mfe_edge_15m', 0)}",
+                "### Fee-Aware Metrics",
+                "",
+                f"- roundtrip_fee_pct: {roundtrip_fee_pct}",
+                f"- avg_fee_share_r_15m: {overall_random.get('a1_avg_fee_share_r_15m', 0)}",
+                f"- a1_avg_net_mfe_r_15m: {overall_random.get('a1_avg_net_mfe_r_15m', 0)}",
+                f"- random_avg_net_mfe_r_15m: {overall_random.get('random_avg_net_mfe_r_15m', 0)}",
+                f"- net_mfe_edge_15m: {overall_random.get('net_mfe_edge_15m', 0)}",
+                f"- a1_net_hit_1r_rate_15m: {overall_random.get('a1_net_hit_1r_rate_15m', 0)}",
+                f"- random_net_hit_1r_rate_15m: {overall_random.get('random_net_hit_1r_rate_15m', 0)}",
+                f"- net_hit_1r_edge_15m: {overall_random.get('net_hit_1r_edge_15m', 0)}",
+                "",
+                "### Raw Metrics",
+                "",
+                "- raw metrics are diagnostic only",
+                f"- a1_avg_raw_mfe_r_15m: {overall_random.get('a1_avg_raw_mfe_r_15m', overall_random.get('a1_avg_mfe_r_15m', 0))}",
+                f"- random_avg_raw_mfe_r_15m: {overall_random.get('random_avg_raw_mfe_r_15m', overall_random.get('random_avg_mfe_r_15m', 0))}",
+                f"- raw_mfe_edge_15m: {overall_random.get('raw_mfe_edge_15m', overall_random.get('mfe_edge_15m', 0))}",
                 f"- volatility edge: {overall_random.get('volatility_edge_15m', 0)}",
-                f"- 15m / 60m comparison: {overall_random.get('a1_avg_mfe_r_15m', 0)} / {overall_random.get('a1_avg_mfe_r_60m', 0)}",
                 "",
                 "### Best Groups",
                 "",
             ]
         )
-        lines.extend(self._summary_table(best_groups, ["dimension", "group", "edge_label", "mfe_edge_15m"]))
+        lines.extend(self._summary_table(best_groups, ["dimension", "group", "edge_label", "net_mfe_edge_15m", "net_hit_1r_edge_15m"]))
         lines.extend(["### Worst Groups", ""])
-        lines.extend(self._summary_table(worst_groups, ["dimension", "group", "edge_label", "mfe_edge_15m"]))
+        lines.extend(self._summary_table(worst_groups, ["dimension", "group", "edge_label", "net_mfe_edge_15m", "net_hit_1r_edge_15m"]))
         lines.extend(
             [
                 "## Directionality",
                 "",
-                f"- BUY A1 forward MFE 15m: {_avg(buy_15, 'directional_mfe_r')}",
-                f"- SELL A1 forward MFE 15m: {_avg(sell_15, 'directional_mfe_r')}",
-                f"- first hit +1R rate 15m: {_rate([r for r in forward_metrics if parse_int(r.get('window_sec')) == 900], 'first_hit_plus_1r')}",
+                f"- BUY A1 forward net MFE 15m: {_avg(buy_15, 'net_directional_mfe_r')}",
+                f"- SELL A1 forward net MFE 15m: {_avg(sell_15, 'net_directional_mfe_r')}",
+                f"- raw BUY A1 forward MFE 15m: {_avg(buy_15, 'directional_mfe_r')}",
+                f"- raw SELL A1 forward MFE 15m: {_avg(sell_15, 'directional_mfe_r')}",
+                f"- net hit +1R rate 15m: {_rate([r for r in forward_metrics if parse_int(r.get('window_sec')) == 900], 'net_hit_plus_1r')}",
                 f"- first hit -1R rate 15m: {_rate([r for r in forward_metrics if parse_int(r.get('window_sec')) == 900], 'first_hit_minus_1r')}",
                 "",
                 "## Volatility Expansion",
@@ -274,6 +378,9 @@ class A1EdgeReportBuilder:
                 f"- A1 vs random total range 15m: {overall_random.get('a1_avg_total_range_15m', 0)} / {overall_random.get('random_avg_total_range_15m', 0)}",
                 "",
                 "## Hypothesis Results",
+                "",
+                "- avg_realized_r_proxy is fee-aware.",
+                "- hit_1r / hit_2r / hit_3r are raw hit diagnostics; net_hit_* fields are fee-aware.",
                 "",
                 "### Best Hypothesis Overall",
                 "",

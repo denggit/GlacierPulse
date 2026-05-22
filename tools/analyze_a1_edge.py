@@ -17,7 +17,8 @@ if str(ROOT) not in sys.path:
 from src.research.a1_edge.dataset_exporter import A1EdgeDatasetExporter
 from src.research.a1_edge.forward_metrics import A1ForwardMetricsAnalyzer
 from src.research.a1_edge.hypothesis_simulator import A1HypothesisSimulator
-from src.research.a1_edge.io_utils import ensure_dir, parse_windows, read_kline_csv
+from src.research.a1_edge.io_utils import ensure_dir, parse_windows, read_kline_csv, write_json
+from src.research.a1_edge.metadata import build_run_metadata
 from src.research.a1_edge.random_baseline import A1RandomBaselineComparator, RandomBaselineSampler
 from src.research.a1_edge.report_builder import A1EdgeReportBuilder
 
@@ -148,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: klines path does not exist: {klines_path}", file=sys.stderr)
         return 2
     out_dir = ensure_dir(args.out)
+    print(f"[A1-EDGE-FEE] roundtrip_fee_pct={args.roundtrip_fee_pct} fee_model=roundtrip_notional_pct")
     try:
         klines = read_kline_csv(klines_path, kline_timezone=args.kline_timezone)
     except ValueError as exc:
@@ -158,10 +160,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         windows = parse_windows(args.windows)
+        analysis_parameters = {
+            "symbol": args.symbol,
+            "windows": windows,
+            "random_samples_per_event": args.random_samples_per_event,
+            "seed": args.seed,
+            "min_risk_u": args.min_risk_u,
+            "min_risk_pct": args.min_risk_pct,
+            "roundtrip_fee_pct": args.roundtrip_fee_pct,
+            "baseline_risk_mode": args.baseline_risk_mode,
+            "kline_timezone": args.kline_timezone,
+            "exclude_near_a1_minutes": args.exclude_near_a1_minutes,
+            "min_group_sample_size": args.min_group_sample_size,
+        }
+        run_metadata = build_run_metadata(events_path, klines_path, out_dir, analysis_parameters, repo_root=ROOT)
+        write_json(out_dir / "a1_run_metadata.json", run_metadata)
         exporter = A1EdgeDatasetExporter()
         events = exporter.load_events(events_path, symbol=args.symbol)
         exporter.export(events, out_dir)
-        forward = A1ForwardMetricsAnalyzer(windows, args.min_risk_u, args.min_risk_pct)
+        forward = A1ForwardMetricsAnalyzer(windows, args.min_risk_u, args.min_risk_pct, args.roundtrip_fee_pct)
         forward_results = forward.analyze(events, klines)
         forward.export(forward_results, out_dir)
         data_quality = _build_data_quality(events, klines, forward_results)
@@ -174,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
             min_risk_u=args.min_risk_u,
             min_risk_pct=args.min_risk_pct,
             baseline_risk_mode=args.baseline_risk_mode,
+            roundtrip_fee_pct=args.roundtrip_fee_pct,
         )
         baseline = sampler.sample(events, klines)
         comparator = A1RandomBaselineComparator(min_group_sample_size=args.min_group_sample_size)
@@ -198,6 +216,12 @@ def main(argv: list[str] | None = None) -> int:
             hypothesis_summary=hypothesis_summary,
             out_dir=out_dir,
             data_quality=data_quality,
+            metadata=run_metadata,
+            fee_model={
+                "fee_model": "roundtrip_notional_pct",
+                "roundtrip_fee_pct": args.roundtrip_fee_pct,
+                "description": "Fee-aware net R subtracts entry_price * roundtrip_fee_pct from favorable movement.",
+            },
         )
     except Exception as exc:
         print(f"Error: failed to analyze A1 edge data: {exc}", file=sys.stderr)

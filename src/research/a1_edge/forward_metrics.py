@@ -89,6 +89,7 @@ def compute_forward_metric(
     entry_price: Optional[float] = None,
     event_ts: Optional[float] = None,
     risk_u_override: Optional[float] = None,
+    roundtrip_fee_pct: float = 0.001,
 ) -> ForwardMetricResult:
     ts = float(event.event_ts if event_ts is None else event_ts)
     entry = float(event.last_price if entry_price is None else entry_price)
@@ -100,6 +101,8 @@ def compute_forward_metric(
         else compute_proxy_risk(event, entry, min_risk_u, min_risk_pct)
     )
     risk_pct = risk / entry if entry else 0.0
+    fee_u = entry * float(roundtrip_fee_pct)
+    fee_share_r = fee_u / risk if risk else 0.0
     timestamps = [bar["timestamp"] for bar in bars]
     expected_count = expected_bar_count(int(window_sec), infer_bar_interval_sec(bars))
     start_idx = bisect_right(timestamps, ts)
@@ -113,6 +116,9 @@ def compute_forward_metric(
             entry_price=entry,
             risk_u=risk,
             risk_pct=risk_pct,
+            fee_u=fee_u,
+            roundtrip_fee_pct=float(roundtrip_fee_pct),
+            fee_share_r=fee_share_r,
             a1_reaction_type=event.a1_reaction_type,
             reaction_event_kind=event.reaction_event_kind,
             legacy_phase2_type=event.legacy_phase2_type,
@@ -151,6 +157,10 @@ def compute_forward_metric(
         hit_plus_2r = False
         hit_plus_3r = False
         hit_minus_1r = False
+    directional_mfe_r = directional_mfe / risk if risk else 0.0
+    directional_mae_r = directional_mae / risk if risk else 0.0
+    net_directional_mfe_r = directional_mfe_r - fee_share_r
+    net_directional_mae_r = directional_mae_r + fee_share_r
     first_plus, first_minus, plus_time, minus_time = _first_hit(ts, future, entry, risk, event.direction)
     partial = bool(future[-1]["timestamp"] < end_ts)
     return ForwardMetricResult(
@@ -162,6 +172,9 @@ def compute_forward_metric(
         entry_price=entry,
         risk_u=risk,
         risk_pct=risk_pct,
+        fee_u=fee_u,
+        roundtrip_fee_pct=float(roundtrip_fee_pct),
+        fee_share_r=fee_share_r,
         a1_reaction_type=event.a1_reaction_type,
         reaction_event_kind=event.reaction_event_kind,
         legacy_phase2_type=event.legacy_phase2_type,
@@ -171,8 +184,10 @@ def compute_forward_metric(
         future_bar_count=len(future),
         directional_mfe_u=directional_mfe,
         directional_mae_u=directional_mae,
-        directional_mfe_r=directional_mfe / risk if risk else 0.0,
-        directional_mae_r=directional_mae / risk if risk else 0.0,
+        directional_mfe_r=directional_mfe_r,
+        directional_mae_r=directional_mae_r,
+        net_directional_mfe_r=net_directional_mfe_r,
+        net_directional_mae_r=net_directional_mae_r,
         directional_mfe_pct=directional_mfe / entry if entry else 0.0,
         directional_mae_pct=directional_mae / entry if entry else 0.0,
         upside_move_u=upside,
@@ -186,6 +201,10 @@ def compute_forward_metric(
         hit_plus_2r=hit_plus_2r,
         hit_plus_3r=hit_plus_3r,
         hit_minus_1r=hit_minus_1r,
+        net_hit_plus_1r=net_directional_mfe_r >= 1.0,
+        net_hit_plus_2r=net_directional_mfe_r >= 2.0,
+        net_hit_plus_3r=net_directional_mfe_r >= 3.0,
+        net_hit_minus_1r=net_directional_mae_r >= 1.0,
         first_hit_plus_1r=first_plus,
         first_hit_minus_1r=first_minus,
         time_to_plus_1r_sec=plus_time,
@@ -196,17 +215,33 @@ def compute_forward_metric(
 
 
 class A1ForwardMetricsAnalyzer:
-    def __init__(self, windows_sec: Iterable[int] | None = None, min_risk_u: float = 1.0, min_risk_pct: float = 0.0003):
+    def __init__(
+        self,
+        windows_sec: Iterable[int] | None = None,
+        min_risk_u: float = 1.0,
+        min_risk_pct: float = 0.0003,
+        roundtrip_fee_pct: float = 0.001,
+    ):
         self.windows_sec = list(windows_sec or DEFAULT_WINDOWS_SEC)
         self.min_risk_u = float(min_risk_u)
         self.min_risk_pct = float(min_risk_pct)
+        self.roundtrip_fee_pct = float(roundtrip_fee_pct)
 
     def analyze(self, events: Iterable[A1EdgeEvent], klines: Iterable[Mapping[str, Any]]) -> List[ForwardMetricResult]:
         bars = normalize_klines(klines)
         results: List[ForwardMetricResult] = []
         for event in events or []:
             for window_sec in self.windows_sec:
-                results.append(compute_forward_metric(event, bars, window_sec, self.min_risk_u, self.min_risk_pct))
+                results.append(
+                    compute_forward_metric(
+                        event,
+                        bars,
+                        window_sec,
+                        self.min_risk_u,
+                        self.min_risk_pct,
+                        roundtrip_fee_pct=self.roundtrip_fee_pct,
+                    )
+                )
         return results
 
     def export(self, results: Iterable[ForwardMetricResult], out_dir: Path | str) -> None:

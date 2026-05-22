@@ -1,10 +1,12 @@
 from src.research.a1_edge.hypothesis_simulator import A1HypothesisSimulator
 from src.research.a1_edge.schema import A1EdgeEvent
 
+BASE_TS = 1_779_373_200
+
 
 def _klines():
     return [
-        {"timestamp": i * 60, "open": 100, "high": 104 if i > 0 else 101, "low": 99, "close": 103, "volume": 1}
+        {"timestamp": BASE_TS + i * 60, "open": 100, "high": 104 if i > 0 else 101, "low": 99, "close": 103, "volume": 1}
         for i in range(10)
     ]
 
@@ -13,7 +15,7 @@ def test_hypotheses_entry_skips_fee_and_realized_proxy():
     event = A1EdgeEvent.from_mapping({
         "zone_id": "z1",
         "direction": "BUY",
-        "reaction_event_ts": 30,
+        "reaction_event_ts": BASE_TS + 30,
         "last_price": 100,
         "frozen_low": 99,
         "frozen_high": 101,
@@ -36,8 +38,8 @@ def test_hypotheses_entry_skips_fee_and_realized_proxy():
 
 
 def test_same_zone_multiple_events_keep_distinct_event_keys_in_hypotheses():
-    first = A1EdgeEvent.from_mapping({"zone_id": "same", "direction": "BUY", "reaction_event_ts": 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101, "a1_reaction_type": "A", "reaction_event_kind": "CONFIRMED"})
-    second = A1EdgeEvent.from_mapping({"zone_id": "same", "direction": "BUY", "reaction_event_ts": 31, "last_price": 100, "frozen_low": 99, "frozen_high": 101, "a1_reaction_type": "A", "reaction_event_kind": "FAILED"})
+    first = A1EdgeEvent.from_mapping({"zone_id": "same", "direction": "BUY", "reaction_event_ts": BASE_TS + 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101, "a1_reaction_type": "A", "reaction_event_kind": "CONFIRMED"})
+    second = A1EdgeEvent.from_mapping({"zone_id": "same", "direction": "BUY", "reaction_event_ts": BASE_TS + 31, "last_price": 100, "frozen_low": 99, "frozen_high": 101, "a1_reaction_type": "A", "reaction_event_kind": "FAILED"})
     rows = A1HypothesisSimulator().simulate([first, second], _klines())
     keys = {row.event_key for row in rows}
     hypothesis_ids = {row.hypothesis_id for row in rows}

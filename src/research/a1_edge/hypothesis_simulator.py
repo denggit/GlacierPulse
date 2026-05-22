@@ -35,6 +35,9 @@ HYPOTHESIS_SUMMARY_FIELDS = [
     "hit_1r_rate",
     "hit_2r_rate",
     "hit_3r_rate",
+    "net_hit_1r_rate",
+    "net_hit_2r_rate",
+    "net_hit_3r_rate",
     "hit_stop_rate",
     "avg_mfe_r",
     "avg_mae_r",
@@ -53,7 +56,7 @@ def _avg(values: Iterable[float]) -> float:
 
 def _rate(values: Iterable[Any]) -> float:
     data = list(values)
-    return sum(1 for v in data if bool(v)) / len(data) if data else 0.0
+    return sum(1 for v in data if parse_bool(v)) / len(data) if data else 0.0
 
 
 class A1HypothesisSimulator:
@@ -147,7 +150,8 @@ class A1HypothesisSimulator:
                     continue
                 stop_price = self._stop_price(event, direction)
                 risk = max(abs(entry_price - stop_price), self.min_risk_u, abs(entry_price) * self.min_risk_pct)
-                fee_share_r = entry_price * self.roundtrip_fee_pct / risk if risk else 0.0
+                fee_u = entry_price * self.roundtrip_fee_pct
+                fee_share_r = fee_u / risk if risk else 0.0
                 metric_event = A1EdgeEvent(
                     zone_id=event.zone_id,
                     event_key=event.event_key,
@@ -172,6 +176,7 @@ class A1HypothesisSimulator:
                     entry_price,
                     entry_ts,
                     risk_u_override=risk,
+                    roundtrip_fee_pct=self.roundtrip_fee_pct,
                 )
                 hit_stop = metric.hit_minus_1r
                 if metric.first_hit_minus_1r and (not metric.first_hit_plus_1r or metric.time_to_minus_1r_sec <= metric.time_to_plus_1r_sec):
@@ -198,6 +203,8 @@ class A1HypothesisSimulator:
                         stop_price=stop_price,
                         risk_u=risk,
                         risk_pct=risk / entry_price if entry_price else 0.0,
+                        fee_u=fee_u,
+                        roundtrip_fee_pct=self.roundtrip_fee_pct,
                         fee_share_r=fee_share_r,
                         window_sec=self.window_sec,
                         future_bar_count=metric.future_bar_count,
@@ -207,6 +214,9 @@ class A1HypothesisSimulator:
                         hit_1r=metric.hit_plus_1r,
                         hit_2r=metric.hit_plus_2r,
                         hit_3r=metric.hit_plus_3r,
+                        net_hit_1r=metric.net_hit_plus_1r,
+                        net_hit_2r=metric.net_hit_plus_2r,
+                        net_hit_3r=metric.net_hit_plus_3r,
                         hit_stop=hit_stop,
                         first_hit_plus_1r=metric.first_hit_plus_1r,
                         first_hit_minus_1r=metric.first_hit_minus_1r,
@@ -240,9 +250,12 @@ class A1HypothesisSimulator:
             ]
             realized = [float(row.get("realized_r_proxy", 0.0)) for row in valid]
             avg_realized = _avg(realized)
+            net_hit_1r_rate = _rate(row.get("net_hit_1r") for row in valid)
+            if valid and not any("net_hit_1r" in row and row.get("net_hit_1r") not in (None, "") for row in valid):
+                net_hit_1r_rate = _rate(row.get("hit_1r") for row in valid)
             if len(valid) < self.min_group_sample_size:
                 label = "INSUFFICIENT_SAMPLE"
-            elif avg_realized > 0 and _rate(row.get("hit_1r") for row in valid) > _rate(row.get("hit_stop") for row in valid):
+            elif avg_realized > 0 and net_hit_1r_rate > _rate(row.get("hit_stop") for row in valid):
                 label = "PROMISING"
             else:
                 label = "NO_EDGE"
@@ -258,6 +271,9 @@ class A1HypothesisSimulator:
                     "hit_1r_rate": _rate(row.get("hit_1r") for row in valid),
                     "hit_2r_rate": _rate(row.get("hit_2r") for row in valid),
                     "hit_3r_rate": _rate(row.get("hit_3r") for row in valid),
+                    "net_hit_1r_rate": net_hit_1r_rate,
+                    "net_hit_2r_rate": _rate(row.get("net_hit_2r") for row in valid),
+                    "net_hit_3r_rate": _rate(row.get("net_hit_3r") for row in valid),
                     "hit_stop_rate": _rate(row.get("hit_stop") for row in valid),
                     "avg_mfe_r": _avg(float(row.get("mfe_r", 0.0)) for row in valid),
                     "avg_mae_r": _avg(float(row.get("mae_r", 0.0)) for row in valid),
