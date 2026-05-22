@@ -184,15 +184,19 @@ class IcebergTruthScorer:
             no_follow_30s = ((c.f("post_30s_max_price") or settle) - settle) <= width
         if coverage.get("has_5s_trade_data") and attack_5s and no_follow_5s:
             score += 4
-        has_30s_price = c.f("post_30s_min_price") > 0 and c.f("post_30s_max_price") > 0
         if (
             coverage.get("has_30s_trade_data")
-            and (coverage.get("observed_through_30s") or has_30s_price)
+            and coverage.get("observed_through_30s")
             and attack_30s
             and (no_follow_30s or self._inside_zone(c, c.f("post_last_price") or settle))
         ):
             score += 6
-        if c.b("cvd_extreme_price_not_extreme"):
+        if (
+            c.b("cvd_extreme_price_not_extreme")
+            and coverage.get("has_cvd_data")
+            and coverage.get("observed_through_30s")
+            and coverage.get("has_post_price_data")
+        ):
             score = 10
         return min(10.0, score)
 

@@ -181,6 +181,90 @@ def test_cvd_30s_score_requires_30s_observation():
     assert result["score_components"]["cvd_divergence_score"] <= 4
 
 
+def test_cvd_30s_score_requires_observed_through_30s_even_if_post_30s_prices_exist():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 10,
+            "post_total_notional": 500_000,
+            "observation_age_sec": 5,
+            "post_5s_min_price": 99.4,
+            "post_5s_max_price": 100.3,
+            "post_30s_min_price": 99.3,
+            "post_30s_max_price": 100.4,
+            "post_min_price": 99.3,
+            "post_max_price": 100.4,
+            "post_last_price": 100.1,
+            "post_5s_cvd_delta": -300_000,
+            "post_30s_cvd_delta": -600_000,
+            "observed_through_30s": False,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["cvd_divergence_score"] <= 4
+
+
+def test_cvd_30s_score_allowed_after_observed_through_30s():
+    candidate = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 20,
+            "post_total_notional": 900_000,
+            "observation_age_sec": 31,
+            "post_30s_min_price": 99.4,
+            "post_30s_max_price": 100.3,
+            "post_min_price": 99.4,
+            "post_max_price": 100.3,
+            "post_last_price": 100.1,
+            "post_30s_cvd_delta": -700_000,
+            "observed_through_30s": True,
+        },
+    )
+    result = IcebergTruthScorer().score(candidate)
+    assert result["score_components"]["cvd_divergence_score"] >= 6
+
+
+def test_cvd_extreme_price_not_extreme_requires_30s_coverage():
+    missing_coverage = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 20,
+            "post_total_notional": 900_000,
+            "post_5s_min_price": 99.4,
+            "post_5s_max_price": 100.3,
+            "post_30s_min_price": 99.4,
+            "post_30s_max_price": 100.3,
+            "post_min_price": 99.4,
+            "post_max_price": 100.3,
+            "post_last_price": 100.1,
+            "post_5s_cvd_delta": -300_000,
+            "post_30s_cvd_delta": -700_000,
+            "observed_through_30s": False,
+            "cvd_extreme_price_not_extreme": True,
+        },
+    )
+    result = IcebergTruthScorer().score(missing_coverage)
+    assert result["score_components"]["cvd_divergence_score"] < 10
+
+    valid_coverage = _candidate(
+        "BUY",
+        post_features={
+            "post_trade_count": 20,
+            "post_total_notional": 900_000,
+            "post_30s_min_price": 99.4,
+            "post_30s_max_price": 100.3,
+            "post_min_price": 99.4,
+            "post_max_price": 100.3,
+            "post_last_price": 100.1,
+            "post_30s_cvd_delta": -700_000,
+            "observed_through_30s": True,
+            "cvd_extreme_price_not_extreme": True,
+        },
+    )
+    result = IcebergTruthScorer().score(valid_coverage)
+    assert result["score_components"]["cvd_divergence_score"] == 10
+
+
 def test_strong_buy_iceberg_scores_high():
     result = IcebergTruthScorer().score(_candidate("BUY"))
     assert result["truth_score_total"] >= 80
