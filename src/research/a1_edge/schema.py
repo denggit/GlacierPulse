@@ -281,6 +281,8 @@ class RandomBaselineEvent:
     source_risk_u: float = 0.0
     risk_mode: str = "SOURCE_A1_RISK"
     window_sec: int = 0
+    future_bar_count: int = 0
+    insufficient_future_data: bool = False
     directional_mfe_r: float = 0.0
     directional_mae_r: float = 0.0
     hit_plus_1r: bool = False
@@ -315,6 +317,8 @@ class HypothesisResult:
     risk_pct: float = 0.0
     fee_share_r: float = 0.0
     window_sec: int = 0
+    future_bar_count: int = 0
+    insufficient_future_data: bool = False
     mfe_r: float = 0.0
     mae_r: float = 0.0
     hit_1r: bool = False

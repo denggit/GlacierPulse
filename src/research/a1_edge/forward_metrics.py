@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from pathlib import Path
+from statistics import median
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from .io_utils import normalize_klines, write_csv
@@ -12,6 +13,8 @@ from .schema import A1EdgeEvent, FORWARD_METRIC_FIELDS, ForwardMetricResult
 
 
 DEFAULT_WINDOWS_SEC = [60, 180, 300, 900, 1800, 3600]
+DEFAULT_BAR_INTERVAL_SEC = 60.0
+MIN_FUTURE_COVERAGE_RATIO = 0.6
 
 
 def compute_proxy_risk(event: A1EdgeEvent, entry_price: float, min_risk_u: float = 1.0, min_risk_pct: float = 0.0003) -> float:
@@ -63,6 +66,20 @@ def _first_hit(event_ts: float, bars: List[Dict[str, float]], entry: float, risk
     return plus_hit and (not minus_hit or plus_time <= minus_time), minus_hit and (not plus_hit or minus_time < plus_time), plus_time, minus_time
 
 
+def infer_bar_interval_sec(bars: List[Dict[str, float]], default: float = DEFAULT_BAR_INTERVAL_SEC) -> float:
+    diffs = [
+        float(bars[i]["timestamp"]) - float(bars[i - 1]["timestamp"])
+        for i in range(1, len(bars))
+        if float(bars[i]["timestamp"]) > float(bars[i - 1]["timestamp"])
+    ]
+    return float(median(diffs)) if diffs else float(default)
+
+
+def expected_bar_count(window_sec: int, bar_interval_sec: float = DEFAULT_BAR_INTERVAL_SEC) -> int:
+    interval = max(float(bar_interval_sec or DEFAULT_BAR_INTERVAL_SEC), 1.0)
+    return max(1, int(round(float(window_sec) / interval)))
+
+
 def compute_forward_metric(
     event: A1EdgeEvent,
     bars: List[Dict[str, float]],
@@ -84,6 +101,7 @@ def compute_forward_metric(
     )
     risk_pct = risk / entry if entry else 0.0
     timestamps = [bar["timestamp"] for bar in bars]
+    expected_count = expected_bar_count(int(window_sec), infer_bar_interval_sec(bars))
     start_idx = bisect_right(timestamps, ts)
     if not bars or start_idx >= len(bars):
         return ForwardMetricResult(
@@ -108,6 +126,7 @@ def compute_forward_metric(
     future = [bar for bar in bars[start_idx:] if bar["timestamp"] <= end_ts]
     if not future:
         future = [bars[start_idx]]
+    insufficient = len(future) < expected_count * MIN_FUTURE_COVERAGE_RATIO
     high = max(bar["high"] for bar in future)
     low = min(bar["low"] for bar in future)
     close = future[-1]["close"]
@@ -172,7 +191,7 @@ def compute_forward_metric(
         time_to_plus_1r_sec=plus_time,
         time_to_minus_1r_sec=minus_time,
         partial_window=partial,
-        insufficient_future_data=False,
+        insufficient_future_data=insufficient,
     )
 
 

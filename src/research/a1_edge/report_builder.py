@@ -32,7 +32,16 @@ class A1EdgeReportBuilder:
         total_random: int,
         random_summary: List[Dict[str, Any]],
         hypothesis_summary: List[Dict[str, Any]],
+        data_quality: Mapping[str, Any] | None = None,
     ) -> str:
+        quality = dict(data_quality or {})
+        if total_events > 0:
+            if parse_int(quality.get("events_outside_kline_range")) > total_events * 0.5:
+                return "INSUFFICIENT_KLINE_COVERAGE"
+            if parse_int(quality.get("events_insufficient_15m_count")) > total_events * 0.5:
+                return "INSUFFICIENT_KLINE_COVERAGE"
+            if parse_int(quality.get("events_insufficient_60m_count")) > total_events * 0.5:
+                return "INSUFFICIENT_KLINE_COVERAGE"
         if total_events < self.min_total_events or total_random < total_events * 5:
             return "INSUFFICIENT_SAMPLE"
         overall = next((r for r in random_summary if r.get("dimension") == "ALL"), {})
@@ -61,6 +70,8 @@ class A1EdgeReportBuilder:
             return "Proceed to V6.4 only for selected A1 subtypes. Exclude weak/no-edge A1 groups."
         if decision == "A1_NO_GO":
             return "Do not proceed to A2. Rework A1 detection."
+        if decision == "INSUFFICIENT_KLINE_COVERAGE":
+            return "Fix kline timestamp alignment and future-bar coverage, then rerun the offline analysis."
         return "Continue data collection. Do not make strategic conclusion."
 
     def build_from_dir(self, out_dir: Path | str) -> A1EdgeReport:
@@ -84,6 +95,7 @@ class A1EdgeReportBuilder:
         hypothesis_results: Iterable[Mapping[str, Any]],
         hypothesis_summary: Iterable[Mapping[str, Any]],
         out_dir: Path | str,
+        data_quality: Mapping[str, Any] | None = None,
     ) -> A1EdgeReport:
         event_rows = [dict(row) for row in events or []]
         forward_rows = [dict(row) for row in forward_metrics or []]
@@ -91,8 +103,9 @@ class A1EdgeReportBuilder:
         random_summary_rows = [dict(row) for row in random_summary or []]
         hypothesis_rows = [dict(row) for row in hypothesis_results or []]
         hypothesis_summary_rows = [dict(row) for row in hypothesis_summary or []]
+        quality = self._data_quality(event_rows, forward_rows, data_quality)
         total_random_samples = len({row.get("baseline_id") for row in random_rows})
-        decision = self._decision(len(event_rows), total_random_samples, random_summary_rows, hypothesis_summary_rows)
+        decision = self._decision(len(event_rows), total_random_samples, random_summary_rows, hypothesis_summary_rows, quality)
         recommendation = self._recommendation(decision)
         report = A1EdgeReport(
             decision=decision,
@@ -101,14 +114,34 @@ class A1EdgeReportBuilder:
             total_hypothesis_rows=len(hypothesis_rows),
             recommended_next_step=recommendation,
         )
-        summary = self._summary_json(report, event_rows, random_summary_rows, hypothesis_summary_rows)
+        summary = self._summary_json(report, event_rows, random_summary_rows, hypothesis_summary_rows, quality)
         out = Path(out_dir)
         write_json(out / "a1_edge_summary.json", summary)
         (out / "a1_go_no_go_report.md").write_text(
-            self._markdown(report, event_rows, forward_rows, random_summary_rows, hypothesis_summary_rows),
+            self._markdown(report, event_rows, forward_rows, random_summary_rows, hypothesis_summary_rows, quality),
             encoding="utf-8",
         )
         return report
+
+    def _data_quality(
+        self,
+        events: List[Dict[str, Any]],
+        forward_metrics: List[Dict[str, Any]],
+        data_quality: Mapping[str, Any] | None,
+    ) -> Dict[str, Any]:
+        quality = dict(data_quality or {})
+        event_ts = [parse_float(row.get("event_ts")) for row in events if parse_float(row.get("event_ts")) > 0]
+        quality.setdefault("event_min_ts", min(event_ts) if event_ts else 0.0)
+        quality.setdefault("event_max_ts", max(event_ts) if event_ts else 0.0)
+        for window_sec, suffix in ((900, "15m"), (3600, "60m")):
+            rows = [row for row in forward_metrics if parse_int(row.get("window_sec")) == window_sec]
+            insufficient = [row for row in rows if parse_bool(row.get("insufficient_future_data"))]
+            valid = [row for row in rows if not parse_bool(row.get("insufficient_future_data"))]
+            quality.setdefault(f"events_insufficient_{suffix}_count", len({row.get("event_key") for row in insufficient}))
+            quality.setdefault(f"valid_events_{suffix}_count", len({row.get("event_key") for row in valid}))
+        for name in ("kline_min_ts", "kline_max_ts", "events_outside_kline_range"):
+            quality.setdefault(name, 0.0 if name.endswith("_ts") else 0)
+        return quality
 
     def _summary_json(
         self,
@@ -116,12 +149,14 @@ class A1EdgeReportBuilder:
         events: List[Dict[str, Any]],
         random_summary: List[Dict[str, Any]],
         hypothesis_summary: List[Dict[str, Any]],
+        data_quality: Mapping[str, Any],
     ) -> Dict[str, Any]:
         event_ts = [parse_float(row.get("event_ts")) for row in events if parse_float(row.get("event_ts")) > 0]
         return {
             **report.to_dict(),
             "total_events": len(events),
             "time_range": {"min_event_ts": min(event_ts) if event_ts else 0.0, "max_event_ts": max(event_ts) if event_ts else 0.0},
+            "data_quality": dict(data_quality),
             "symbols": sorted({str(row.get("symbol") or "") for row in events if row.get("symbol")}),
             "by_direction": dict(Counter(str(row.get("direction") or "UNKNOWN") for row in events)),
             "by_a1_reaction_type": dict(Counter(str(row.get("a1_reaction_type") or "UNKNOWN") for row in events)),
@@ -163,6 +198,7 @@ class A1EdgeReportBuilder:
         forward_metrics: List[Dict[str, Any]],
         random_summary: List[Dict[str, Any]],
         hypothesis_summary: List[Dict[str, Any]],
+        data_quality: Mapping[str, Any],
     ) -> str:
         event_ts = [parse_float(row.get("event_ts")) for row in events if parse_float(row.get("event_ts")) > 0]
         symbols = ", ".join(sorted({str(row.get("symbol") or "") for row in events if row.get("symbol")})) or "UNKNOWN"
@@ -184,6 +220,18 @@ class A1EdgeReportBuilder:
             f"- time range: {(min(event_ts) if event_ts else 0.0)} - {(max(event_ts) if event_ts else 0.0)}",
             f"- symbol: {symbols}",
             f"- sample sufficiency: {report.decision != 'INSUFFICIENT_SAMPLE'}",
+            "",
+            "## Data Quality",
+            "",
+            f"- kline_min_ts: {data_quality.get('kline_min_ts', 0.0)}",
+            f"- kline_max_ts: {data_quality.get('kline_max_ts', 0.0)}",
+            f"- event_min_ts: {data_quality.get('event_min_ts', 0.0)}",
+            f"- event_max_ts: {data_quality.get('event_max_ts', 0.0)}",
+            f"- events_outside_kline_range: {data_quality.get('events_outside_kline_range', 0)}",
+            f"- events_insufficient_15m_count: {data_quality.get('events_insufficient_15m_count', 0)}",
+            f"- events_insufficient_60m_count: {data_quality.get('events_insufficient_60m_count', 0)}",
+            f"- valid_events_15m_count: {data_quality.get('valid_events_15m_count', 0)}",
+            f"- valid_events_60m_count: {data_quality.get('valid_events_60m_count', 0)}",
             "",
             "## A1 Event Distribution",
             "",

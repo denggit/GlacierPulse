@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from .forward_metrics import DEFAULT_WINDOWS_SEC, compute_forward_metric, compute_proxy_risk
 from .io_utils import normalize_klines, write_csv
-from .schema import A1EdgeEvent, RANDOM_BASELINE_FIELDS, RandomBaselineEvent
+from .schema import A1EdgeEvent, RANDOM_BASELINE_FIELDS, RandomBaselineEvent, parse_bool
 
 
 SUMMARY_FIELDS = [
@@ -149,6 +149,8 @@ class RandomBaselineSampler:
                             source_risk_u=source_risk_u,
                             risk_mode=risk_mode,
                             window_sec=window_sec,
+                            future_bar_count=metric.future_bar_count,
+                            insufficient_future_data=metric.insufficient_future_data,
                             directional_mfe_r=metric.directional_mfe_r,
                             directional_mae_r=metric.directional_mae_r,
                             hit_plus_1r=metric.hit_plus_1r,
@@ -199,12 +201,14 @@ class A1RandomBaselineComparator:
         event_list = list(events or [])
         a1_rows = [dict(row) for row in a1_metrics or []]
         random_rows = [row.to_dict() if hasattr(row, "to_dict") else dict(row) for row in random_baseline or []]
+        valid_a1_rows = [row for row in a1_rows if not parse_bool(row.get("insufficient_future_data"))]
+        valid_random_rows = [row for row in random_rows if not parse_bool(row.get("insufficient_future_data"))]
         summaries: List[Dict[str, Any]] = []
         for dimension, group, event_keys in self._groups(event_list):
-            a1_15 = [r for r in a1_rows if r.get("event_key") in event_keys and int(float(r.get("window_sec", 0))) == 900]
-            a1_60 = [r for r in a1_rows if r.get("event_key") in event_keys and int(float(r.get("window_sec", 0))) == 3600]
-            rnd_15 = [r for r in random_rows if r.get("source_event_key") in event_keys and int(float(r.get("window_sec", 0))) == 900]
-            rnd_60 = [r for r in random_rows if r.get("source_event_key") in event_keys and int(float(r.get("window_sec", 0))) == 3600]
+            a1_15 = [r for r in valid_a1_rows if r.get("event_key") in event_keys and int(float(r.get("window_sec", 0))) == 900]
+            a1_60 = [r for r in valid_a1_rows if r.get("event_key") in event_keys and int(float(r.get("window_sec", 0))) == 3600]
+            rnd_15 = [r for r in valid_random_rows if r.get("source_event_key") in event_keys and int(float(r.get("window_sec", 0))) == 900]
+            rnd_60 = [r for r in valid_random_rows if r.get("source_event_key") in event_keys and int(float(r.get("window_sec", 0))) == 3600]
             a1_avg_mfe_15 = _avg(float(r.get("directional_mfe_r", 0.0)) for r in a1_15)
             rnd_avg_mfe_15 = _avg(float(r.get("directional_mfe_r", 0.0)) for r in rnd_15)
             a1_avg_mfe_60 = _avg(float(r.get("directional_mfe_r", 0.0)) for r in a1_60)
@@ -213,7 +217,7 @@ class A1RandomBaselineComparator:
             rnd_hit_1r_15 = _rate(r.get("hit_plus_1r") for r in rnd_15)
             a1_range_15 = _avg(float(r.get("total_range_u", 0.0)) for r in a1_15)
             rnd_range_15 = _avg(float(r.get("total_range_u", 0.0)) for r in rnd_15)
-            sample_count = len({r.get("event_key") for r in a1_15}) if a1_15 else len(event_keys)
+            sample_count = len({r.get("event_key") for r in a1_15})
             directional = a1_avg_mfe_15 > rnd_avg_mfe_15 * 1.25 and a1_hit_1r_15 > rnd_hit_1r_15 + 0.05
             volatility = a1_range_15 > rnd_range_15 * 1.25 if rnd_range_15 > 0 else a1_range_15 > 0
             if sample_count < self.min_group_sample_size:

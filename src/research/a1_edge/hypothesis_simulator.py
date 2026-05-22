@@ -10,7 +10,7 @@ from typing import Any, Dict, Iterable, List, Mapping
 
 from .forward_metrics import compute_forward_metric
 from .io_utils import normalize_klines, write_csv
-from .schema import A1EdgeEvent, HYPOTHESIS_RESULT_FIELDS, HypothesisResult
+from .schema import A1EdgeEvent, HYPOTHESIS_RESULT_FIELDS, HypothesisResult, parse_bool
 
 
 HYPOTHESES = [
@@ -200,6 +200,8 @@ class A1HypothesisSimulator:
                         risk_pct=risk / entry_price if entry_price else 0.0,
                         fee_share_r=fee_share_r,
                         window_sec=self.window_sec,
+                        future_bar_count=metric.future_bar_count,
+                        insufficient_future_data=metric.insufficient_future_data,
                         mfe_r=metric.directional_mfe_r,
                         mae_r=metric.directional_mae_r,
                         hit_1r=metric.hit_plus_1r,
@@ -231,7 +233,11 @@ class A1HypothesisSimulator:
             group_specs.extend((f"{left}+{right}", f"{a}|{b}", [row for row in rows if str(row.get(left) or "UNKNOWN") == a and str(row.get(right) or "UNKNOWN") == b]) for a, b in values)
         summaries: List[Dict[str, Any]] = []
         for dimension, group, group_rows in group_specs:
-            valid = [row for row in group_rows if not row.get("is_skipped")]
+            valid = [
+                row
+                for row in group_rows
+                if not parse_bool(row.get("is_skipped")) and not parse_bool(row.get("insufficient_future_data"))
+            ]
             realized = [float(row.get("realized_r_proxy", 0.0)) for row in valid]
             avg_realized = _avg(realized)
             if len(valid) < self.min_group_sample_size:
