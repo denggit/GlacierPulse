@@ -1,0 +1,55 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import csv
+import json
+
+from src.research.phase1_truth.analyzer import Phase1TruthAnalyzer
+
+
+def _record(key, record_type, result="ICEBERG", score=80, active=600000, hidden=1200000, absorption=0.8):
+    return {
+        "record_type": record_type,
+        "event_key": key,
+        "result": result,
+        "direction": "BUY",
+        "quality": "HIGH",
+        "behavior": "ICEBERG_ABSORPTION",
+        "session_tag": "US_OPEN",
+        "active_notional": active,
+        "hidden_volume": hidden,
+        "absorption_rate": absorption,
+        "start_thickness_usdt": 600000,
+        "truth_score": {"truth_score_total": score, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
+    }
+
+
+def test_analyzer_reads_jsonl_and_uses_finalized_for_core_stats(tmp_path):
+    events = tmp_path / "events.jsonl"
+    rows = [
+        _record("s1", "candidate_settled", score=10),
+        _record("f1", "candidate_finalized", "ICEBERG", 90),
+        _record("f2", "candidate_finalized", "IGNORE", 85, active=200000, hidden=600000, absorption=0.55),
+    ]
+    events.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    out = tmp_path / "out"
+    summary = Phase1TruthAnalyzer(min_sample=1).analyze_file(events, out)
+    assert summary["settled_total"] == 1
+    assert summary["finalized_total"] == 2
+    assert summary["by_result"]["ICEBERG"]["avg_truth_score"] == 90
+    assert (out / "phase1_truth_summary.md").exists()
+
+
+def test_parameter_grid_outputs_required_fields_and_missed_high_truth(tmp_path):
+    finalized = [
+        _record("ice", "candidate_finalized", "ICEBERG", 88, active=900000, hidden=2000000, absorption=0.9),
+        _record("miss", "candidate_finalized", "IGNORE", 92, active=200000, hidden=600000, absorption=0.55),
+    ]
+    out = tmp_path / "out"
+    Phase1TruthAnalyzer(min_sample=1).export(finalized, out)
+    with (out / "phase1_parameter_grid.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert {"selected_count", "avg_truth_score", "pct_truth_ge_80"}.issubset(rows[0])
+    assert any(int(row["missed_high_truth_count"]) >= 1 for row in rows)
+    assert (out / "phase1_parameter_grid_by_session.csv").exists()
+    assert (out / "phase1_dynamic_preview_summary.json").exists()
