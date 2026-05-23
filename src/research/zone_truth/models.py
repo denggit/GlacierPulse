@@ -41,14 +41,17 @@ def local_session(ts: float, timezone: str = "Asia/Shanghai") -> dict[str, Any]:
         return {"local_time": "", "session_tag": "UNKNOWN", "is_weekend": False}
     dt = datetime.fromtimestamp(float(ts), tz=ZoneInfo(timezone))
     hour = dt.hour
-    if 8 <= hour < 16:
-        session = "ASIA"
-    elif 16 <= hour < 21:
-        session = "EUROPE"
-    elif 21 <= hour or hour < 5:
-        session = "US"
+    minute = dt.minute
+    if 0 <= hour < 5:
+        session = "US_LATE"
+    elif 5 <= hour < 8:
+        session = "ASIA_OFF"
+    elif 8 <= hour < 16:
+        session = "ASIA_DAY"
+    elif 16 <= hour < 21 or (hour == 21 and minute < 30):
+        session = "EUROPE_PRE_US"
     else:
-        session = "OFF_HOURS"
+        session = "US_OPEN"
     return {
         "local_time": dt.isoformat(),
         "session_tag": session,
@@ -97,6 +100,13 @@ class ZoneReaction:
     a1_reaction_reason: str = ""
     frozen_reason: str = ""
     zone_state: str = ""
+    reaction_count: int = 1
+    reaction_types: str = ""
+    has_clean_hold: bool = False
+    has_failed_reclaim: bool = False
+    primary_reaction_type: str = "UNKNOWN"
+    final_reaction_type: str = "UNKNOWN"
+    final_reaction_ts: float = 0.0
     raw: dict[str, Any] | None = None
 
     @classmethod
@@ -111,6 +121,10 @@ class ZoneReaction:
             lower, upper = upper, lower
         reaction_ts = parse_timestamp(first_present(record, "reaction_event_ts", "a1_reaction_confirmed_ts", "confirmed_ts", "event_ts", "ts"))
         frozen_ts = parse_timestamp(first_present(record, "frozen_ts", "phase2_registered_ts", "registered_ts"))
+        reaction_type = str(first_present(record, "reaction_type", "a1_reaction_type", "phase2_type") or "UNKNOWN")
+        a1_reaction_type = str(first_present(record, "a1_reaction_type", "reaction_type", "phase2_type") or "UNKNOWN")
+        reaction_types = _join_unique([reaction_type, a1_reaction_type])
+        final_ts = reaction_ts or frozen_ts
         return cls(
             zone_id=str(first_present(record, "zone_id", "frozen_event_id") or ""),
             symbol=str(first_present(record, "symbol", "instId", "instrument") or ""),
@@ -121,11 +135,21 @@ class ZoneReaction:
             last_seen_ts=parse_timestamp(first_present(record, "last_seen_ts")),
             frozen_ts=frozen_ts,
             reaction_event_ts=reaction_ts,
-            reaction_type=str(first_present(record, "reaction_type", "a1_reaction_type", "phase2_type") or "UNKNOWN"),
-            a1_reaction_type=str(first_present(record, "a1_reaction_type", "reaction_type", "phase2_type") or "UNKNOWN"),
+            reaction_type=reaction_type,
+            a1_reaction_type=a1_reaction_type,
             a1_reaction_reason=str(first_present(record, "a1_reaction_reason", "phase2_reason") or ""),
             frozen_reason=str(first_present(record, "frozen_reason") or ""),
             zone_state=str(first_present(record, "frozen_state", "state", "zone_state") or ""),
+            reaction_count=1,
+            reaction_types=reaction_types,
+            has_clean_hold=_contains_reaction_token(reaction_types, "CLEAN_HOLD"),
+            has_failed_reclaim=(
+                _contains_reaction_token(reaction_types, "FAILED_RECLAIM")
+                or _contains_reaction_token(reaction_types, "FAILED")
+            ),
+            primary_reaction_type=reaction_type,
+            final_reaction_type=reaction_type,
+            final_reaction_ts=final_ts,
             raw=dict(record),
         )
 
@@ -155,11 +179,23 @@ class ZoneTruthEvent:
     a1_reaction_reason: str = ""
     frozen_reason: str = ""
     zone_state: str = ""
+    reaction_count: int = 0
+    reaction_types: str = ""
+    has_clean_hold: bool = False
+    has_failed_reclaim: bool = False
+    primary_reaction_type: str = "UNKNOWN"
+    final_reaction_type: str = "UNKNOWN"
+    final_reaction_ts: float = 0.0
     pie_count: int = 0
     iceberg_pie_count: int = 0
     ignore_pie_count: int = 0
     spoofing_pie_count: int = 0
     cancel_pie_count: int = 0
+    pie_event_keys: str = ""
+    iceberg_pie_event_keys: str = ""
+    ignore_pie_event_keys: str = ""
+    spoofing_pie_event_keys: str = ""
+    cancel_pie_event_keys: str = ""
     truth_score_max: float = 0.0
     truth_score_avg: float = 0.0
     truth_score_median: float = 0.0
@@ -214,3 +250,20 @@ def parse_candidate_bool(value: Any) -> bool:
 
 def parse_candidate_int(value: Any) -> int:
     return parse_int(value)
+
+
+def _join_unique(values: list[Any]) -> str:
+    seen = set()
+    result = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return "|".join(result)
+
+
+def _contains_reaction_token(reaction_types: str, token: str) -> bool:
+    token_upper = token.upper()
+    return any(token_upper in part.upper() for part in str(reaction_types or "").split("|"))

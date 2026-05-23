@@ -53,6 +53,7 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
         "zone_truth_events.csv",
         "zone_truth_summary.md",
         "zone_truth_by_reaction.csv",
+        "zone_truth_by_final_reaction.csv",
         "zone_truth_match_quality.csv",
         "zone_truth_by_direction.csv",
         "zone_truth_by_session.csv",
@@ -65,9 +66,41 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
         rows = list(csv.DictReader(f))
     assert rows[0]["zone_id"] == "iz-1"
     assert rows[0]["pie_count"] == "1"
+    assert rows[0]["pie_event_keys"] == "pie-1"
+    assert rows[0]["reaction_count"] == "1"
+    assert rows[0]["reaction_types"] == "CLEAN_HOLD"
+    assert rows[0]["final_reaction_type"] == "CLEAN_HOLD"
     assert rows[0]["a2_pre_pool_reason"] == "HAS_ICEBERG_PIE"
 
 
 def test_expanded_parameter_grid_contains_new_values():
     assert 20_000_000 in GRID_DEPTH
     assert 2.0 in GRID_ABS
+
+
+def test_group_stats_complete_only_forward_averages():
+    rows = [
+        {
+            "truth_score_avg": 80,
+            "truth_score_max": 80,
+            "truth_ge65_count": 1,
+            "truth_ge80_count": 1,
+            "mfe_1h_u": 10,
+            "mae_1h_u": -2,
+            "is_complete_1h": True,
+        },
+        {
+            "truth_score_avg": 80,
+            "truth_score_max": 80,
+            "truth_ge65_count": 1,
+            "truth_ge80_count": 1,
+            "mfe_1h_u": 100,
+            "mae_1h_u": -20,
+            "is_complete_1h": False,
+        },
+    ]
+    stats = ZoneTruthAnalyzer()._group_stats("all", rows)
+    assert stats["mfe_1h_avg"] == 55
+    assert stats["mfe_1h_complete_avg"] == 10
+    assert stats["mae_1h_avg"] == -11
+    assert stats["mae_1h_complete_avg"] == -2

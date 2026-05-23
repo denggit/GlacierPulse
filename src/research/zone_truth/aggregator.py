@@ -150,6 +150,7 @@ class ZoneTruthAggregator:
         right_score = self._reaction_rank(right)
         primary = right if right_score >= left_score else left
         secondary = left if primary is right else right
+        final_type, final_ts = self._latest_reaction_type_and_ts(left, right)
         lower_values = [x for x in (primary.zone_lower, secondary.zone_lower) if x > 0]
         upper_values = [x for x in (primary.zone_upper, secondary.zone_upper) if x > 0]
         primary.zone_lower = min(lower_values) if lower_values else 0.0
@@ -158,6 +159,13 @@ class ZoneTruthAggregator:
         primary.last_seen_ts = max(primary.last_seen_ts, secondary.last_seen_ts)
         primary.frozen_ts = primary.frozen_ts or secondary.frozen_ts
         primary.reaction_event_ts = primary.reaction_event_ts or secondary.reaction_event_ts
+        primary.reaction_count = int(left.reaction_count or 0) + int(right.reaction_count or 0)
+        primary.reaction_types = _join_unique_text(left.reaction_types, right.reaction_types)
+        primary.has_clean_hold = bool(left.has_clean_hold or right.has_clean_hold)
+        primary.has_failed_reclaim = bool(left.has_failed_reclaim or right.has_failed_reclaim)
+        primary.primary_reaction_type = primary.reaction_type
+        primary.final_reaction_type = final_type
+        primary.final_reaction_ts = final_ts
         return primary
 
     @staticmethod
@@ -170,6 +178,14 @@ class ZoneTruthAggregator:
         else:
             rank = 1
         return rank, reaction.reaction_event_ts or reaction.frozen_ts
+
+    @staticmethod
+    def _latest_reaction_type_and_ts(left: ZoneReaction, right: ZoneReaction) -> tuple[str, float]:
+        left_ts = max(left.reaction_event_ts, left.frozen_ts, left.final_reaction_ts)
+        right_ts = max(right.reaction_event_ts, right.frozen_ts, right.final_reaction_ts)
+        if right_ts >= left_ts:
+            return right.final_reaction_type or right.reaction_type, right_ts
+        return left.final_reaction_type or left.reaction_type, left_ts
 
     def _match_pie(
         self,
@@ -261,6 +277,9 @@ class ZoneTruthAggregator:
         if base.zone_source == SOURCE_SYNTHETIC:
             base.reaction_type = "SYNTHETIC"
             base.a1_reaction_type = "SYNTHETIC"
+            base.primary_reaction_type = "SYNTHETIC"
+            base.final_reaction_type = "SYNTHETIC"
+            base.reaction_types = "SYNTHETIC"
         return base
 
     def _base_from_reaction(self, zone_id: str, reaction: ZoneReaction) -> ZoneTruthEvent:
@@ -292,6 +311,13 @@ class ZoneTruthAggregator:
             a1_reaction_reason=reaction.a1_reaction_reason,
             frozen_reason=reaction.frozen_reason,
             zone_state=reaction.zone_state,
+            reaction_count=reaction.reaction_count,
+            reaction_types=reaction.reaction_types,
+            has_clean_hold=reaction.has_clean_hold,
+            has_failed_reclaim=reaction.has_failed_reclaim,
+            primary_reaction_type=reaction.primary_reaction_type,
+            final_reaction_type=reaction.final_reaction_type,
+            final_reaction_ts=reaction.final_reaction_ts,
         )
 
     def _base_from_pies(self, zone_id: str, pies: list[Mapping[str, Any]]) -> ZoneTruthEvent:
@@ -330,6 +356,11 @@ class ZoneTruthAggregator:
         row.ignore_pie_count = counts.get("IGNORE", 0)
         row.spoofing_pie_count = counts.get("SPOOFING", 0)
         row.cancel_pie_count = counts.get("CANCEL", 0)
+        row.pie_event_keys = _pie_keys_for_result(pies)
+        row.iceberg_pie_event_keys = _pie_keys_for_result(pies, "ICEBERG")
+        row.ignore_pie_event_keys = _pie_keys_for_result(pies, "IGNORE")
+        row.spoofing_pie_event_keys = _pie_keys_for_result(pies, "SPOOFING")
+        row.cancel_pie_event_keys = _pie_keys_for_result(pies, "CANCEL")
 
         scores = [truth_score(p) for p in pies]
         if scores:
@@ -393,3 +424,31 @@ class ZoneTruthAggregator:
                 parse_timestamp(first_present(p, "settle_ts", "trigger_ts")),
             ),
         )
+
+
+def _join_unique_text(*values: str) -> str:
+    seen = set()
+    result = []
+    for value in values:
+        for part in str(value or "").split("|"):
+            text = part.strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+    return "|".join(result)
+
+
+def _pie_keys_for_result(pies: list[Mapping[str, Any]], result: str | None = None) -> str:
+    keys = []
+    seen = set()
+    expected = str(result or "").upper()
+    for pie in pies:
+        if expected and str(pie.get("result") or "").upper() != expected:
+            continue
+        key = str(pie.get("event_key") or pie.get("event_id") or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return "|".join(keys)

@@ -1,7 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from src.research.zone_truth.aggregator import ZoneTruthAggregator
+from src.research.zone_truth.models import local_session
 
 
 BASE_TS = 1_779_000_000.0
@@ -125,3 +129,60 @@ def test_a2_pre_pool_eligible_only_depends_on_iceberg_pie_count():
     ice_row = next(row for row in rows if row["zone_id"] == "iz-ice")
     assert ignore_row["a2_pre_pool_eligible"] is False
     assert ice_row["a2_pre_pool_eligible"] is True
+
+
+def test_zone_outputs_full_pie_membership():
+    rows = ZoneTruthAggregator().aggregate(
+        [
+            _pie("pie-a", result="ICEBERG", zone_id="iz-1"),
+            _pie("pie-b", result="ICEBERG", zone_id="iz-1"),
+            _pie("pie-c", result="IGNORE", zone_id="iz-1"),
+            _pie("pie-d", result="SPOOFING", zone_id="iz-1"),
+            _pie("pie-e", result="CANCEL", zone_id="iz-1"),
+        ],
+        [_reaction("iz-1")],
+    )
+    row = next(row for row in rows if row["zone_id"] == "iz-1")
+    assert row["pie_event_keys"] == "pie-a|pie-b|pie-c|pie-d|pie-e"
+    assert row["iceberg_pie_event_keys"] == "pie-a|pie-b"
+    assert row["ignore_pie_event_keys"] == "pie-c"
+    assert row["spoofing_pie_event_keys"] == "pie-d"
+    assert row["cancel_pie_event_keys"] == "pie-e"
+
+
+def test_zone_truth_session_tags_match_runtime_profile():
+    def ts(hour, minute=0):
+        return datetime(2026, 5, 24, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+
+    assert local_session(ts(21, 30), "Asia/Shanghai")["session_tag"] == "US_OPEN"
+    assert local_session(ts(6), "Asia/Shanghai")["session_tag"] == "ASIA_OFF"
+    assert local_session(ts(10), "Asia/Shanghai")["session_tag"] == "ASIA_DAY"
+    assert local_session(ts(18), "Asia/Shanghai")["session_tag"] == "EUROPE_PRE_US"
+    assert local_session(ts(2), "Asia/Shanghai")["session_tag"] == "US_LATE"
+
+
+def test_multiple_reactions_preserve_final_and_flags():
+    rows = ZoneTruthAggregator().aggregate(
+        [_pie("pie-a", zone_id="iz-1")],
+        [
+            {
+                **_reaction("iz-1", reaction="CLEAN_HOLD"),
+                "frozen_ts": 90,
+                "reaction_event_ts": 100,
+            },
+            {
+                **_reaction("iz-1", reaction="FAILED_RECLAIM"),
+                "frozen_ts": 190,
+                "reaction_event_ts": 200,
+            },
+        ],
+    )
+    row = next(row for row in rows if row["zone_id"] == "iz-1")
+    assert row["reaction_count"] == 2
+    assert "CLEAN_HOLD" in row["reaction_types"]
+    assert "FAILED_RECLAIM" in row["reaction_types"]
+    assert row["has_clean_hold"] is True
+    assert row["has_failed_reclaim"] is True
+    assert row["primary_reaction_type"] == "CLEAN_HOLD"
+    assert row["final_reaction_type"] == "FAILED_RECLAIM"
+    assert row["final_reaction_ts"] == 200

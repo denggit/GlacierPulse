@@ -23,10 +23,16 @@ GROUP_METRIC_FIELDS = [
     "truth_ge80_avg",
     "mfe_15m_avg",
     "mae_15m_avg",
+    "mfe_15m_complete_avg",
+    "mae_15m_complete_avg",
     "mfe_1h_avg",
     "mae_1h_avg",
+    "mfe_1h_complete_avg",
+    "mae_1h_complete_avg",
     "mfe_4h_avg",
     "mae_4h_avg",
+    "mfe_4h_complete_avg",
+    "mae_4h_complete_avg",
     "complete_15m_count",
     "complete_1h_count",
     "complete_4h_count",
@@ -76,6 +82,7 @@ class ZoneTruthAnalyzer:
         rows = ZoneForwardMetricsCalculator(self.windows_sec, kline_timezone=self.timezone).attach_forward_metrics(rows, kline_records)
         write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_direction.csv", self.group_rows(rows, "direction"), ["direction"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_session.csv", self.group_rows(rows, "session_tag"), ["session_tag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_truth_bucket.csv", self.group_by_truth_bucket(rows), ["truth_bucket"] + GROUP_METRIC_FIELDS)
@@ -109,6 +116,8 @@ class ZoneTruthAnalyzer:
             "forward_metrics": forward_summary,
             "clean_hold_count": self._reaction_contains(rows, "CLEAN_HOLD"),
             "failed_reclaim_count": self._reaction_contains(rows, "FAILED_RECLAIM"),
+            "has_clean_hold_count": sum(1 for row in rows if parse_bool(row.get("has_clean_hold"))),
+            "has_failed_reclaim_count": sum(1 for row in rows if parse_bool(row.get("has_failed_reclaim"))),
             "truth_ge65_zone_count": sum(1 for row in rows if parse_float(row.get("truth_ge65_count")) > 0),
             "hard_cap_warning_zone_count": sum(1 for row in rows if parse_bool(row.get("has_any_hard_cap"))),
         }
@@ -169,10 +178,16 @@ class ZoneTruthAnalyzer:
             "truth_ge80_avg": self._avg(rows, "truth_ge80_count"),
             "mfe_15m_avg": self._avg(rows, "mfe_15m_u"),
             "mae_15m_avg": self._avg(rows, "mae_15m_u"),
+            "mfe_15m_complete_avg": self._complete_avg(rows, "mfe_15m_u", "is_complete_15m"),
+            "mae_15m_complete_avg": self._complete_avg(rows, "mae_15m_u", "is_complete_15m"),
             "mfe_1h_avg": self._avg(rows, "mfe_1h_u"),
             "mae_1h_avg": self._avg(rows, "mae_1h_u"),
+            "mfe_1h_complete_avg": self._complete_avg(rows, "mfe_1h_u", "is_complete_1h"),
+            "mae_1h_complete_avg": self._complete_avg(rows, "mae_1h_u", "is_complete_1h"),
             "mfe_4h_avg": self._avg(rows, "mfe_4h_u"),
             "mae_4h_avg": self._avg(rows, "mae_4h_u"),
+            "mfe_4h_complete_avg": self._complete_avg(rows, "mfe_4h_u", "is_complete_4h"),
+            "mae_4h_complete_avg": self._complete_avg(rows, "mae_4h_u", "is_complete_4h"),
             "complete_15m_count": sum(1 for row in rows if parse_bool(row.get("is_complete_15m"))),
             "complete_1h_count": sum(1 for row in rows if parse_bool(row.get("is_complete_1h"))),
             "complete_4h_count": sum(1 for row in rows if parse_bool(row.get("is_complete_4h"))),
@@ -184,10 +199,17 @@ class ZoneTruthAnalyzer:
         return round(sum(values) / len(values), 6) if values else 0.0
 
     @staticmethod
+    def _complete_avg(rows: list[Mapping[str, Any]], field: str, complete_field: str) -> float:
+        complete_rows = [row for row in rows if parse_bool(row.get(complete_field))]
+        return ZoneTruthAnalyzer._avg(complete_rows, field)
+
+    @staticmethod
     def _forward_summary(rows: list[Mapping[str, Any]], label: str) -> dict[str, Any]:
         return {
             "mfe_avg": ZoneTruthAnalyzer._avg(rows, f"mfe_{label}_u"),
             "mae_avg": ZoneTruthAnalyzer._avg(rows, f"mae_{label}_u"),
+            "mfe_complete_avg": ZoneTruthAnalyzer._complete_avg(rows, f"mfe_{label}_u", f"is_complete_{label}"),
+            "mae_complete_avg": ZoneTruthAnalyzer._complete_avg(rows, f"mae_{label}_u", f"is_complete_{label}"),
             "complete_count": sum(1 for row in rows if parse_bool(row.get(f"is_complete_{label}"))),
         }
 
@@ -198,7 +220,7 @@ class ZoneTruthAnalyzer:
     @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
-            "# V6.3.11.5 Zone Truth Aggregation",
+            "# V6.3.11.5.1 Zone Truth Aggregation Cleanup",
             "",
             f"- total_zones: {summary.get('total_zones')}",
             f"- exact_matched_zones: {summary.get('exact_matched_zones')}",
@@ -215,7 +237,9 @@ class ZoneTruthAnalyzer:
         lines.extend(["", "## Forward Metrics", ""])
         for label, stats in dict(summary.get("forward_metrics") or {}).items():
             lines.append(
-                f"- {label}: mfe_avg={stats.get('mfe_avg')} mae_avg={stats.get('mae_avg')} complete_count={stats.get('complete_count')}"
+                f"- {label}: mfe_avg={stats.get('mfe_avg')} mae_avg={stats.get('mae_avg')} "
+                f"mfe_complete_avg={stats.get('mfe_complete_avg')} mae_complete_avg={stats.get('mae_complete_avg')} "
+                f"complete_count={stats.get('complete_count')}"
             )
         lines.extend(
             [
@@ -224,9 +248,13 @@ class ZoneTruthAnalyzer:
                 "",
                 f"- CLEAN_HOLD zone count: {summary.get('clean_hold_count')}",
                 f"- FAILED_RECLAIM zone count: {summary.get('failed_reclaim_count')}",
+                f"- has_clean_hold_count: {summary.get('has_clean_hold_count')}",
+                f"- has_failed_reclaim_count: {summary.get('has_failed_reclaim_count')}",
                 f"- synthetic vs reaction zone: synthetic={summary.get('synthetic_zones')} reaction={int(summary.get('total_zones') or 0) - int(summary.get('synthetic_zones') or 0)}",
                 f"- truth_ge65_count positive zones: {summary.get('truth_ge65_zone_count')}",
                 f"- hard cap warning zones: {summary.get('hard_cap_warning_zone_count')}",
+                "",
+                "Synthetic zones are currently emitted per unmatched ICEBERG pie and do not represent real merged zones. A later version may add synthetic_merge_enabled.",
                 "",
                 "A2_PRE_POOL eligibility is based only on iceberg_pie_count >= 1. Truth Score and forward MFE/MAE are offline research fields.",
             ]
