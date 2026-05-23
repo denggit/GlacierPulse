@@ -163,6 +163,7 @@ class A1ZoneTracker:
             "last_seen_ts": float(event.get("ts", 0.0)),
             "first_event_id": event.get("event_id"),
             "last_event_id": event.get("event_id"),
+            "pie_event_keys": [event.get("event_key")] if event.get("event_key") else [],
             "event_count": 1,
             "iceberg_count": 1 if result == "ICEBERG" else 0,
             "ignore_count": 1 if result == "IGNORE" else 0,
@@ -216,6 +217,10 @@ class A1ZoneTracker:
 
         zone["last_seen_ts"] = float(event.get("ts", 0.0))
         zone["last_event_id"] = event.get("event_id")
+        if event.get("event_key"):
+            pie_event_keys = zone.setdefault("pie_event_keys", [])
+            if event.get("event_key") not in pie_event_keys:
+                pie_event_keys.append(event.get("event_key"))
         zone["event_count"] = int(zone.get("event_count", 0)) + 1
         zone["iceberg_count"] = int(zone.get("iceberg_count", 0)) + (1 if result == "ICEBERG" else 0)
         zone["ignore_count"] = int(zone.get("ignore_count", 0)) + (1 if result == "IGNORE" else 0)
@@ -495,6 +500,7 @@ class A1ZoneTracker:
 
         return {
             "event_id": str(event.get("event_id") or f"ice-{int(now * 1000)}"),
+            "event_key": str(event.get("event_key") or ""),
             "ts": ts,
             "recv_ts": recv_ts,
             "direction": direction,
@@ -563,6 +569,7 @@ class A1ZoneTracker:
             "frozen_reason": zone.get("frozen_reason"),
             "frozen_state": zone.get("frozen_state"),
             "frozen_event_id": zone.get("frozen_event_id"),
+            "pie_event_keys": list(zone.get("pie_event_keys") or []),
             "is_frozen": zone.get("is_frozen", False),
             "anchor_price": zone.get("anchor_price"),
             "first_seen_ts": zone.get("first_seen_ts"),

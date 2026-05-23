@@ -565,6 +565,24 @@ class A1AbsorptionEngine:
             settle_ts=settle_ts,
             settle_recv_ts=settle_recv_ts,
         )
+        candidate_snapshot = None
+        try:
+            candidate_snapshot = self._build_phase1_truth_candidate_snapshot(
+                event=event,
+                result=result,
+                signal=signal,
+                quality=quality,
+                current_price=current_price,
+                book_reduction=book_reduction,
+                wait_ms=wait_ms,
+                cancel_reason=cancel_reason,
+                settle_ts=settle_ts,
+                settle_recv_ts=settle_recv_ts,
+            )
+            zone_event["event_key"] = candidate_snapshot.get("event_key")
+        except Exception as exc:
+            logger.warning("[PHASE1-TRUTH-FALLBACK] reason=engine_build_candidate_snapshot error=%s", exc)
+        zone = self.zone_tracker.update(zone_event, current_price=current_price)
         self._register_phase1_truth_candidate(
             event=event,
             result=result,
@@ -576,8 +594,9 @@ class A1AbsorptionEngine:
             cancel_reason=cancel_reason,
             settle_ts=settle_ts,
             settle_recv_ts=settle_recv_ts,
+            candidate_snapshot=candidate_snapshot,
+            assigned_zone=zone,
         )
-        zone = self.zone_tracker.update(zone_event, current_price=current_price)
         if zone:
             try:
                 self.outcome_evaluator.upsert_zone(
@@ -630,12 +649,14 @@ class A1AbsorptionEngine:
         cancel_reason: Optional[str] = None,
         settle_ts: float = 0.0,
         settle_recv_ts: float = 0.0,
+        candidate_snapshot: Optional[Dict[str, Any]] = None,
+        assigned_zone: Optional[Dict[str, Any]] = None,
     ) -> None:
         tracker = getattr(self, "phase1_truth_tracker", None)
         if not tracker:
             return
         try:
-            snapshot = self._build_phase1_truth_candidate_snapshot(
+            snapshot = dict(candidate_snapshot) if isinstance(candidate_snapshot, dict) else self._build_phase1_truth_candidate_snapshot(
                 event=event,
                 result=result,
                 signal=signal,
@@ -647,6 +668,7 @@ class A1AbsorptionEngine:
                 settle_ts=settle_ts,
                 settle_recv_ts=settle_recv_ts,
             )
+            self._attach_phase1_candidate_zone_fields(snapshot, assigned_zone)
             tracker.register_candidate_settlement(snapshot)
         except Exception as exc:
             logger.warning("[PHASE1-TRUTH-FALLBACK] reason=engine_register_candidate error=%s", exc)
@@ -947,6 +969,36 @@ class A1AbsorptionEngine:
             "session_tag": session.get("session_tag"),
             "is_weekend": session.get("is_weekend"),
         }
+
+    def _attach_phase1_candidate_zone_fields(
+        self,
+        snapshot: Dict[str, Any],
+        assigned_zone: Optional[Dict[str, Any]],
+    ) -> None:
+        if not isinstance(snapshot, dict) or not isinstance(assigned_zone, dict):
+            return
+        zone_id = str(assigned_zone.get("zone_id") or "")
+        if not zone_id:
+            return
+        zone_lower = self._safe_float(assigned_zone.get("zone_lower"), 0.0)
+        zone_upper = self._safe_float(assigned_zone.get("zone_upper"), 0.0)
+        if not snapshot.get("zone_id"):
+            snapshot["zone_id"] = zone_id
+        snapshot["assigned_zone_id"] = zone_id
+        snapshot["assigned_zone_lower"] = zone_lower
+        snapshot["assigned_zone_upper"] = zone_upper
+        snapshot["assigned_zone_mid"] = (zone_lower + zone_upper) / 2.0 if zone_lower > 0 and zone_upper > 0 else 0.0
+        snapshot["zone_mid"] = snapshot["assigned_zone_mid"]
+        snapshot["assigned_zone_direction"] = str(assigned_zone.get("direction") or "")
+        snapshot["assigned_zone_first_seen_ts"] = self._safe_float(assigned_zone.get("first_seen_ts"), 0.0)
+        snapshot["assigned_zone_last_seen_ts"] = self._safe_float(assigned_zone.get("last_seen_ts"), 0.0)
+        snapshot["assigned_zone_iceberg_count"] = self._safe_int(assigned_zone.get("iceberg_count"), 0)
+        snapshot["assigned_zone_state"] = str(assigned_zone.get("state") or "")
+        snapshot["zone_direction"] = snapshot["assigned_zone_direction"]
+        snapshot["zone_first_seen_ts"] = snapshot["assigned_zone_first_seen_ts"]
+        snapshot["zone_last_seen_ts"] = snapshot["assigned_zone_last_seen_ts"]
+        snapshot["zone_iceberg_count"] = snapshot["assigned_zone_iceberg_count"]
+        snapshot["zone_state"] = snapshot["assigned_zone_state"]
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
