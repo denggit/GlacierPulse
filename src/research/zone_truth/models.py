@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from src.research.a1_edge.schema import parse_bool, parse_float, parse_int, parse_timestamp
 
 
-SCHEMA_VERSION = "v6.3.11.5.zone_truth.1"
+SCHEMA_VERSION = "v6.3.11.5.1.zone_truth.1"
 MATCH_EXACT = "exact"
 MATCH_FUZZY = "fuzzy"
 MATCH_UNMATCHED = "unmatched"
@@ -237,6 +237,8 @@ class ZoneTruthEvent:
 
 ZONE_TRUTH_EVENT_FIELDS = [field.name for field in fields(ZoneTruthEvent)]
 FORWARD_FIELDS = [
+    "forward_anchor_ts", "forward_anchor_source", "forward_anchor_local_time",
+    "forward_entry_price", "forward_entry_price_source",
     "mfe_15m_u", "mae_15m_u", "end_15m_u", "is_complete_15m",
     "mfe_1h_u", "mae_1h_u", "end_1h_u", "is_complete_1h",
     "mfe_4h_u", "mae_4h_u", "end_4h_u", "is_complete_4h",

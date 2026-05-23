@@ -70,12 +70,49 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
     assert rows[0]["reaction_count"] == "1"
     assert rows[0]["reaction_types"] == "CLEAN_HOLD"
     assert rows[0]["final_reaction_type"] == "CLEAN_HOLD"
+    assert rows[0]["forward_anchor_ts"] == str(BASE_TS + 30)
+    assert rows[0]["forward_anchor_source"] == "reaction_event_ts"
+    assert rows[0]["forward_entry_price"] == "100.0"
+    assert rows[0]["forward_entry_price_source"] == "zone_mid"
     assert rows[0]["a2_pre_pool_reason"] == "HAS_ICEBERG_PIE"
 
 
 def test_expanded_parameter_grid_contains_new_values():
     assert 20_000_000 in GRID_DEPTH
     assert 2.0 in GRID_ABS
+
+
+def test_zone_truth_schema_version_updated(tmp_path):
+    phase1 = [
+        {
+            "record_type": "candidate_finalized",
+            "event_key": "pie-1",
+            "zone_id": "iz-1",
+            "direction": "BUY",
+            "result": "ICEBERG",
+            "settle_ts": BASE_TS,
+            "settle_price": 100,
+            "zone_lower": 99,
+            "zone_upper": 101,
+            "truth_score": {"truth_score_total": 80, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
+        }
+    ]
+    reactions = [
+        {
+            "zone_id": "iz-1",
+            "direction": "BUY",
+            "frozen_ts": BASE_TS,
+            "reaction_event_ts": BASE_TS + 30,
+            "frozen_low": 99,
+            "frozen_high": 101,
+        }
+    ]
+    klines = [{"timestamp": BASE_TS + 60, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1}]
+    out = tmp_path / "out"
+    ZoneTruthAnalyzer().export(phase1, reactions, klines, out)
+    with (out / "zone_truth_events.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["schema_version"] == "v6.3.11.5.1.zone_truth.1"
 
 
 def test_group_stats_complete_only_forward_averages():

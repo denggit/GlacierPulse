@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+from datetime import datetime
 from statistics import median
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from src.research.a1_edge.io_utils import normalize_klines
 from src.research.a1_edge.schema import parse_float
@@ -34,6 +36,13 @@ class ZoneForwardMetricsCalculator:
 
     def attach_to_row(self, row: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
         result = dict(row)
+        anchor_ts, anchor_source = _resolve_event_ts(result)
+        entry_price, entry_source = _resolve_entry_price(result)
+        result["forward_anchor_ts"] = anchor_ts
+        result["forward_anchor_source"] = anchor_source
+        result["forward_anchor_local_time"] = _local_time(anchor_ts, self.kline_timezone)
+        result["forward_entry_price"] = entry_price
+        result["forward_entry_price_source"] = entry_source
         for window_sec in self.windows_sec:
             label = WINDOW_LABELS.get(int(window_sec), f"{int(window_sec)}s")
             metric = compute_zone_forward_metric(result, bars, int(window_sec))
@@ -45,8 +54,8 @@ class ZoneForwardMetricsCalculator:
 
 
 def compute_zone_forward_metric(zone: Mapping[str, Any], bars: list[dict[str, float]], window_sec: int) -> dict[str, Any]:
-    event_ts = _event_ts(zone)
-    entry = _entry_price(zone)
+    event_ts, _anchor_source = _resolve_event_ts(zone)
+    entry, _entry_source = _resolve_entry_price(zone)
     direction = str(zone.get("direction") or "").upper()
     if not bars or event_ts <= 0 or entry <= 0 or direction not in {"BUY", "SELL"}:
         return {"mfe_u": 0.0, "mae_u": 0.0, "end_u": 0.0, "is_complete": False, "future_bar_count": 0}
@@ -96,17 +105,23 @@ def infer_bar_interval_sec(bars: list[dict[str, float]], default: float = 60.0) 
     return float(median(diffs)) if diffs else float(default)
 
 
-def _event_ts(zone: Mapping[str, Any]) -> float:
+def _resolve_event_ts(zone: Mapping[str, Any]) -> tuple[float, str]:
     for name in ("reaction_event_ts", "frozen_ts", "best_pie_ts", "first_seen_ts"):
         value = parse_float(zone.get(name))
         if value > 0:
-            return value
-    return 0.0
+            return value, name
+    return 0.0, "none"
 
 
-def _entry_price(zone: Mapping[str, Any]) -> float:
+def _resolve_entry_price(zone: Mapping[str, Any]) -> tuple[float, str]:
     for name in ("zone_mid", "best_pie_price", "settle_price"):
         value = parse_float(zone.get(name))
         if value > 0:
-            return value
-    return 0.0
+            return value, name
+    return 0.0, "none"
+
+
+def _local_time(ts: float, timezone: str) -> str:
+    if not ts or ts <= 0:
+        return ""
+    return datetime.fromtimestamp(float(ts), tz=ZoneInfo(str(timezone))).isoformat()

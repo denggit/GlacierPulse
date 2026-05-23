@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from src.research.zone_truth.forward import compute_zone_forward_metric
+from src.research.zone_truth.forward import ZoneForwardMetricsCalculator, compute_zone_forward_metric
 
 
 BASE_TS = 1_779_000_000.0
@@ -58,3 +58,39 @@ def test_mfe_min_zero_and_mae_max_zero():
     sell = compute_zone_forward_metric({"direction": "SELL", "reaction_event_ts": BASE_TS + 1, "zone_mid": 100}, bars, 60)
     assert buy["mae_u"] == 0
     assert sell["mfe_u"] == 0
+
+
+def test_forward_metric_outputs_anchor_and_entry_source():
+    row = ZoneForwardMetricsCalculator(windows_sec=[900]).attach_to_row(
+        {
+            "direction": "BUY",
+            "reaction_event_ts": BASE_TS + 30,
+            "frozen_ts": BASE_TS,
+            "best_pie_ts": BASE_TS - 60,
+            "zone_mid": 100,
+        },
+        _bars(),
+    )
+    assert row["forward_anchor_ts"] == BASE_TS + 30
+    assert row["forward_anchor_source"] == "reaction_event_ts"
+    assert row["forward_entry_price"] == 100
+    assert row["forward_entry_price_source"] == "zone_mid"
+
+
+def test_forward_metric_falls_back_to_best_pie_ts_and_price():
+    row = ZoneForwardMetricsCalculator(windows_sec=[900]).attach_to_row(
+        {
+            "direction": "BUY",
+            "reaction_event_ts": 0,
+            "frozen_ts": 0,
+            "best_pie_ts": BASE_TS + 30,
+            "first_seen_ts": BASE_TS,
+            "zone_mid": 0,
+            "best_pie_price": 101,
+        },
+        _bars(),
+    )
+    assert row["forward_anchor_ts"] == BASE_TS + 30
+    assert row["forward_anchor_source"] == "best_pie_ts"
+    assert row["forward_entry_price"] == 101
+    assert row["forward_entry_price_source"] == "best_pie_price"

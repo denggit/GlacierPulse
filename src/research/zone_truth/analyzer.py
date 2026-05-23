@@ -235,6 +235,11 @@ class ZoneTruthAnalyzer:
         for key, value in dict(summary.get("reaction_distribution") or {}).items():
             lines.append(f"- {key}: {value}")
         lines.extend(["", "## Forward Metrics", ""])
+        lines.append(
+            "Zone forward metrics start from `forward_anchor_ts`; `forward_anchor_source` and "
+            "`forward_entry_price_source` identify the exact timestamp and entry price used."
+        )
+        lines.append("")
         for label, stats in dict(summary.get("forward_metrics") or {}).items():
             lines.append(
                 f"- {label}: mfe_avg={stats.get('mfe_avg')} mae_avg={stats.get('mae_avg')} "
@@ -255,6 +260,8 @@ class ZoneTruthAnalyzer:
                 f"- hard cap warning zones: {summary.get('hard_cap_warning_zone_count')}",
                 "",
                 "Synthetic zones are currently emitted per unmatched ICEBERG pie and do not represent real merged zones. A later version may add synthetic_merge_enabled.",
+                "",
+                "For zones with multiple reactions, `final_reaction_type` is the final observed reaction label. It does not mean forward metrics start from `final_reaction_ts`; the default anchor remains reaction_event_ts -> frozen_ts -> best_pie_ts -> first_seen_ts. A later version may add final_reaction_forward_metrics.",
                 "",
                 "A2_PRE_POOL eligibility is based only on iceberg_pie_count >= 1. Truth Score and forward MFE/MAE are offline research fields.",
             ]
