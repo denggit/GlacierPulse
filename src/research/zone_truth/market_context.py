@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -45,8 +44,8 @@ class ZoneMarketContextCalculator:
         if not bars or anchor_ts <= 0:
             return result
 
-        timestamps = [float(bar["timestamp"]) for bar in bars]
-        anchor_idx = bisect_right(timestamps, anchor_ts) - 1
+        interval_sec = infer_bar_interval_sec(bars)
+        anchor_idx = _last_completed_bar_index(bars, anchor_ts, interval_sec)
         if anchor_idx < 0:
             return result
         anchor_price = parse_float(bars[anchor_idx].get("close"))
@@ -55,10 +54,11 @@ class ZoneMarketContextCalculator:
 
         window_stats: dict[str, dict[str, Any]] = {}
         for window_sec, label in WINDOWS:
-            stats = _pre_window_stats(bars, timestamps, anchor_ts, anchor_idx, window_sec)
+            stats = _pre_window_stats(bars, anchor_idx, window_sec, interval_sec)
             window_stats[label] = stats
             result[f"pre_{label}_return_u"] = stats["return_u"]
             result[f"pre_{label}_return_pct"] = stats["return_pct"]
+            result[f"is_complete_pre_{label}"] = stats["is_complete"]
             result[f"pre_{label}_range_u"] = stats["range_u"]
             result[f"pre_{label}_volume"] = stats["volume"]
 
@@ -73,7 +73,7 @@ class ZoneMarketContextCalculator:
         result["distance_to_pre_1h_high_u"] = round(anchor_price - pre_1h["high"], 8) if pre_1h["known"] else 0.0
         result["distance_to_pre_1h_low_u"] = round(anchor_price - pre_1h["low"], 8) if pre_1h["known"] else 0.0
 
-        session_stats = _session_stats(bars, anchor_ts, self.kline_timezone, str(result.get("session_tag") or "UNKNOWN"))
+        session_stats = _session_stats(bars, anchor_idx, anchor_ts, self.kline_timezone, str(result.get("session_tag") or "UNKNOWN"))
         result["session_open_price"] = session_stats["open"]
         result["session_high"] = session_stats["high"]
         result["session_low"] = session_stats["low"]
@@ -104,6 +104,9 @@ def _empty_context(anchor_ts: float, timezone: str) -> dict[str, Any]:
         "pre_1h_return_pct": 0.0,
         "pre_4h_return_u": 0.0,
         "pre_4h_return_pct": 0.0,
+        "is_complete_pre_15m": False,
+        "is_complete_pre_1h": False,
+        "is_complete_pre_4h": False,
         "pre_15m_range_u": 0.0,
         "pre_1h_range_u": 0.0,
         "pre_4h_range_u": 0.0,
@@ -128,21 +131,20 @@ def _empty_context(anchor_ts: float, timezone: str) -> dict[str, Any]:
 
 def _pre_window_stats(
     bars: list[dict[str, float]],
-    timestamps: list[float],
-    anchor_ts: float,
     anchor_idx: int,
     window_sec: int,
+    interval_sec: float,
 ) -> dict[str, Any]:
-    target_ts = anchor_ts - float(window_sec)
-    start_idx = bisect_right(timestamps, target_ts) - 1
-    if start_idx < 0 or start_idx >= anchor_idx:
+    expected_count = max(1, int(round(float(window_sec) / max(interval_sec, 1.0))))
+    reference_idx = anchor_idx - expected_count
+    if reference_idx < 0:
         return _unknown_window()
-    start_close = parse_float(bars[start_idx].get("close"))
+    start_close = parse_float(bars[reference_idx].get("close"))
     anchor_close = parse_float(bars[anchor_idx].get("close"))
     if start_close <= 0 or anchor_close <= 0:
         return _unknown_window()
-    window = [bar for bar in bars[start_idx + 1 : anchor_idx + 1] if target_ts < float(bar["timestamp"]) <= anchor_ts]
-    if not window:
+    window = bars[reference_idx + 1 : anchor_idx + 1]
+    if len(window) < expected_count:
         return _unknown_window()
     high = max(parse_float(bar.get("high")) for bar in window)
     low = min(parse_float(bar.get("low")) for bar in window)
@@ -151,6 +153,7 @@ def _pre_window_stats(
     ret_pct = (ret_u / start_close * 100.0) if start_close else 0.0
     return {
         "known": True,
+        "is_complete": True,
         "return_u": round(ret_u, 8),
         "return_pct": round(ret_pct, 8),
         "range_u": round(high - low, 8),
@@ -163,6 +166,7 @@ def _pre_window_stats(
 def _unknown_window() -> dict[str, Any]:
     return {
         "known": False,
+        "is_complete": False,
         "return_u": 0.0,
         "return_pct": 0.0,
         "range_u": 0.0,
@@ -219,15 +223,33 @@ def _rolling_volumes(bars: list[dict[str, float]], window_sec: int) -> list[floa
     return volumes
 
 
-def _session_stats(bars: list[dict[str, float]], anchor_ts: float, timezone: str, session_tag: str) -> dict[str, Any]:
+def _last_completed_bar_index(bars: list[dict[str, float]], anchor_ts: float, interval_sec: float) -> int:
+    if not bars or anchor_ts <= 0:
+        return -1
+    best_idx = -1
+    interval = max(float(interval_sec), 1.0)
+    for idx, bar in enumerate(bars):
+        if parse_float(bar.get("timestamp")) + interval <= anchor_ts:
+            best_idx = idx
+        else:
+            break
+    return best_idx
+
+
+def _session_stats(
+    bars: list[dict[str, float]],
+    anchor_idx: int,
+    anchor_ts: float,
+    timezone: str,
+    session_tag: str,
+) -> dict[str, Any]:
     if anchor_ts <= 0:
         return {"known": False, "open": 0.0, "high": 0.0, "low": 0.0}
     anchor_dt = datetime.fromtimestamp(anchor_ts, tz=ZoneInfo(str(timezone)))
     rows = []
-    for bar in bars:
+    completed_bars = bars[: anchor_idx + 1] if anchor_idx >= 0 else []
+    for bar in completed_bars:
         ts = parse_float(bar.get("timestamp"))
-        if ts >= anchor_ts:
-            continue
         local_dt = datetime.fromtimestamp(ts, tz=ZoneInfo(str(timezone)))
         if local_dt.date() != anchor_dt.date():
             continue
@@ -237,9 +259,8 @@ def _session_stats(bars: list[dict[str, float]], anchor_ts: float, timezone: str
     if not rows:
         rows = [
             bar
-            for bar in bars
+            for bar in completed_bars
             if datetime.fromtimestamp(parse_float(bar.get("timestamp")), tz=ZoneInfo(str(timezone))).date() == anchor_dt.date()
-            and parse_float(bar.get("timestamp")) < anchor_ts
         ]
     if not rows:
         return {"known": False, "open": 0.0, "high": 0.0, "low": 0.0}

@@ -24,7 +24,8 @@ def _bars(count=300, start_price=100.0, step=0.01, volume=10.0):
 def test_pre_1h_return_and_pct_are_calculated():
     row = ZoneMarketContextCalculator().attach_to_row({"forward_anchor_ts": BASE_TS + 120 * 60}, _bars(step=0.1))
     assert row["pre_1h_return_u"] == 6.0
-    assert round(row["pre_1h_return_pct"], 6) == round(6.0 / 106.0 * 100, 6)
+    assert round(row["pre_1h_return_pct"], 6) == round(6.0 / 105.9 * 100, 6)
+    assert row["is_complete_pre_1h"] is True
 
 
 def test_trend_regime_1h_up_down_range():
@@ -75,6 +76,37 @@ def test_market_context_anchor_prefers_forward_anchor_ts():
 def test_insufficient_kline_outputs_unknown_and_zero():
     row = ZoneMarketContextCalculator().attach_to_row({"forward_anchor_ts": BASE_TS + 30 * 60}, _bars(count=20))
     assert row["pre_1h_return_u"] == 0.0
+    assert row["is_complete_pre_1h"] is False
     assert row["trend_regime_1h"] == "UNKNOWN"
     assert row["volatility_regime_1h"] == "UNKNOWN"
     assert row["volume_regime_1h"] == "UNKNOWN"
+
+
+def test_market_context_uses_last_completed_bar_not_current_bar():
+    bars = _bars(count=20, step=0.0)
+    bars[0]["close"] = 100.0
+    for idx in range(1, 16):
+        bars[idx]["close"] = 100.0 + idx
+        bars[idx]["high"] = 100.5 + idx
+        bars[idx]["low"] = 99.5 + idx
+    bars[16]["close"] = 999.0
+    bars[16]["high"] = 9999.0
+    bars[16]["low"] = 1.0
+    row = ZoneMarketContextCalculator().attach_to_row(
+        {"forward_anchor_ts": BASE_TS + 16 * 60 + 30, "session_tag": "US_OPEN"},
+        bars,
+    )
+    assert row["is_complete_pre_15m"] is True
+    assert row["pre_15m_return_u"] == 15.0
+    assert row["session_high"] < 9999.0
+    assert row["distance_to_session_high_u"] > -100.0
+
+
+def test_pre_window_completeness_flags():
+    incomplete = ZoneMarketContextCalculator().attach_to_row({"forward_anchor_ts": BASE_TS + 30 * 60}, _bars(count=30))
+    assert incomplete["is_complete_pre_1h"] is False
+    assert incomplete["trend_regime_1h"] == "UNKNOWN"
+
+    complete = ZoneMarketContextCalculator().attach_to_row({"forward_anchor_ts": BASE_TS + 70 * 60}, _bars(count=80))
+    assert complete["is_complete_pre_1h"] is True
+    assert complete["trend_regime_1h"] != "UNKNOWN"

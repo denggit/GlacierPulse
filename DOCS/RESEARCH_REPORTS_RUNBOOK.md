@@ -7,8 +7,8 @@ python tools/generate_research_reports.py \
   --run-name <RUN_NAME> \
   --phase1-candidates logs/research/phase1_candidates.jsonl \
   --a1-reactions logs/research/a1_reaction_events.jsonl \
-  --kline <KLINE_CSV> \
-  --nohup <NOHUP_LOG> \
+  --kline data/history_k/<KLINE_CSV> \
+  --nohup logs/<NOHUP_LOG> \
   --timezone Asia/Shanghai \
   --snapshot \
   --zip
@@ -37,3 +37,10 @@ Report set is frozen:
 
 - no new independent report packages
 - add future research fields into `zone_truth_events.csv` when possible
+
+
+e.g.
+```text
+python tools/generate_research_reports.py --run-name V6311_5 --phase1-candidates logs/research_V6311_5/phase1_candida
+tes.jsonl   --a1-reactions logs/research_V6311_5/a1_reaction_events.jsonl --kline data/history_k/ETH-USDT-SWAP_1m_20260523_2200_20260524_1500.csv --nohup logs/nohup_V6311_5.out --timezone Asia/Shanghai   --snapshot   --zip
+```

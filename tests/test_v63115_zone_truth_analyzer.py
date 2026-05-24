@@ -81,6 +81,9 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
     assert rows[0]["a2_pre_pool_reason"] == "HAS_ICEBERG_PIE"
     assert "market_context_anchor_ts" in rows[0]
     assert "pre_1h_return_pct" in rows[0]
+    assert "is_complete_pre_15m" in rows[0]
+    assert "is_complete_pre_1h" in rows[0]
+    assert "is_complete_pre_4h" in rows[0]
     assert "trend_regime_1h" in rows[0]
     assert "volatility_regime_1h" in rows[0]
     assert "volume_regime_1h" in rows[0]
