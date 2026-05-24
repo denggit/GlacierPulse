@@ -91,6 +91,9 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a2_pre_pool.csv", self.group_rows(rows, "a2_pre_pool_eligible"), ["a2_pre_pool_eligible"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_trend_regime_enhanced_4h.csv", self.group_rows(rows, "trend_regime_enhanced_4h"), ["trend_regime_enhanced_4h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_trend_alignment.csv", self.group_rows(rows, "trend_alignment"), ["trend_alignment"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_volume_regime_1h.csv", self.group_rows(rows, "volume_regime_1h"), ["volume_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_volatility_regime_1h.csv", self.group_rows(rows, "volatility_regime_1h"), ["volatility_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
@@ -106,6 +109,9 @@ class ZoneTruthAnalyzer:
         synthetic = sum(1 for row in rows if str(row.get("zone_source")) == SOURCE_SYNTHETIC)
         a2_count = sum(1 for row in rows if parse_bool(row.get("a2_pre_pool_eligible")))
         reaction_distribution = dict(Counter(str(row.get("reaction_type") or "UNKNOWN") for row in rows))
+        enhanced_trend_1h_distribution = dict(Counter(str(row.get("trend_regime_enhanced_1h") or "UNKNOWN") for row in rows))
+        enhanced_trend_4h_distribution = dict(Counter(str(row.get("trend_regime_enhanced_4h") or "UNKNOWN") for row in rows))
+        trend_alignment_distribution = dict(Counter(str(row.get("trend_alignment") or "MIXED_OR_UNKNOWN") for row in rows))
         forward_summary = {
             "15m": self._forward_summary(rows, "15m"),
             "1h": self._forward_summary(rows, "1h"),
@@ -119,6 +125,9 @@ class ZoneTruthAnalyzer:
             "unmatched_pie_count": int(unmatched_pie_count),
             "a2_pre_pool_zone_count": a2_count,
             "reaction_distribution": reaction_distribution,
+            "trend_regime_enhanced_1h_distribution": enhanced_trend_1h_distribution,
+            "trend_regime_enhanced_4h_distribution": enhanced_trend_4h_distribution,
+            "trend_alignment_distribution": trend_alignment_distribution,
             "forward_metrics": forward_summary,
             "clean_hold_count": self._reaction_contains(rows, "CLEAN_HOLD"),
             "failed_reclaim_count": self._reaction_contains(rows, "FAILED_RECLAIM"),
@@ -226,7 +235,7 @@ class ZoneTruthAnalyzer:
     @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
-            "# V6.3.11.5.1 Zone Truth Aggregation Cleanup",
+            "# V6.3.11.7 Zone Truth Enhanced Trend Context",
             "",
             f"- total_zones: {summary.get('total_zones')}",
             f"- exact_matched_zones: {summary.get('exact_matched_zones')}",
@@ -240,6 +249,16 @@ class ZoneTruthAnalyzer:
         ]
         for key, value in dict(summary.get("reaction_distribution") or {}).items():
             lines.append(f"- {key}: {value}")
+        lines.extend(["", "## Enhanced Trend Context", ""])
+        lines.append("- trend_regime_enhanced_1h distribution:")
+        for key, value in dict(summary.get("trend_regime_enhanced_1h_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- trend_regime_enhanced_4h distribution:")
+        for key, value in dict(summary.get("trend_regime_enhanced_4h_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- trend_alignment distribution:")
+        for key, value in dict(summary.get("trend_alignment_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
         lines.extend(["", "## Forward Metrics", ""])
         lines.append(
             "Zone forward metrics start from `forward_anchor_ts`; `forward_anchor_source` and "

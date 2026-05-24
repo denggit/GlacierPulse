@@ -61,6 +61,9 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
         "zone_truth_by_a2_pre_pool.csv",
         "zone_truth_by_trend_regime_1h.csv",
         "zone_truth_by_trend_regime_4h.csv",
+        "zone_truth_by_trend_regime_enhanced_1h.csv",
+        "zone_truth_by_trend_regime_enhanced_4h.csv",
+        "zone_truth_by_trend_alignment.csv",
         "zone_truth_by_volume_regime_1h.csv",
         "zone_truth_by_volatility_regime_1h.csv",
         "zone_truth_top_cases.csv",
@@ -85,6 +88,13 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
     assert "is_complete_pre_1h" in rows[0]
     assert "is_complete_pre_4h" in rows[0]
     assert "trend_regime_1h" in rows[0]
+    assert "ema20_1m" in rows[0]
+    assert "ema60_1m" in rows[0]
+    assert "trend_efficiency_1h" in rows[0]
+    assert "trend_score_1h" in rows[0]
+    assert "trend_confidence_1h" in rows[0]
+    assert "trend_regime_enhanced_1h" in rows[0]
+    assert "trend_alignment" in rows[0]
     assert "volatility_regime_1h" in rows[0]
     assert "volume_regime_1h" in rows[0]
 
