@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from src.research.a1_edge.schema import parse_bool, parse_float, parse_int, parse_timestamp
 
 
-SCHEMA_VERSION = "v6.3.11.5.1.zone_truth.1"
+SCHEMA_VERSION = "v6.3.11.7.zone_truth.1"
 MATCH_EXACT = "exact"
 MATCH_FUZZY = "fuzzy"
 MATCH_UNMATCHED = "unmatched"
