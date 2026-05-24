@@ -6,5 +6,6 @@
 from .aggregator import ZoneTruthAggregator
 from .analyzer import ZoneTruthAnalyzer
 from .forward import ZoneForwardMetricsCalculator
+from .market_context import ZoneMarketContextCalculator
 
-__all__ = ["ZoneTruthAggregator", "ZoneTruthAnalyzer", "ZoneForwardMetricsCalculator"]
+__all__ = ["ZoneTruthAggregator", "ZoneTruthAnalyzer", "ZoneForwardMetricsCalculator", "ZoneMarketContextCalculator"]

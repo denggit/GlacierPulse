@@ -12,7 +12,8 @@ from src.research.a1_edge.schema import parse_bool, parse_float
 
 from .aggregator import ZoneTruthAggregator
 from .forward import ZoneForwardMetricsCalculator
-from .models import FORWARD_FIELDS, SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS
+from .market_context import ZoneMarketContextCalculator
+from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
 
 
 GROUP_METRIC_FIELDS = [
@@ -80,14 +81,19 @@ class ZoneTruthAnalyzer:
         )
         rows = aggregator.aggregate(phase1_records, reaction_records)
         rows = ZoneForwardMetricsCalculator(self.windows_sec, kline_timezone=self.timezone).attach_forward_metrics(rows, kline_records)
-        write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS)
+        rows = ZoneMarketContextCalculator(kline_timezone=self.timezone).attach_market_context(rows, kline_records)
+        write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_direction.csv", self.group_rows(rows, "direction"), ["direction"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_session.csv", self.group_rows(rows, "session_tag"), ["session_tag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_truth_bucket.csv", self.group_by_truth_bucket(rows), ["truth_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a2_pre_pool.csv", self.group_rows(rows, "a2_pre_pool_eligible"), ["a2_pre_pool_eligible"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS)
+        write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_volume_regime_1h.csv", self.group_rows(rows, "volume_regime_1h"), ["volume_regime_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_volatility_regime_1h.csv", self.group_rows(rows, "volatility_regime_1h"), ["volatility_regime_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_match_quality.csv", self.match_quality(rows, aggregator.unmatched_pie_count), ["match_quality"] + GROUP_METRIC_FIELDS)
         summary = self.summary(rows, aggregator.unmatched_pie_count)
         self._write_summary_md(out / "zone_truth_summary.md", summary)

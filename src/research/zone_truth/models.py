@@ -243,7 +243,37 @@ FORWARD_FIELDS = [
     "mfe_1h_u", "mae_1h_u", "end_1h_u", "is_complete_1h",
     "mfe_4h_u", "mae_4h_u", "end_4h_u", "is_complete_4h",
 ]
+MARKET_CONTEXT_FIELDS = [
+    "market_context_anchor_ts",
+    "market_context_anchor_local_time",
+    "pre_15m_return_u",
+    "pre_15m_return_pct",
+    "pre_1h_return_u",
+    "pre_1h_return_pct",
+    "pre_4h_return_u",
+    "pre_4h_return_pct",
+    "pre_15m_range_u",
+    "pre_1h_range_u",
+    "pre_4h_range_u",
+    "pre_15m_volume",
+    "pre_1h_volume",
+    "pre_4h_volume",
+    "pre_1h_direction",
+    "pre_4h_direction",
+    "trend_regime_1h",
+    "trend_regime_4h",
+    "volatility_regime_1h",
+    "volume_regime_1h",
+    "distance_to_pre_1h_high_u",
+    "distance_to_pre_1h_low_u",
+    "distance_to_session_high_u",
+    "distance_to_session_low_u",
+    "session_open_price",
+    "session_high",
+    "session_low",
+]
 ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS = ZONE_TRUTH_EVENT_FIELDS + FORWARD_FIELDS
+ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS = ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS + MARKET_CONTEXT_FIELDS
 
 
 def parse_candidate_bool(value: Any) -> bool:

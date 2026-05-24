@@ -26,7 +26,7 @@ from src.research.a1_edge.report_builder import A1EdgeReportBuilder
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "V6.3.10 A1 Edge Validation Suite. Offline-only: intentionally not imported "
+            "A1 Edge Validation Suite. Offline-only: intentionally not imported "
             "by main.py. Run main.py shadow first to collect A1 reaction JSONL, then use "
             "this CLI for offline analysis."
         )

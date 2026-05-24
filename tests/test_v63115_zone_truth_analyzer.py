@@ -59,6 +59,10 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
         "zone_truth_by_session.csv",
         "zone_truth_by_truth_bucket.csv",
         "zone_truth_by_a2_pre_pool.csv",
+        "zone_truth_by_trend_regime_1h.csv",
+        "zone_truth_by_trend_regime_4h.csv",
+        "zone_truth_by_volume_regime_1h.csv",
+        "zone_truth_by_volatility_regime_1h.csv",
         "zone_truth_top_cases.csv",
     ):
         assert (out / name).exists()
@@ -75,6 +79,11 @@ def test_zone_truth_analyzer_outputs_required_files(tmp_path):
     assert rows[0]["forward_entry_price"] == "100.0"
     assert rows[0]["forward_entry_price_source"] == "zone_mid"
     assert rows[0]["a2_pre_pool_reason"] == "HAS_ICEBERG_PIE"
+    assert "market_context_anchor_ts" in rows[0]
+    assert "pre_1h_return_pct" in rows[0]
+    assert "trend_regime_1h" in rows[0]
+    assert "volatility_regime_1h" in rows[0]
+    assert "volume_regime_1h" in rows[0]
 
 
 def test_expanded_parameter_grid_contains_new_values():

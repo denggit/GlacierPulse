@@ -275,7 +275,7 @@ class A1EdgeReportBuilder:
         roundtrip_fee_pct = fee.get("roundtrip_fee_pct", analysis_params.get("roundtrip_fee_pct", 0.001))
         fee_model_name = fee.get("fee_model", "roundtrip_notional_pct")
         lines = [
-            "# V6.3.10.4 A1 Edge Validation Report",
+            "# A1 Edge Validation Report",
             "",
             "## Reproducibility Metadata",
             "",
