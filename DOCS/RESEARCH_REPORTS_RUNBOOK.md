@@ -41,6 +41,5 @@ Report set is frozen:
 
 e.g.
 ```text
-python tools/generate_research_reports.py --run-name V6311_5 --phase1-candidates logs/research_V6311_5/phase1_candida
-tes.jsonl   --a1-reactions logs/research_V6311_5/a1_reaction_events.jsonl --kline data/history_k/ETH-USDT-SWAP_1m_20260523_2200_20260524_1500.csv --nohup logs/nohup_V6311_5.out --timezone Asia/Shanghai   --snapshot   --zip
+python tools/generate_research_reports.py --run-name V6311_5 --phase1-candidates logs/research_V6311_5/phase1_candidates.jsonl   --a1-reactions logs/research_V6311_5/a1_reaction_events.jsonl --kline data/history_k/ETH-USDT-SWAP_1m_20260523_2200_20260524_1500.csv --nohup logs/nohup_V6311_5.out --timezone Asia/Shanghai   --snapshot   --zip
 ```
