@@ -27,50 +27,21 @@ A1 iceberg events are recorded for research. They are not sent to execution.
 
 ## 1. Download OKX official files
 
-OKX official historical data pages expose tick-level trades and high-resolution L2 book downloads, but concrete file URLs may change. Use one of the following modes.
+OKX official historical data pages expose tick-level trades and high-resolution L2 book downloads, but concrete file URLs may change. The safest workflow is manifest mode: manually copy official OKX download links into a manifest file, then let the downloader save and verify files locally.
 
-### Option A: URL template mode
+### Recommended: manifest mode
 
-Copy one official download URL from OKX and replace its date part with `{date}` or `{yyyymmdd}`.
-
-```bash
-python tools/download_okx_historical_data.py \
-  --kind trades \
-  --symbol ETH-USDT-SWAP \
-  --start-date 2025-05-01 \
-  --end-date 2026-05-01 \
-  --url-template '<OFFICIAL_OKX_URL_WITH_{date}_OR_{yyyymmdd}>'
-```
-
-The files will be saved to:
-
-```text
-data/okx/raw/trades/ETH-USDT-SWAP/
-```
-
-For books:
-
-```bash
-python tools/download_okx_historical_data.py \
-  --kind books \
-  --symbol ETH-USDT-SWAP \
-  --start-date 2025-05-01 \
-  --end-date 2026-05-01 \
-  --url-template '<OFFICIAL_OKX_BOOK_URL_WITH_{date}_OR_{yyyymmdd}>'
-```
-
-The files will be saved to:
-
-```text
-data/okx/raw/books/ETH-USDT-SWAP/
-```
-
-### Option B: manifest mode
-
-Create a manifest with one official URL per line:
+Create a manifest with one official OKX download URL per line:
 
 ```text
 data/okx/manifests/eth_trades_urls.txt
+```
+
+Example content:
+
+```text
+https://<official-okx-download-host>/<official-path>/<one-trades-file>.zip
+https://<official-okx-download-host>/<official-path>/<another-trades-file>.zip
 ```
 
 Then run:
@@ -82,13 +53,61 @@ python tools/download_okx_historical_data.py \
   --manifest data/okx/manifests/eth_trades_urls.txt
 ```
 
-A JSONL download manifest is appended under the data directory:
+For books, create another manifest:
+
+```text
+data/okx/manifests/eth_books_urls.txt
+```
+
+Then run:
+
+```bash
+python tools/download_okx_historical_data.py \
+  --kind books \
+  --symbol ETH-USDT-SWAP \
+  --manifest data/okx/manifests/eth_books_urls.txt
+```
+
+Downloaded files will be saved to:
+
+```text
+data/okx/raw/trades/ETH-USDT-SWAP/
+data/okx/raw/books/ETH-USDT-SWAP/
+```
+
+A JSONL download manifest is appended under each data directory:
 
 ```text
 data/okx/raw/trades/ETH-USDT-SWAP/download_manifest.jsonl
+data/okx/raw/books/ETH-USDT-SWAP/download_manifest.jsonl
 ```
 
 It records URL, local path, file size, SHA256, status, and download time.
+
+### Optional: URL template mode
+
+Use this mode only if the copied OKX official URLs are regular and date-based.
+
+`<OFFICIAL_OKX_URL_WITH_{date}_OR_{yyyymmdd}>` is not a real URL. It is a placeholder. Replace it with a real official OKX download URL, then replace the date part inside that URL with `{date}` or `{yyyymmdd}`.
+
+Example shape only:
+
+```text
+https://<official-okx-download-host>/<official-path>/ETH-USDT-SWAP-trades-{date}.zip
+```
+
+Then run:
+
+```bash
+python tools/download_okx_historical_data.py \
+  --kind trades \
+  --symbol ETH-USDT-SWAP \
+  --start-date 2025-05-01 \
+  --end-date 2026-05-01 \
+  --url-template 'https://<official-okx-download-host>/<official-path>/ETH-USDT-SWAP-trades-{date}.zip'
+```
+
+If the OKX URL does not have a clean date pattern, do not use template mode. Use manifest mode instead.
 
 ## 2. Run local A1 research replay
 
@@ -118,10 +137,10 @@ reports/backtests/eth_swap_1y_a1_research/
 The output meaning is:
 
 ```text
-research_events.jsonl       = events returned by A1AbsorptionEngine and handled like main.py research events
-phase1_candidates.jsonl     = Phase1 truth candidate recorder output
- a1_reaction_events.jsonl   = A1 reaction research recorder output
-summary.json                = replay statistics and safety flags
+research_events.jsonl      = events returned by A1AbsorptionEngine and handled like main.py research events
+phase1_candidates.jsonl    = Phase1 truth candidate recorder output
+a1_reaction_events.jsonl   = A1 reaction research recorder output
+summary.json               = replay statistics and safety flags
 ```
 
 Trades-only smoke test:
