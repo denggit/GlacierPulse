@@ -65,7 +65,7 @@ class ZoneA2StateClassifier:
             eligible
             and clean_hold
             and not failed_reclaim
-            and book_depth_state in {"BOOK_DEPTH_VALID", "BOOK_DEPTH_UNKNOWN"}
+            and book_depth_state == "BOOK_DEPTH_VALID"
             and context_alignment != "COUNTER_TREND"
         )
 
@@ -148,14 +148,14 @@ class ZoneA2StateClassifier:
         thickness_ok = True
         if present_thickness:
             thickness_ok = max(parse_float(row.get(name)) for name in present_thickness) >= 1_000_000
-        strong = active_ok and hidden_ok and absorption_ok and thickness_ok
         is_eligible = parse_bool(row.get("a2_pre_pool_eligible")) if eligible is None else bool(eligible)
-        if strong:
-            tier = "STRONG_A1_RAW"
-        elif is_eligible:
-            tier = "NORMAL_A1"
-        else:
+        strong = is_eligible and active_ok and hidden_ok and absorption_ok and thickness_ok
+        if not is_eligible:
             tier = "NON_A2"
+        elif strong:
+            tier = "STRONG_A1_RAW"
+        else:
+            tier = "NORMAL_A1"
         reasons = []
         if active_ok:
             reasons.append("active>=1500000")

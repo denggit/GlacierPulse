@@ -1,4 +1,5 @@
 from src.strategy.a1_absorption import reaction_evaluator as reaction_evaluator_module
+from src.strategy.a1_absorption.engine import A1AbsorptionEngine
 from src.strategy.a1_absorption.reaction_evaluator import A1ReactionEvaluator, A1ReactionTrackedZone
 
 
@@ -77,3 +78,50 @@ def test_prune_without_now_ts_does_not_emit_wall_clock_reaction_ts(monkeypatch):
     event = evaluator.pop_research_events()[0]
     assert event["reaction_event_ts"] == 10.0
     assert event["reaction_event_ts"] != reaction_evaluator_module.time.time()
+
+
+def test_register_frozen_zone_from_engine_uses_market_event_ts_not_wall_clock(monkeypatch):
+    monkeypatch.setattr(reaction_evaluator_module.time, "time", lambda: 9_999_999_999.0)
+    evaluator = A1ReactionEvaluator()
+    zone = {
+        "zone_id": "z-engine-ts",
+        "is_frozen": True,
+        "direction": "BUY",
+        "frozen_ts": 100.0,
+        "frozen_zone_lower": 99.0,
+        "frozen_zone_upper": 101.0,
+        "live_zone_lower": 99.0,
+        "live_zone_upper": 101.0,
+    }
+
+    assert evaluator.register_frozen_zone(zone, now_ts=123.456) is True
+
+    active_zone = evaluator.active_zones["z-engine-ts"]
+    assert active_zone.phase2_registered_ts == 123.456
+    assert active_zone.state_updated_ts == 123.456
+    assert active_zone.state_entered_ts == 123.456
+    assert active_zone.phase2_registered_ts != reaction_evaluator_module.time.time()
+
+
+def test_engine_register_helper_passes_market_ts_to_reaction_evaluator(monkeypatch):
+    monkeypatch.setattr(reaction_evaluator_module.time, "time", lambda: 9_999_999_999.0)
+    engine = A1AbsorptionEngine.__new__(A1AbsorptionEngine)
+    engine.a1_reaction_evaluator = A1ReactionEvaluator()
+    zone = {
+        "zone_id": "z-helper-ts",
+        "is_frozen": True,
+        "direction": "BUY",
+        "frozen_ts": 111.0,
+        "frozen_zone_lower": 99.0,
+        "frozen_zone_upper": 101.0,
+        "live_zone_lower": 99.0,
+        "live_zone_upper": 101.0,
+    }
+
+    engine._register_a1_frozen_zone_for_reaction(zone, now_ts=222.333)
+
+    active_zone = engine.a1_reaction_evaluator.active_zones["z-helper-ts"]
+    assert active_zone.phase2_registered_ts == 222.333
+    assert active_zone.state_updated_ts == 222.333
+    assert active_zone.state_entered_ts == 222.333
+    assert active_zone.phase2_registered_ts != reaction_evaluator_module.time.time()

@@ -19,8 +19,8 @@ def test_a2_pre_pool_rule_is_only_iceberg_pie_count():
 
     assert eligible["a2_state"] == "A2_PRE_POOL"
     assert non_eligible["a2_state"] == "NOT_A2_PRE_POOL"
-    assert non_eligible["strong_a1_raw_flag"] is True
-    assert non_eligible["strong_a1_tier"] == "STRONG_A1_RAW"
+    assert non_eligible["strong_a1_raw_flag"] is False
+    assert non_eligible["strong_a1_tier"] == "NON_A2"
 
 
 def test_clean_hold_classification():
@@ -80,6 +80,32 @@ def test_strong_a1_thresholds():
     assert row["strong_a1_reason"] == "active>=1500000|hidden>=2000000|absorption>=0.7"
 
 
+def test_strong_a1_only_applies_to_a2_pre_pool():
+    raw_strong = {
+        "max_active_notional": 1_500_000,
+        "max_hidden_volume": 2_000_000,
+        "max_absorption_rate": 0.7,
+    }
+
+    non_a2 = _classify({"a2_pre_pool_eligible": False, **raw_strong})
+    strong_a2 = _classify({"a2_pre_pool_eligible": True, **raw_strong})
+    normal_a2 = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "max_active_notional": 1_499_999,
+            "max_hidden_volume": 2_000_000,
+            "max_absorption_rate": 0.7,
+        }
+    )
+
+    assert non_a2["strong_a1_raw_flag"] is False
+    assert non_a2["strong_a1_tier"] == "NON_A2"
+    assert strong_a2["strong_a1_raw_flag"] is True
+    assert strong_a2["strong_a1_tier"] == "STRONG_A1_RAW"
+    assert normal_a2["strong_a1_raw_flag"] is False
+    assert normal_a2["strong_a1_tier"] == "NORMAL_A1"
+
+
 def test_validated_candidate_flag_is_research_only():
     row = _classify(
         {
@@ -93,3 +119,17 @@ def test_validated_candidate_flag_is_research_only():
     )
     assert row["a2_validated_candidate_flag"] is True
     assert row["a2_validation_score"] > 0
+
+
+def test_clean_hold_with_book_depth_unknown_is_not_validated_candidate():
+    row = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "has_clean_hold": True,
+            "has_failed_reclaim": False,
+            "direction": "BUY",
+            "trend_alignment": "ALIGNED_UP",
+        }
+    )
+    assert row["a2_book_depth_state"] == "BOOK_DEPTH_UNKNOWN"
+    assert row["a2_validated_candidate_flag"] is False

@@ -609,7 +609,10 @@ class A1AbsorptionEngine:
                     "[ICEBERG-ZONE-OUTCOME] evaluator_upsert_failed id=%s",
                     zone.get("zone_id"),
                 )
-            self._register_a1_frozen_zone_for_reaction(zone)
+            self._register_a1_frozen_zone_for_reaction(
+                zone,
+                now_ts=settle_ts or settle_recv_ts,
+            )
         return zone
 
     def _update_phase1_truth_trade(self, trade_data: Dict[str, Any]) -> None:
@@ -688,12 +691,26 @@ class A1AbsorptionEngine:
         except Exception as exc:
             logger.warning("[PHASE1-TRUTH-FALLBACK] reason=dynamic_preview_tick_failed error=%s", exc)
 
-    def _register_a1_frozen_zone_for_reaction(self, zone: Dict[str, Any]) -> None:
+    def _register_a1_frozen_zone_for_reaction(
+        self,
+        zone: Dict[str, Any],
+        now_ts: Optional[float] = None,
+    ) -> None:
         if not self.a1_reaction_evaluator or not zone.get("is_frozen"):
             return
         try:
             public_zone = A1ZoneTracker._public_zone(zone)
-            self.a1_reaction_evaluator.register_frozen_zone(public_zone)
+            market_ts = (
+                self._safe_float(now_ts, 0.0)
+                or self._safe_float(zone.get("frozen_ts"), 0.0)
+                or self._safe_float(zone.get("ts"), 0.0)
+                or self._safe_float(zone.get("settle_ts"), 0.0)
+                or self._safe_float(zone.get("recv_ts"), 0.0)
+            )
+            self.a1_reaction_evaluator.register_frozen_zone(
+                public_zone,
+                now_ts=market_ts if market_ts > 0 else None,
+            )
         except Exception:
             logger.exception(
                 "[PHASE2-REGISTER-FAILED] zone_id=%s",
