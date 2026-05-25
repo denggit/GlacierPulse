@@ -11,6 +11,7 @@ OKX official historical data
   -> reports/backtests/<run-name>/research_events.jsonl + summary.json
   -> reports/backtests/<run-name>/research/phase1_candidates.jsonl
   -> reports/backtests/<run-name>/research/a1_reaction_events.jsonl
+  -> optional unified research reports + zip
 ```
 
 This is not a signal-trading backtester. It does not start `main.py`, does not connect WebSocket, does not use `IcebergTrader`, and does not simulate open/close orders.
@@ -118,6 +119,39 @@ phase1_candidates.jsonl    = Phase1 truth candidate recorder output
 a1_reaction_events.jsonl   = A1 reaction research recorder output
 summary.json               = replay statistics and safety flags
 ```
+
+Optional unified research reports:
+
+```bash
+python tools/backtest_local_data.py \
+  --symbol ETH-USDT-SWAP \
+  --trades-dir data/okx/raw/trades/ETH-USDT-SWAP \
+  --books-dir data/okx/raw/books/ETH-USDT-SWAP \
+  --run-name eth_swap_1y_a1_research \
+  --generate-reports \
+  --kline data/okx/raw/klines/ETH-USDT-SWAP/ETH-USDT-SWAP-1m.csv
+```
+
+`--generate-reports` is replay post-processing only. It runs after replay finishes and after the local research runtime is closed. It does not change replay timestamps, trades/books merge order, A1 runtime decisions, book cleaning, or execution behavior.
+
+Report CLI parameters:
+
+```text
+--generate-reports        Enable unified research report generation after replay. Default: disabled.
+--kline PATH              Required when --generate-reports is enabled. 1m kline CSV for a1_edge and zone_truth.
+--report-run-name NAME    Optional report run name under reports/. Default: backtests/<run-name>/research_reports.
+--report-min-sample N     Minimum sample passed to the report tools. Default: 30.
+--report-timezone TZ      Timezone passed only to report generation and kline parsing. Default: Asia/Shanghai.
+```
+
+Default report outputs for `--run-name eth_swap_1y_a1_research`:
+
+```text
+reports/backtests/eth_swap_1y_a1_research/research_reports/
+reports/backtests/eth_swap_1y_a1_research/research_reports.zip
+```
+
+`summary.json` includes a `report_generation` object with status, input paths, report directory, zip path, kline path, and any empty research JSONL inputs created for report compatibility. Missing `research/phase1_candidates.jsonl` or `research/a1_reaction_events.jsonl` files are created as empty files; events are never fabricated.
 
 Trades-only smoke test:
 

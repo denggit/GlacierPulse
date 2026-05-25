@@ -374,12 +374,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--books-depth-limit", type=int, default=400, help="Depth limit per side for snapshot-style historical books. Default: 400.")
     p.add_argument("--books-bucket-ms", type=float, default=100.0, help="Coalesce book updates into this many milliseconds to mimic OKX live books cadence. Use 0 to disable. Default: 100.")
     p.add_argument("--books-snapshot-infer-min-levels", type=int, default=100, help="In auto mode, treat a coalesced book event as snapshot once it contains at least this many levels. Default: 100.")
+    p.add_argument("--generate-reports", action="store_true", help="Generate unified research reports after replay completes.")
+    p.add_argument("--kline", type=Path, help="1m kline CSV used by unified research reports.")
+    p.add_argument("--report-run-name", help="Report run name under reports/. Default: backtests/<run_name>/research_reports.")
+    p.add_argument("--report-min-sample", type=int, default=30)
+    p.add_argument("--report-timezone", default="Asia/Shanghai", help="Timezone passed only to research report generation and kline parsing.")
     p.add_argument(
         "--use-shared-research-logs",
         action="store_true",
         help="Use config/default logs/research paths instead of isolating JSONL outputs under this run directory.",
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.generate_reports and not args.kline:
+        raise SystemExit("--generate-reports requires --kline")
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -505,6 +513,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         runtime.close()
 
     elapsed = time.perf_counter() - start
+    report_generation = build_report_generation_summary(
+        enabled=bool(args.generate_reports),
+        status="skipped",
+        report_run_name=resolve_report_run_name(args),
+        kline_path=args.kline,
+        phase1_candidates_path=research_dir / "phase1_candidates.jsonl",
+        a1_reactions_path=research_dir / "a1_reaction_events.jsonl",
+        created_empty_research_inputs=[],
+    )
+
+    report_exit_code = 0
+    if args.generate_reports:
+        report_generation, report_exit_code = generate_replay_research_reports(
+            args=args,
+            research_dir=research_dir,
+            report_generation=report_generation,
+        )
+
     summary = {
         "run_name": args.run_name,
         "symbol": args.symbol,
@@ -530,6 +556,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
             "a1_reaction_events": os.getenv("A1_REACTION_EVENT_RECORDER_JSONL_PATH", "logs/research/a1_reaction_events.jsonl"),
         },
+        "report_generation": report_generation,
         "elapsed_sec": round(elapsed, 6),
         "events_per_sec": round((stats.trades + stats.books) / elapsed, 3) if elapsed > 0 else 0.0,
         "stats": stats.to_dict(),
@@ -544,7 +571,91 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("[LOCAL-A1-RESEARCH-DONE] summary=%s research_events=%s", summary_path, research_events_path)
-    return 0
+    return int(report_exit_code)
+
+
+def resolve_report_run_name(args: argparse.Namespace) -> str:
+    if getattr(args, "report_run_name", None):
+        return str(args.report_run_name)
+    return f"backtests/{args.run_name}/research_reports"
+
+
+def build_report_generation_summary(
+    *,
+    enabled: bool,
+    status: str,
+    report_run_name: str,
+    kline_path: Path | None,
+    phase1_candidates_path: Path,
+    a1_reactions_path: Path,
+    created_empty_research_inputs: list[str],
+) -> dict[str, Any]:
+    report_dir = Path("reports") / report_run_name
+    return {
+        "enabled": bool(enabled),
+        "status": status,
+        "run_name": report_run_name,
+        "report_dir": str(report_dir),
+        "zip_path": str(Path("reports") / f"{report_run_name}.zip"),
+        "kline_path": str(kline_path) if kline_path else "",
+        "phase1_candidates_path": str(phase1_candidates_path),
+        "a1_reactions_path": str(a1_reactions_path),
+        "created_empty_research_inputs": list(created_empty_research_inputs),
+    }
+
+
+def generate_replay_research_reports(
+    *,
+    args: argparse.Namespace,
+    research_dir: Path,
+    report_generation: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    from tools.generate_research_reports import main as generate_research_reports_main
+
+    phase1_candidates_path = research_dir / "phase1_candidates.jsonl"
+    a1_reactions_path = research_dir / "a1_reaction_events.jsonl"
+    created_empty = ensure_research_report_inputs_exist([phase1_candidates_path, a1_reactions_path])
+    report_run_name = resolve_report_run_name(args)
+    argv = [
+        "--run-name",
+        report_run_name,
+        "--phase1-candidates",
+        str(phase1_candidates_path),
+        "--a1-reactions",
+        str(a1_reactions_path),
+        "--kline",
+        str(args.kline),
+        "--timezone",
+        str(args.report_timezone),
+        "--min-sample",
+        str(args.report_min_sample),
+        "--snapshot",
+        "--zip",
+    ]
+    exit_code = int(generate_research_reports_main(argv) or 0)
+    report_generation.update(
+        build_report_generation_summary(
+            enabled=True,
+            status="success" if exit_code == 0 else "failed",
+            report_run_name=report_run_name,
+            kline_path=args.kline,
+            phase1_candidates_path=phase1_candidates_path,
+            a1_reactions_path=a1_reactions_path,
+            created_empty_research_inputs=created_empty,
+        )
+    )
+    return report_generation, exit_code
+
+
+def ensure_research_report_inputs_exist(paths: Sequence[Path]) -> list[str]:
+    created_empty: list[str] = []
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            continue
+        path.touch()
+        created_empty.append(str(path))
+    return created_empty
 
 
 def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, research_dir: Path) -> None:
