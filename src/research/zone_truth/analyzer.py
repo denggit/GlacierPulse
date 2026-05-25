@@ -11,6 +11,7 @@ from src.research.a1_edge.io_utils import read_csv, read_jsonl, write_csv
 from src.research.a1_edge.schema import parse_bool, parse_float
 
 from .aggregator import ZoneTruthAggregator
+from .a2_state import ZoneA2StateClassifier
 from .forward import ZoneForwardMetricsCalculator
 from .market_context import ZoneMarketContextCalculator
 from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
@@ -82,6 +83,7 @@ class ZoneTruthAnalyzer:
         rows = aggregator.aggregate(phase1_records, reaction_records)
         rows = ZoneForwardMetricsCalculator(self.windows_sec, kline_timezone=self.timezone).attach_forward_metrics(rows, kline_records)
         rows = ZoneMarketContextCalculator(kline_timezone=self.timezone).attach_market_context(rows, kline_records)
+        rows = ZoneA2StateClassifier().attach_a2_state(rows)
         write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
@@ -89,6 +91,11 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_session.csv", self.group_rows(rows, "session_tag"), ["session_tag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_truth_bucket.csv", self.group_by_truth_bucket(rows), ["truth_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a2_pre_pool.csv", self.group_rows(rows, "a2_pre_pool_eligible"), ["a2_pre_pool_eligible"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_state.csv", self.group_rows(rows, "a2_state"), ["a2_state"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_book_depth_state.csv", self.group_rows(rows, "a2_book_depth_state"), ["a2_book_depth_state"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_context_alignment.csv", self.group_rows(rows, "a2_context_alignment"), ["a2_context_alignment"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_strong_a1_tier.csv", self.group_rows(rows, "strong_a1_tier"), ["strong_a1_tier"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_validated_candidate.csv", self.group_rows(rows, "a2_validated_candidate_flag"), ["a2_validated_candidate_flag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -112,6 +119,10 @@ class ZoneTruthAnalyzer:
         enhanced_trend_1h_distribution = dict(Counter(str(row.get("trend_regime_enhanced_1h") or "UNKNOWN") for row in rows))
         enhanced_trend_4h_distribution = dict(Counter(str(row.get("trend_regime_enhanced_4h") or "UNKNOWN") for row in rows))
         trend_alignment_distribution = dict(Counter(str(row.get("trend_alignment") or "MIXED_OR_UNKNOWN") for row in rows))
+        a2_state_distribution = dict(Counter(str(row.get("a2_state") or "UNKNOWN") for row in rows))
+        a2_book_depth_state_distribution = dict(Counter(str(row.get("a2_book_depth_state") or "UNKNOWN") for row in rows))
+        a2_context_alignment_distribution = dict(Counter(str(row.get("a2_context_alignment") or "MIXED_OR_UNKNOWN") for row in rows))
+        strong_a1_tier_distribution = dict(Counter(str(row.get("strong_a1_tier") or "UNKNOWN") for row in rows))
         forward_summary = {
             "15m": self._forward_summary(rows, "15m"),
             "1h": self._forward_summary(rows, "1h"),
@@ -128,6 +139,16 @@ class ZoneTruthAnalyzer:
             "trend_regime_enhanced_1h_distribution": enhanced_trend_1h_distribution,
             "trend_regime_enhanced_4h_distribution": enhanced_trend_4h_distribution,
             "trend_alignment_distribution": trend_alignment_distribution,
+            "a2_state_distribution": a2_state_distribution,
+            "a2_book_depth_state_distribution": a2_book_depth_state_distribution,
+            "a2_context_alignment_distribution": a2_context_alignment_distribution,
+            "strong_a1_tier_distribution": strong_a1_tier_distribution,
+            "a2_validated_candidate_count": sum(1 for row in rows if parse_bool(row.get("a2_validated_candidate_flag"))),
+            "a2_clean_hold_count": sum(1 for row in rows if parse_bool(row.get("a2_clean_hold_flag"))),
+            "a2_failed_reclaim_count": sum(1 for row in rows if parse_bool(row.get("a2_failed_reclaim_flag"))),
+            "a2_book_depth_missing_count": sum(1 for row in rows if str(row.get("a2_book_depth_state")) == "BOOK_DEPTH_MISSING"),
+            "reaction_events_outside_kline_range_count": sum(1 for row in rows if parse_bool(row.get("reaction_event_ts_outside_kline_range"))),
+            "reaction_event_ts_invalid_count": sum(1 for row in rows if not parse_bool(row.get("reaction_event_ts_valid"), default=True)),
             "forward_metrics": forward_summary,
             "clean_hold_count": self._reaction_contains(rows, "CLEAN_HOLD"),
             "failed_reclaim_count": self._reaction_contains(rows, "FAILED_RECLAIM"),
@@ -259,6 +280,25 @@ class ZoneTruthAnalyzer:
         lines.append("- trend_alignment distribution:")
         for key, value in dict(summary.get("trend_alignment_distribution") or {}).items():
             lines.append(f"  - {key}: {value}")
+        lines.extend(["", "## A2 State Machine Research Fields", ""])
+        lines.append("- a2_state distribution:")
+        for key, value in dict(summary.get("a2_state_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a2_book_depth_state distribution:")
+        for key, value in dict(summary.get("a2_book_depth_state_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a2_context_alignment distribution:")
+        for key, value in dict(summary.get("a2_context_alignment_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- strong_a1_tier distribution:")
+        for key, value in dict(summary.get("strong_a1_tier_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append(f"- a2_validated_candidate_count: {summary.get('a2_validated_candidate_count')}")
+        lines.append(f"- a2_clean_hold_count: {summary.get('a2_clean_hold_count')}")
+        lines.append(f"- a2_failed_reclaim_count: {summary.get('a2_failed_reclaim_count')}")
+        lines.append(f"- a2_book_depth_missing_count: {summary.get('a2_book_depth_missing_count')}")
+        lines.append(f"- reaction_events_outside_kline_range_count: {summary.get('reaction_events_outside_kline_range_count')}")
+        lines.append(f"- reaction_event_ts_invalid_count: {summary.get('reaction_event_ts_invalid_count')}")
         lines.extend(["", "## Forward Metrics", ""])
         lines.append(
             "Zone forward metrics start from `forward_anchor_ts`; `forward_anchor_source` and "

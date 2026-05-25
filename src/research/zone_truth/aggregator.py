@@ -7,7 +7,7 @@ import statistics
 from collections import Counter, defaultdict
 from typing import Any, Iterable, Mapping
 
-from src.research.a1_edge.schema import parse_float, parse_timestamp
+from src.research.a1_edge.schema import parse_bool, parse_float, parse_timestamp
 from src.research.phase1_truth.analyzer import normalize_record
 
 from .models import (
@@ -290,7 +290,7 @@ class ZoneTruthAggregator:
         last_seen = reaction.last_seen_ts or reaction.reaction_event_ts or reaction.frozen_ts or first_seen
         event_ts = reaction.reaction_event_ts or reaction.frozen_ts or first_seen
         session = local_session(event_ts, self.timezone)
-        return ZoneTruthEvent(
+        row = ZoneTruthEvent(
             zone_id=zone_id,
             zone_source=SOURCE_REACTION,
             symbol=reaction.symbol,
@@ -319,6 +319,22 @@ class ZoneTruthAggregator:
             final_reaction_type=reaction.final_reaction_type,
             final_reaction_ts=reaction.final_reaction_ts,
         )
+        raw = reaction.raw or {}
+        for field_name in (
+            "bid_depth_near_zone",
+            "ask_depth_near_zone",
+            "bid_depth_near_sweep",
+            "ask_depth_near_sweep",
+        ):
+            if field_name in raw:
+                setattr(row, field_name, raw.get(field_name))
+        if "relevant_book_depth_available" in raw:
+            row.relevant_book_depth_available = parse_bool(raw.get("relevant_book_depth_available"))
+        if "reaction_event_ts_valid" in raw:
+            row.reaction_event_ts_valid = parse_bool(raw.get("reaction_event_ts_valid"), default=bool(row.reaction_event_ts > 0))
+        else:
+            row.reaction_event_ts_valid = bool(row.reaction_event_ts > 0)
+        return row
 
     def _base_from_pies(self, zone_id: str, pies: list[Mapping[str, Any]]) -> ZoneTruthEvent:
         best = self._best_pie(pies)

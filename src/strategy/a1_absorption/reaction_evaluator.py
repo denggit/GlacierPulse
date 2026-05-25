@@ -831,7 +831,12 @@ class A1ReactionEvaluator:
             zone.failed_ts = now_ts
             self._transition_state(zone=zone, new_state="PHASE2_FAILED", now_ts=now_ts, reason=failure_reason)
             self.total_failed_zones += 1
-            self._append_research_event(zone=zone, reaction_type="A1_REACTION_FAILED_RECLAIM", event_kind="FAILED")
+            self._append_research_event(
+                zone=zone,
+                reaction_type="A1_REACTION_FAILED_RECLAIM",
+                event_kind="FAILED",
+                event_ts=now_ts,
+            )
             return
 
         if zone.state in ("PHASE2_SWEEPING_LOW", "PHASE2_SWEEPING_HIGH"):
@@ -899,7 +904,12 @@ class A1ReactionEvaluator:
             )
             self._log_phase2_confirmed(zone=zone, now_ts=now_ts, reason=confirm_reason)
             self._append_confirmed_event(zone=zone)
-            self._append_research_event(zone=zone, reaction_type=A1_REACTION_SWEEP_RECLAIM_RETEST if zone.phase2_type=="SWEEP_RECLAIM" else A1_REACTION_CLEAN_HOLD, event_kind="CONFIRMED")
+            self._append_research_event(
+                zone=zone,
+                reaction_type=A1_REACTION_SWEEP_RECLAIM_RETEST if zone.phase2_type=="SWEEP_RECLAIM" else A1_REACTION_CLEAN_HOLD,
+                event_kind="CONFIRMED",
+                event_ts=now_ts,
+            )
 
         zone.previous_break_depth_u = zone.break_depth_u
         zone.previous_pressure_notional_3s = self._pressure_notional_3s(zone)
@@ -1260,7 +1270,14 @@ class A1ReactionEvaluator:
         )
 
 
-    def _append_research_event(self, zone: A1ReactionTrackedZone, reaction_type: str, event_kind: str, reason: str = "") -> None:
+    def _append_research_event(
+        self,
+        zone: A1ReactionTrackedZone,
+        reaction_type: str,
+        event_kind: str,
+        reason: str = "",
+        event_ts: float | None = None,
+    ) -> None:
         if not bool(getattr(cfg, "A1_REACTION_RESEARCH_COVERAGE_ENABLED", True)):
             return
         if not zone:
@@ -1275,8 +1292,9 @@ class A1ReactionEvaluator:
             return
         self._research_event_keys.add(key)
         event = zone.to_snapshot().copy()
-        event_ts = zone.confirmed_ts or zone.failed_ts or zone.timeout_ts or zone.last_book_ts or zone.state_updated_ts or time.time()
-        event.update({"zone_id": zone.zone_id, "direction": zone.direction, "state": zone.state, "a1_reaction_type": normalized_type, "legacy_phase2_type": legacy_type, "phase2_type": legacy_type, "reaction_event_kind": kind, "reaction_event_ts": event_ts, "reaction_event_price": zone.last_price, "a1_reaction_score": zone.phase2_total_score, "legacy_phase2_total_score": zone.phase2_total_score, "a1_reaction_reason": reason or zone.phase2_reason, "phase2_reason": zone.phase2_reason, "has_confirmed": zone.has_confirmed, "has_failed": zone.has_failed})
+        resolved_event_ts = self._resolve_research_event_ts(zone=zone, explicit_event_ts=event_ts)
+        event_ts_valid = resolved_event_ts > 0
+        event.update({"zone_id": zone.zone_id, "direction": zone.direction, "state": zone.state, "a1_reaction_type": normalized_type, "legacy_phase2_type": legacy_type, "phase2_type": legacy_type, "reaction_event_kind": kind, "reaction_event_ts": resolved_event_ts, "reaction_event_ts_valid": event_ts_valid, "reaction_event_ts_source": "event_time" if event_ts_valid else "missing", "reaction_event_price": zone.last_price, "a1_reaction_score": zone.phase2_total_score, "legacy_phase2_total_score": zone.phase2_total_score, "a1_reaction_reason": reason or zone.phase2_reason, "phase2_reason": zone.phase2_reason, "has_confirmed": zone.has_confirmed, "has_failed": zone.has_failed})
         event.setdefault("frozen_reason", "")
         event.setdefault("frozen_state", "")
         event.setdefault("frozen_event_id", "")
@@ -1290,6 +1308,26 @@ class A1ReactionEvaluator:
         event.setdefault("net_score", 0.0)
         self.research_events.append(event)
         self.total_research_events += 1
+
+    @staticmethod
+    def _resolve_research_event_ts(zone: A1ReactionTrackedZone, explicit_event_ts: float | None = None) -> float:
+        for value in (
+            explicit_event_ts,
+            zone.confirmed_ts,
+            zone.failed_ts,
+            zone.timeout_ts,
+            zone.last_book_ts,
+            zone.state_updated_ts,
+            zone.phase2_registered_ts,
+            zone.frozen_ts,
+        ):
+            try:
+                ts = float(value or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            if ts > 0:
+                return ts
+        return 0.0
 
     def _maybe_append_fast_move_research_event(self, zone: A1ReactionTrackedZone, now_ts: float) -> None:
         if not bool(getattr(cfg, "A1_REACTION_RESEARCH_COVERAGE_ENABLED", True)):
@@ -1315,10 +1353,10 @@ class A1ReactionEvaluator:
         min_dist = max(float(getattr(cfg, "A1_REACTION_FAST_MOVE_MIN_DISTANCE_U", 1.0)), abs((zone.frozen_high if zone.direction=="BUY" else zone.frozen_low) * float(getattr(cfg, "A1_REACTION_FAST_MOVE_MIN_DISTANCE_PCT", 0.0003))))
         if zone.direction == "BUY" and price >= zone.frozen_high + min_dist:
             rtype = A1_REACTION_BREAKOUT_AWAY if zone.has_swept_boundary else A1_REACTION_FAST_CLEAN_HOLD
-            self._append_research_event(zone=zone, reaction_type=rtype, event_kind="MISSED_FAST_MOVE")
+            self._append_research_event(zone=zone, reaction_type=rtype, event_kind="MISSED_FAST_MOVE", event_ts=now_ts)
         elif zone.direction == "SELL" and price <= zone.frozen_low - min_dist:
             rtype = A1_REACTION_BREAKOUT_AWAY if zone.has_swept_boundary else A1_REACTION_FAST_CLEAN_HOLD
-            self._append_research_event(zone=zone, reaction_type=rtype, event_kind="MISSED_FAST_MOVE")
+            self._append_research_event(zone=zone, reaction_type=rtype, event_kind="MISSED_FAST_MOVE", event_ts=now_ts)
 
     def _append_confirmed_event(self, zone: A1ReactionTrackedZone) -> None:
         if zone.zone_id in self._confirmed_event_zone_ids:
@@ -1428,7 +1466,12 @@ class A1ReactionEvaluator:
                         else:
                             rtype = A1_REACTION_TIMEOUT
                             ekind = "TIMEOUT"
-                        self._append_research_event(zone=zone, reaction_type=rtype, event_kind=ekind)
+                        research_event_ts = (
+                            now
+                            if now_ts is not None
+                            else (zone.last_book_ts or zone.phase2_registered_ts or zone.frozen_ts or 0.0)
+                        )
+                        self._append_research_event(zone=zone, reaction_type=rtype, event_kind=ekind, event_ts=research_event_ts)
                     self._log_zone_expired(zone=zone, now_ts=now, expire_reason="TTL")
 
         target_size = max(0, self.max_active_zones - max(0, int(reserve_slots)))

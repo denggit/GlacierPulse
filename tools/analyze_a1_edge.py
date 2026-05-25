@@ -70,11 +70,22 @@ def _local_time(ts: float, timezone_name: str) -> str:
 def _build_data_quality(events: list[Any], klines: list[dict[str, float]], forward_results: list[Any]) -> dict[str, Any]:
     kline_ts = [float(row["timestamp"]) for row in klines if float(row.get("timestamp", 0.0)) > 0]
     event_ts = [float(event.event_ts) for event in events if float(getattr(event, "event_ts", 0.0)) > 0]
+    reaction_ts = [
+        float(getattr(event, "reaction_event_ts", 0.0))
+        for event in events
+        if float(getattr(event, "reaction_event_ts", 0.0)) > 0
+    ]
     kline_min = min(kline_ts) if kline_ts else 0.0
     kline_max = max(kline_ts) if kline_ts else 0.0
     event_min = min(event_ts) if event_ts else 0.0
     event_max = max(event_ts) if event_ts else 0.0
-    events_outside = sum(1 for ts in event_ts if kline_min <= 0 or kline_max <= 0 or ts < kline_min or ts > kline_max)
+    outside_source_ts = reaction_ts or event_ts
+    events_outside = sum(1 for ts in outside_source_ts if kline_min <= 0 or kline_max <= 0 or ts < kline_min or ts > kline_max)
+    invalid_reaction_ts = sum(
+        1
+        for event in events
+        if not bool(getattr(event, "reaction_event_ts_valid", float(getattr(event, "reaction_event_ts", 0.0)) > 0))
+    )
     rows = [row.to_dict() if hasattr(row, "to_dict") else dict(row) for row in forward_results or []]
     insufficient_15 = {
         row.get("event_key")
@@ -102,6 +113,8 @@ def _build_data_quality(events: list[Any], klines: list[dict[str, float]], forwa
         "event_min_ts": event_min,
         "event_max_ts": event_max,
         "events_outside_kline_range": events_outside,
+        "reaction_events_outside_kline_range_count": events_outside,
+        "reaction_event_ts_invalid_count": invalid_reaction_ts,
         "events_insufficient_15m_count": len(insufficient_15),
         "events_insufficient_60m_count": len(insufficient_60),
         "valid_events_15m_count": len(valid_15),

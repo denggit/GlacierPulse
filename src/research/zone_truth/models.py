@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from src.research.a1_edge.schema import parse_bool, parse_float, parse_int, parse_timestamp
 
 
-SCHEMA_VERSION = "v6.3.11.7.zone_truth.1"
+SCHEMA_VERSION = "v6.3.12.zone_truth.1"
 MATCH_EXACT = "exact"
 MATCH_FUZZY = "fuzzy"
 MATCH_UNMATCHED = "unmatched"
@@ -230,6 +230,29 @@ class ZoneTruthEvent:
     hard_cap_warning_count: int = 0
     a2_pre_pool_eligible: bool = False
     a2_pre_pool_reason: str = "NO_ICEBERG_PIE"
+    relevant_book_depth_available: Any = ""
+    bid_depth_near_zone: Any = ""
+    ask_depth_near_zone: Any = ""
+    bid_depth_near_sweep: Any = ""
+    ask_depth_near_sweep: Any = ""
+    a2_state: str = ""
+    a2_state_reason: str = ""
+    a2_state_ts: float = 0.0
+    a2_failed_reason: str = ""
+    a2_book_depth_state: str = ""
+    a2_context_alignment: str = ""
+    a2_clean_hold_flag: bool = False
+    a2_failed_reclaim_flag: bool = False
+    a2_sweep_flag: bool = False
+    a2_reclaim_flag: bool = False
+    a2_retest_flag: bool = False
+    a2_validated_candidate_flag: bool = False
+    a2_validation_score: float = 0.0
+    strong_a1_raw_flag: bool = False
+    strong_a1_tier: str = ""
+    strong_a1_reason: str = ""
+    reaction_event_ts_valid: Any = ""
+    reaction_event_ts_outside_kline_range: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

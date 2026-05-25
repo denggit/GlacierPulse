@@ -107,6 +107,8 @@ class A1EdgeEvent:
     direction: str = "UNKNOWN"
     frozen_ts: float = 0.0
     reaction_event_ts: float = 0.0
+    reaction_event_ts_valid: bool = True
+    reaction_event_ts_source: str = ""
     event_ts: float = 0.0
     frozen_low: float = 0.0
     frozen_high: float = 0.0
@@ -184,6 +186,11 @@ class A1EdgeEvent:
             direction=direction,
             frozen_ts=frozen_ts,
             reaction_event_ts=reaction_ts,
+            reaction_event_ts_valid=parse_bool(
+                _first_present(r, "reaction_event_ts_valid"),
+                default=reaction_ts > 0,
+            ),
+            reaction_event_ts_source=str(_first_present(r, "reaction_event_ts_source") or ("event_time" if reaction_ts > 0 else "missing")),
             event_ts=event_ts,
             frozen_low=frozen_low,
             frozen_high=frozen_high,
@@ -241,6 +248,7 @@ class ForwardMetricResult:
     frozen_state: str = ""
     window_sec: int = 0
     future_bar_count: int = 0
+    event_outside_kline_range: bool = False
     directional_mfe_u: float = 0.0
     directional_mae_u: float = 0.0
     directional_mfe_r: float = 0.0

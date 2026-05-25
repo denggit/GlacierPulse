@@ -10,7 +10,7 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from src.research.a1_edge.io_utils import normalize_klines
-from src.research.a1_edge.schema import parse_float
+from src.research.a1_edge.schema import parse_bool, parse_float
 
 
 DEFAULT_WINDOWS_SEC = (900, 3600, 14400)
@@ -38,6 +38,13 @@ class ZoneForwardMetricsCalculator:
         result = dict(row)
         anchor_ts, anchor_source = _resolve_event_ts(result)
         entry_price, entry_source = _resolve_entry_price(result)
+        reaction_event_ts = parse_float(result.get("reaction_event_ts"))
+        outside_kline = _outside_kline_range(reaction_event_ts, bars) if reaction_event_ts > 0 else False
+        result["reaction_event_ts_valid"] = parse_bool(
+            result.get("reaction_event_ts_valid"),
+            default=reaction_event_ts > 0,
+        )
+        result["reaction_event_ts_outside_kline_range"] = outside_kline
         result["forward_anchor_ts"] = anchor_ts
         result["forward_anchor_source"] = anchor_source
         result["forward_anchor_local_time"] = _local_time(anchor_ts, self.kline_timezone)
@@ -58,6 +65,8 @@ def compute_zone_forward_metric(zone: Mapping[str, Any], bars: list[dict[str, fl
     entry, _entry_source = _resolve_entry_price(zone)
     direction = str(zone.get("direction") or "").upper()
     if not bars or event_ts <= 0 or entry <= 0 or direction not in {"BUY", "SELL"}:
+        return {"mfe_u": 0.0, "mae_u": 0.0, "end_u": 0.0, "is_complete": False, "future_bar_count": 0}
+    if _outside_kline_range(event_ts, bars):
         return {"mfe_u": 0.0, "mae_u": 0.0, "end_u": 0.0, "is_complete": False, "future_bar_count": 0}
 
     timestamps = [float(bar["timestamp"]) for bar in bars]
@@ -125,3 +134,9 @@ def _local_time(ts: float, timezone: str) -> str:
     if not ts or ts <= 0:
         return ""
     return datetime.fromtimestamp(float(ts), tz=ZoneInfo(str(timezone))).isoformat()
+
+
+def _outside_kline_range(ts: float, bars: list[dict[str, float]]) -> bool:
+    if not bars or ts <= 0:
+        return False
+    return ts < float(bars[0]["timestamp"]) or ts > float(bars[-1]["timestamp"])

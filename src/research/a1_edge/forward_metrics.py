@@ -75,6 +75,12 @@ def infer_bar_interval_sec(bars: List[Dict[str, float]], default: float = DEFAUL
     return float(median(diffs)) if diffs else float(default)
 
 
+def _outside_kline_range(ts: float, bars: List[Dict[str, float]]) -> bool:
+    if not bars or ts <= 0:
+        return False
+    return ts < float(bars[0]["timestamp"]) or ts > float(bars[-1]["timestamp"])
+
+
 def expected_bar_count(window_sec: int, bar_interval_sec: float = DEFAULT_BAR_INTERVAL_SEC) -> int:
     interval = max(float(bar_interval_sec or DEFAULT_BAR_INTERVAL_SEC), 1.0)
     return max(1, int(round(float(window_sec) / interval)))
@@ -103,10 +109,11 @@ def compute_forward_metric(
     risk_pct = risk / entry if entry else 0.0
     fee_u = entry * float(roundtrip_fee_pct)
     fee_share_r = fee_u / risk if risk else 0.0
-    timestamps = [bar["timestamp"] for bar in bars]
     expected_count = expected_bar_count(int(window_sec), infer_bar_interval_sec(bars))
+    outside_kline_range = _outside_kline_range(ts, bars)
+    timestamps = [bar["timestamp"] for bar in bars]
     start_idx = bisect_right(timestamps, ts)
-    if not bars or start_idx >= len(bars):
+    if not bars or outside_kline_range or start_idx >= len(bars):
         return ForwardMetricResult(
             zone_id=event.zone_id,
             event_key=event.event_key,
@@ -127,6 +134,7 @@ def compute_forward_metric(
             window_sec=int(window_sec),
             partial_window=True,
             insufficient_future_data=True,
+            event_outside_kline_range=outside_kline_range,
         )
     end_ts = ts + int(window_sec)
     future = [bar for bar in bars[start_idx:] if bar["timestamp"] <= end_ts]

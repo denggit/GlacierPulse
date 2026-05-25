@@ -172,14 +172,26 @@ class A1EdgeReportBuilder:
         event_ts = [parse_float(row.get("event_ts")) for row in events if parse_float(row.get("event_ts")) > 0]
         quality.setdefault("event_min_ts", min(event_ts) if event_ts else 0.0)
         quality.setdefault("event_max_ts", max(event_ts) if event_ts else 0.0)
+        quality.setdefault(
+            "reaction_event_ts_invalid_count",
+            sum(1 for row in events if not parse_bool(row.get("reaction_event_ts_valid"), default=parse_float(row.get("reaction_event_ts")) > 0)),
+        )
         for window_sec, suffix in ((900, "15m"), (3600, "60m")):
             rows = [row for row in forward_metrics if parse_int(row.get("window_sec")) == window_sec]
             insufficient = [row for row in rows if parse_bool(row.get("insufficient_future_data"))]
             valid = [row for row in rows if not parse_bool(row.get("insufficient_future_data"))]
             quality.setdefault(f"events_insufficient_{suffix}_count", len({row.get("event_key") for row in insufficient}))
             quality.setdefault(f"valid_events_{suffix}_count", len({row.get("event_key") for row in valid}))
-        for name in ("kline_min_ts", "kline_max_ts", "events_outside_kline_range"):
-            quality.setdefault(name, 0.0 if name.endswith("_ts") else 0)
+        for name in ("kline_min_ts", "kline_max_ts"):
+            quality.setdefault(name, 0.0)
+        if "events_outside_kline_range" not in quality:
+            outside_keys = {
+                row.get("event_key")
+                for row in forward_metrics
+                if parse_bool(row.get("event_outside_kline_range"))
+            }
+            quality["events_outside_kline_range"] = len(outside_keys)
+        quality.setdefault("reaction_events_outside_kline_range_count", quality.get("events_outside_kline_range", 0))
         return quality
 
     def _summary_json(
@@ -315,6 +327,8 @@ class A1EdgeReportBuilder:
             f"- event_min_ts: {data_quality.get('event_min_ts', 0.0)}",
             f"- event_max_ts: {data_quality.get('event_max_ts', 0.0)}",
             f"- events_outside_kline_range: {data_quality.get('events_outside_kline_range', 0)}",
+            f"- reaction_events_outside_kline_range_count: {data_quality.get('reaction_events_outside_kline_range_count', 0)}",
+            f"- reaction_event_ts_invalid_count: {data_quality.get('reaction_event_ts_invalid_count', 0)}",
             f"- events_insufficient_15m_count: {data_quality.get('events_insufficient_15m_count', 0)}",
             f"- events_insufficient_60m_count: {data_quality.get('events_insufficient_60m_count', 0)}",
             f"- valid_events_15m_count: {data_quality.get('valid_events_15m_count', 0)}",

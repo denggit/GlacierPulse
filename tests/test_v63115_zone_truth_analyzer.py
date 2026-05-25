@@ -134,7 +134,7 @@ def test_zone_truth_schema_version_updated(tmp_path):
     ZoneTruthAnalyzer().export(phase1, reactions, klines, out)
     with (out / "zone_truth_events.csv").open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
-    assert rows[0]["schema_version"] == "v6.3.11.7.zone_truth.1"
+    assert rows[0]["schema_version"] == "v6.3.12.zone_truth.1"
 
 
 def test_group_stats_complete_only_forward_averages():

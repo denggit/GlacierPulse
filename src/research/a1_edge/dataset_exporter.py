@@ -57,6 +57,7 @@ class A1EdgeDatasetExporter:
             "confirmed_count": sum(1 for e in rows if e.has_confirmed),
             "failed_count": sum(1 for e in rows if e.has_failed),
             "book_depth_available_count": sum(1 for e in rows if e.relevant_book_depth_available),
+            "reaction_event_ts_invalid_count": sum(1 for e in rows if not e.reaction_event_ts_valid),
             "unknown_reaction_type_count": sum(1 for e in rows if not e.a1_reaction_type or "UNKNOWN" in e.a1_reaction_type),
             "unknown_frozen_reason_count": sum(1 for e in rows if not e.frozen_reason or e.frozen_reason == "UNKNOWN"),
             "min_event_ts": min(event_ts_values) if event_ts_values else 0.0,
