@@ -2,35 +2,36 @@
 # -*- coding: utf-8 -*-
 """Download OKX official historical data files to local storage.
 
-OKX historical data download pages can change their concrete file URL layout.
-This tool therefore supports three workflows:
+Supported workflows:
 
-1) Direct URL mode
-   Paste one or more official OKX download URLs directly into the command:
-
-   python tools/download_okx_historical_data.py \
-     --kind books \
-     --symbol ETH-USDT-SWAP \
-     --url 'https://.../one-okx-file.zip' \
-     --url 'https://.../another-okx-file.zip'
-
-2) Manifest mode
-   Prepare a text file with one official URL per line:
-
-   python tools/download_okx_historical_data.py \
-     --kind books \
-     --symbol ETH-USDT-SWAP \
-     --manifest data/okx/manifests/eth_books_urls.txt
-
-3) URL template mode
-   Use this only when official URLs follow a stable date pattern:
+1) Trades CDN template mode
 
    python tools/download_okx_historical_data.py \
      --kind trades \
      --symbol ETH-USDT-SWAP \
      --start-date 2025-05-01 \
      --end-date 2025-05-31 \
-     --url-template 'https://.../ETH-USDT-SWAP/.../{date}....zip'
+     --url-template 'https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip'
+
+2) Books export-link mode
+
+   python tools/download_okx_historical_data.py \
+     --kind books \
+     --symbol ETH-USDT-SWAP \
+     --start-date 2025-05-01 \
+     --end-date 2025-05-31
+
+   This requests official OKX historical-data export links and downloads the
+   returned files. If OKX returns no links for the selected range, export the
+   book files from the OKX historical-data page and pass the resulting official
+   URLs with --url or --manifest.
+
+3) Direct URL / manifest mode
+
+   python tools/download_okx_historical_data.py \
+     --kind books \
+     --symbol ETH-USDT-SWAP \
+     --url 'https://.../one-okx-file.zip'
 
 Downloaded files are saved under:
     data/okx/raw/<kind>/<symbol>/
@@ -46,9 +47,9 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +62,11 @@ logger = get_logger("OKXHistoricalDownloader")
 
 DEFAULT_OUT_ROOT = ROOT / "data" / "okx" / "raw"
 VALID_KINDS = {"trades", "books", "books_l2"}
+BOOK_KINDS = {"books", "books_l2"}
+OKX_EXPORT_ENDPOINT = "https://www.okx.com/priapi/v5/broker/public/trade-data/download-link"
+OKX_HISTORICAL_DATA_REFERER = "https://www.okx.com/en-us/historical-data"
+OKX_BOOK_MODULE_400 = "4"
+OKX_BOOK_MODULE_5000 = "5"
 
 
 @dataclass
@@ -74,17 +80,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Download OKX official historical data files for local backtests.")
     p.add_argument("--kind", required=True, choices=sorted(VALID_KINDS), help="Data kind: trades/books/books_l2.")
     p.add_argument("--symbol", default="ETH-USDT-SWAP", help="OKX instrument id.")
-    p.add_argument("--start-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template.")
-    p.add_argument("--end-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template.")
+    p.add_argument("--start-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template and books export mode.")
+    p.add_argument("--end-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template and books export mode.")
     p.add_argument("--url-template", help="Official OKX URL template. Supports {date}, {yyyymmdd}, {symbol}, {kind}.")
     p.add_argument("--url", action="append", default=[], help="One official OKX download URL. Can be repeated multiple times.")
     p.add_argument("--manifest", type=Path, help="Text/JSONL manifest containing official OKX download URLs.")
     p.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT, help="Default: data/okx/raw")
     p.add_argument("--overwrite", action="store_true", help="Re-download existing files.")
-    p.add_argument("--dry-run", action="store_true", help="Print tasks without downloading.")
-    p.add_argument("--timeout", type=int, default=60)
+    p.add_argument("--dry-run", action="store_true", help="Print tasks without downloading. Books export mode still requests links.")
+    p.add_argument("--timeout", type=int, default=60, help="File download timeout seconds.")
     p.add_argument("--retries", type=int, default=3)
     p.add_argument("--sleep-sec", type=float, default=0.5, help="Sleep between downloads to avoid hammering the official endpoint.")
+
+    p.add_argument("--export-timeout", type=int, default=300, help="OKX export-link request timeout seconds.")
+    p.add_argument("--chunk-days", type=int, default=1, help="Days per OKX export request for books mode. Default: 1.")
+    p.add_argument("--books-depth", type=int, choices=[400, 5000], default=400, help="Requested OKX order book depth. Default: 400.")
+    p.add_argument("--books-module", default="", help="Override OKX export module code. Default: 4 for depth 400, 5 for depth 5000.")
+    p.add_argument("--inst-type", choices=["AUTO", "SWAP", "SPOT"], default="AUTO", help="OKX instrument type for books export. Default: AUTO.")
+    p.add_argument("--inst-family", default="", help="OKX instrument family for SWAP books export. Default inferred from symbol, e.g. ETH-USDT-SWAP -> ETH-USDT.")
+    p.add_argument("--date-aggr", choices=["daily", "monthly"], default="daily", help="OKX export date aggregation. Default: daily.")
     return p.parse_args(argv)
 
 
@@ -92,7 +106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     tasks = list(build_tasks(args))
     if not tasks:
-        raise SystemExit("No download tasks generated. Provide --url, --manifest, or --url-template with date range.")
+        raise SystemExit(
+            "No download tasks generated. Provide --url, --manifest, --url-template, "
+            "or use --kind books with --start-date/--end-date for OKX export mode."
+        )
 
     manifest_out = args.out_root / args.kind / args.symbol / "download_manifest.jsonl"
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
@@ -145,6 +162,167 @@ def build_tasks(args: argparse.Namespace) -> Iterable[DownloadTask]:
                 kind=args.kind,
             )
             yield DownloadTask(url=url, output_path=out_dir / filename_from_url(url, fallback=f"{args.symbol}_{args.kind}_{d.isoformat()}.dat"), date_tag=d.isoformat())
+
+    if should_use_books_export_mode(args):
+        yield from build_books_export_tasks(args, out_dir=out_dir)
+
+
+def should_use_books_export_mode(args: argparse.Namespace) -> bool:
+    return args.kind in BOOK_KINDS and not args.url and not args.manifest and not args.url_template
+
+
+def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterable[DownloadTask]:
+    if not args.start_date or not args.end_date:
+        raise SystemExit("--start-date and --end-date are required for --kind books export mode")
+
+    inst_type, inst_selector = infer_export_instrument(args)
+    module = str(args.books_module or (OKX_BOOK_MODULE_400 if int(args.books_depth) <= 400 else OKX_BOOK_MODULE_5000))
+    start = parse_date(args.start_date)
+    end = parse_date(args.end_date)
+    if end < start:
+        raise SystemExit("--end-date must be >= --start-date")
+
+    chunk_days = max(1, int(args.chunk_days))
+    total_links = 0
+    for chunk_start, chunk_end in date_chunks(start, end, chunk_days=chunk_days):
+        begin_ms = date_start_ms(chunk_start)
+        end_ms = date_end_ms(chunk_end)
+        date_tag = f"{chunk_start.isoformat()}_{chunk_end.isoformat()}"
+        logger.info(
+            "[OKX-BOOKS-EXPORT-LINKS] symbol=%s inst_type=%s selector=%s module=%s range=%s",
+            args.symbol,
+            inst_type,
+            inst_selector,
+            module,
+            date_tag,
+        )
+        response = request_okx_export_links(
+            module=module,
+            inst_type=inst_type,
+            inst_selector=inst_selector,
+            begin_ms=str(begin_ms),
+            end_ms=str(end_ms),
+            date_aggr=str(args.date_aggr),
+            timeout=int(args.export_timeout),
+        )
+        items = extract_download_items(response)
+        if not items:
+            logger.warning("[OKX-BOOKS-EXPORT-EMPTY] range=%s response_keys=%s", date_tag, sorted(response.keys()))
+            continue
+        for idx, item in enumerate(items, start=1):
+            total_links += 1
+            url = item["url"]
+            fallback = f"{args.symbol}_{args.kind}_{date_tag}_{idx:04d}.dat"
+            file_name = item.get("file_name") or filename_from_url(url, fallback=fallback)
+            yield DownloadTask(url=url, output_path=out_dir / safe_output_filename(file_name, fallback=fallback), date_tag=date_tag)
+    if total_links <= 0:
+        raise SystemExit(
+            "OKX books export generated zero download links. This can mean the requested date/instrument has no data, "
+            "or OKX did not make links available through this request. Export links from the OKX website and pass them "
+            "with --url or --manifest."
+        )
+
+
+def infer_export_instrument(args: argparse.Namespace) -> tuple[str, dict[str, list[str]]]:
+    symbol = str(args.symbol)
+    if args.inst_type == "AUTO":
+        inst_type = "SWAP" if symbol.endswith("-SWAP") else "SPOT"
+    else:
+        inst_type = str(args.inst_type)
+
+    if inst_type == "SWAP":
+        inst_family = str(args.inst_family or (symbol[:-5] if symbol.endswith("-SWAP") else symbol))
+        return inst_type, {"instFamilyList": [inst_family]}
+    return inst_type, {"instIdList": [symbol]}
+
+
+def request_okx_export_links(
+    module: str,
+    inst_type: str,
+    inst_selector: Mapping[str, list[str]],
+    begin_ms: str,
+    end_ms: str,
+    date_aggr: str,
+    timeout: int,
+) -> dict[str, Any]:
+    body = {
+        "module": str(module),
+        "instType": str(inst_type),
+        "instQueryParam": dict(inst_selector),
+        "dateQuery": {
+            "dateAggrType": str(date_aggr),
+            "begin": str(begin_ms),
+            "end": str(end_ms),
+        },
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://www.okx.com",
+        "Referer": OKX_HISTORICAL_DATA_REFERER,
+    }
+    data = json.dumps(body, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(OKX_EXPORT_ENDPOINT, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"OKX export request failed HTTP {exc.code}: {detail}") from exc
+    result = json.loads(payload)
+    if str(result.get("code")) != "0":
+        raise RuntimeError(f"OKX export request returned error: {result}")
+    data_obj = result.get("data")
+    if isinstance(data_obj, dict):
+        return data_obj
+    return {"data": data_obj}
+
+
+def extract_download_items(payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(url: str, file_name: str = "") -> None:
+        clean_url = str(url or "").strip()
+        if not clean_url.startswith(("http://", "https://")) or clean_url in seen:
+            return
+        seen.add(clean_url)
+        items.append({"url": clean_url, "file_name": str(file_name or "").strip()})
+
+    details = payload.get("details") if isinstance(payload, Mapping) else None
+    if isinstance(details, list):
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                continue
+            group_details = detail.get("groupDetails") or detail.get("group_details") or []
+            if isinstance(group_details, list):
+                for group_detail in group_details:
+                    if not isinstance(group_detail, Mapping):
+                        continue
+                    url = group_detail.get("url") or group_detail.get("downloadUrl") or group_detail.get("download_url")
+                    file_name = group_detail.get("fileName") or group_detail.get("filename") or group_detail.get("name") or ""
+                    if url:
+                        add(str(url), str(file_name or ""))
+
+    def walk(obj: Any, parent: Mapping[str, Any] | None = None) -> None:
+        if isinstance(obj, Mapping):
+            maybe_file = obj.get("fileName") or obj.get("filename") or obj.get("name") or ""
+            for key, value in obj.items():
+                if isinstance(value, str) and key.lower() in {"url", "downloadurl", "download_url", "link"}:
+                    add(value, str(maybe_file or ""))
+                walk(value, obj)
+        elif isinstance(obj, list):
+            for item in obj:
+                walk(item, parent)
+        elif isinstance(obj, str) and obj.startswith(("http://", "https://")):
+            maybe_file = ""
+            if parent:
+                maybe_file = str(parent.get("fileName") or parent.get("filename") or parent.get("name") or "")
+            add(obj, maybe_file)
+
+    walk(payload)
+    return items
 
 
 def download_one(task: DownloadTask, overwrite: bool, timeout: int, retries: int) -> dict[str, object]:
@@ -202,6 +380,13 @@ def filename_from_url(url: str, fallback: str) -> str:
     return name or fallback
 
 
+def safe_output_filename(name: str, fallback: str) -> str:
+    candidate = Path(str(name or fallback)).name.strip()
+    if not candidate or candidate in {".", ".."}:
+        candidate = fallback
+    return candidate.replace("/", "_").replace("\\", "_")
+
+
 def parse_date(text: str) -> date:
     return datetime.strptime(text, "%Y-%m-%d").date()
 
@@ -213,6 +398,24 @@ def date_range(start: date, end: date) -> Iterable[date]:
     while cur <= end:
         yield cur
         cur += timedelta(days=1)
+
+
+def date_chunks(start: date, end: date, chunk_days: int) -> Iterable[tuple[date, date]]:
+    cur = start
+    while cur <= end:
+        chunk_end = min(end, cur + timedelta(days=chunk_days - 1))
+        yield cur, chunk_end
+        cur = chunk_end + timedelta(days=1)
+
+
+def date_start_ms(d: date) -> int:
+    dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def date_end_ms(d: date) -> int:
+    dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc) + timedelta(days=1) - timedelta(milliseconds=1)
+    return int(dt.timestamp() * 1000)
 
 
 def sha256_file(path: Path) -> str:
