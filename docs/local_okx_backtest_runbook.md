@@ -27,39 +27,62 @@ A1 iceberg events are recorded for research. They are not sent to execution.
 
 ## 1. Download OKX official files
 
-OKX official historical data pages expose tick-level trades and high-resolution L2 book downloads, but concrete file URLs may change. The safest workflow is manifest mode: manually copy official OKX download links into a manifest file, then let the downloader save and verify files locally.
+OKX official historical data page says trade history is tick-level from September 2021 onwards, and order book is high-resolution L2 data from March 2023 onwards.
 
-### Recommended: manifest mode
+### 1.1 Trades: use OKX CDN template mode
 
-Create a manifest with one official OKX download URL per line:
-
-```text
-data/okx/manifests/eth_trades_urls.txt
-```
-
-Example content:
+For OKX trade history, use this URL template:
 
 ```text
-https://<official-okx-download-host>/<official-path>/<one-trades-file>.zip
-https://<official-okx-download-host>/<official-path>/<another-trades-file>.zip
+https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip
 ```
 
-Then run:
+For `ETH-USDT-SWAP`, run:
 
 ```bash
 python tools/download_okx_historical_data.py \
   --kind trades \
   --symbol ETH-USDT-SWAP \
-  --manifest data/okx/manifests/eth_trades_urls.txt
+  --start-date 2025-05-01 \
+  --end-date 2026-05-01 \
+  --url-template 'https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip'
 ```
 
-For books, create another manifest:
+Files will be saved to:
 
 ```text
-data/okx/manifests/eth_books_urls.txt
+data/okx/raw/trades/ETH-USDT-SWAP/
 ```
 
-Then run:
+### 1.2 Books: do not use a fake static template
+
+I have not confirmed a stable public static URL template for OKX high-resolution L2 order book files.
+
+Open-source reverse-engineering shows OKX order book historical data is served through the historical data export API:
+
+```text
+POST /priapi/v5/broker/public/trade-data/download-link
+```
+
+That export API may require browser session cookies. Therefore, do not hard-code a guessed books template into this project.
+
+For now, get books using one of these paths:
+
+```text
+Option A: copy official OKX book download URLs into --url or --manifest
+Option B: later implement a cookie-based OKX export downloader
+```
+
+Direct URL mode for one or a few official OKX book links:
+
+```bash
+python tools/download_okx_historical_data.py \
+  --kind books \
+  --symbol ETH-USDT-SWAP \
+  --url '<PASTE_ONE_OFFICIAL_OKX_BOOK_DOWNLOAD_URL_HERE>'
+```
+
+Manifest mode for many official OKX book links:
 
 ```bash
 python tools/download_okx_historical_data.py \
@@ -68,46 +91,11 @@ python tools/download_okx_historical_data.py \
   --manifest data/okx/manifests/eth_books_urls.txt
 ```
 
-Downloaded files will be saved to:
+Book files will be saved to:
 
 ```text
-data/okx/raw/trades/ETH-USDT-SWAP/
 data/okx/raw/books/ETH-USDT-SWAP/
 ```
-
-A JSONL download manifest is appended under each data directory:
-
-```text
-data/okx/raw/trades/ETH-USDT-SWAP/download_manifest.jsonl
-data/okx/raw/books/ETH-USDT-SWAP/download_manifest.jsonl
-```
-
-It records URL, local path, file size, SHA256, status, and download time.
-
-### Optional: URL template mode
-
-Use this mode only if the copied OKX official URLs are regular and date-based.
-
-`<OFFICIAL_OKX_URL_WITH_{date}_OR_{yyyymmdd}>` is not a real URL. It is a placeholder. Replace it with a real official OKX download URL, then replace the date part inside that URL with `{date}` or `{yyyymmdd}`.
-
-Example shape only:
-
-```text
-https://<official-okx-download-host>/<official-path>/ETH-USDT-SWAP-trades-{date}.zip
-```
-
-Then run:
-
-```bash
-python tools/download_okx_historical_data.py \
-  --kind trades \
-  --symbol ETH-USDT-SWAP \
-  --start-date 2025-05-01 \
-  --end-date 2026-05-01 \
-  --url-template 'https://<official-okx-download-host>/<official-path>/ETH-USDT-SWAP-trades-{date}.zip'
-```
-
-If the OKX URL does not have a clean date pattern, do not use template mode. Use manifest mode instead.
 
 ## 2. Run local A1 research replay
 
@@ -194,13 +182,35 @@ For `ETH-USDT-SWAP`, the default contract multiplier is `0.1`, matching the proj
 
 ## 4. Recommended first validation
 
-Start with one day of data:
+Start with one day of trades first:
+
+```bash
+python tools/download_okx_historical_data.py \
+  --kind trades \
+  --symbol ETH-USDT-SWAP \
+  --start-date 2025-05-01 \
+  --end-date 2025-05-01 \
+  --url-template 'https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip'
+```
+
+Then run a trades-only parser smoke test:
 
 ```bash
 python tools/backtest_local_data.py \
   --symbol ETH-USDT-SWAP \
-  --trades-dir data/okx/raw/trades/ETH-USDT-SWAP/one_day \
-  --books-dir data/okx/raw/books/ETH-USDT-SWAP/one_day \
+  --trades-dir data/okx/raw/trades/ETH-USDT-SWAP \
+  --run-name eth_swap_one_day_trades_parser_check \
+  --allow-missing-books \
+  --max-events 100000
+```
+
+After book files are available, run full A1 research replay:
+
+```bash
+python tools/backtest_local_data.py \
+  --symbol ETH-USDT-SWAP \
+  --trades-dir data/okx/raw/trades/ETH-USDT-SWAP \
+  --books-dir data/okx/raw/books/ETH-USDT-SWAP \
   --run-name eth_swap_one_day_a1_research_check \
   --progress-every 50000
 ```
