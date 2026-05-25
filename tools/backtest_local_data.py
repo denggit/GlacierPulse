@@ -743,10 +743,10 @@ def resolve_effective_time_filter(
 ) -> tuple[TimeFilter, dict[str, Any]]:
     requested = requested_window.time_filter
     missing: list[dict[str, Any]] = []
-    trades_missing = missing_intervals(requested, coverage_intervals(trades_selection.selected, coverage_tolerance_sec))
+    trades_missing = missing_for_selection(trades_selection, requested, coverage_tolerance_sec)
     books_missing: list[tuple[float, float]] = []
     if not allow_missing_books:
-        books_missing = missing_intervals(requested, coverage_intervals(books_selection.selected, coverage_tolerance_sec))
+        books_missing = missing_for_selection(books_selection, requested, coverage_tolerance_sec)
     for start_ts, end_ts in trades_missing:
         missing.append({"side": "trades", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)})
     for start_ts, end_ts in books_missing:
@@ -760,16 +760,45 @@ def resolve_effective_time_filter(
     effective_start = requested.start_ts
     effective_end = requested.end_ts
     if not full_coverage and not require_full_coverage:
-        starts = [value for value in [requested.start_ts, trades_selection.first_ts, books_selection.first_ts if not allow_missing_books else None] if value]
-        ends = [value for value in [requested.end_ts, trades_selection.last_ts, books_selection.last_ts if not allow_missing_books else None] if value]
-        effective_start = max(starts) if starts else requested.start_ts
-        effective_end = min(ends) if ends else requested.end_ts
-        if effective_start is None or effective_end is None or effective_start >= effective_end:
-            raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing, coverage_tolerance_sec))
-        warnings.append(
-            "partial coverage allowed; using intersection of requested/trades/books windows: "
-            f"{fmt_utc(effective_start)} to {fmt_utc(effective_end)}"
+        effective_filter = partial_effective_filter(
+            requested,
+            trades_selection,
+            books_selection,
+            coverage_tolerance_sec,
+            allow_missing_books=allow_missing_books,
         )
+        effective_start = effective_filter.start_ts
+        effective_end = effective_filter.end_ts
+        if effective_start is None or effective_end is None:
+            raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing, coverage_tolerance_sec))
+        effective_missing = missing_for_selection(trades_selection, effective_filter, coverage_tolerance_sec)
+        if not allow_missing_books:
+            effective_missing += missing_for_selection(books_selection, effective_filter, coverage_tolerance_sec)
+        if effective_start >= effective_end or effective_missing:
+            internal_missing = [
+                {"side": "partial", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)}
+                for start_ts, end_ts in effective_missing
+            ]
+            raise SystemExit(
+                format_coverage_error(
+                    requested_window,
+                    trades_selection,
+                    books_selection,
+                    internal_missing or missing,
+                    coverage_tolerance_sec,
+                )
+            )
+        if requested.start_ts is not None and effective_start > requested.start_ts:
+            warnings.append(
+                "partial coverage trimmed head: "
+                f"{fmt_utc(requested.start_ts)} to {fmt_utc(effective_start)}"
+            )
+        if requested.end_ts is not None and effective_end < requested.end_ts:
+            warnings.append(
+                "partial coverage trimmed tail: "
+                f"{fmt_utc(effective_end)} to {fmt_utc(requested.end_ts)}"
+            )
+        warnings.append(f"partial coverage effective window: {fmt_utc(effective_start)} to {fmt_utc(effective_end)}")
 
     tz = load_timezone(requested_window.timezone_name)
     alignment = {
@@ -812,7 +841,7 @@ def resolve_effective_time_filter(
 def coverage_intervals(coverage: Sequence[FileCoverage], tolerance_sec: float = 0.0) -> list[tuple[float, float]]:
     tolerance = max(0.0, float(tolerance_sec))
     intervals = sorted(
-        (item.first_ts - tolerance, item.last_ts + tolerance)
+        (item.first_ts, item.last_ts)
         for item in coverage
         if item.first_ts > 0 and item.last_ts > 0
     )
@@ -821,7 +850,7 @@ def coverage_intervals(coverage: Sequence[FileCoverage], tolerance_sec: float = 
     merged: list[tuple[float, float]] = []
     cur_start, cur_end = intervals[0]
     for start_ts, end_ts in intervals[1:]:
-        if start_ts <= cur_end:
+        if start_ts <= cur_end or start_ts - cur_end <= tolerance:
             cur_end = max(cur_end, end_ts)
         else:
             merged.append((cur_start, cur_end))
@@ -830,23 +859,83 @@ def coverage_intervals(coverage: Sequence[FileCoverage], tolerance_sec: float = 
     return merged
 
 
-def missing_intervals(time_filter: TimeFilter, intervals: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+def missing_intervals(
+    time_filter: TimeFilter,
+    intervals: Sequence[tuple[float, float]],
+    tolerance_sec: float = 0.0,
+) -> list[tuple[float, float]]:
     if time_filter.start_ts is None or time_filter.end_ts is None:
         return []
+    tolerance = max(0.0, float(tolerance_sec))
     missing: list[tuple[float, float]] = []
     cursor = float(time_filter.start_ts)
     end = float(time_filter.end_ts)
+    covered_started = False
     for start_ts, last_ts in intervals:
         if last_ts < cursor:
             continue
+        if start_ts >= end:
+            break
         if start_ts > cursor:
-            missing.append((cursor, min(start_ts, end)))
+            if not covered_started and start_ts - cursor <= tolerance:
+                pass
+            else:
+                missing.append((cursor, min(start_ts, end)))
         cursor = max(cursor, last_ts)
+        covered_started = True
         if cursor >= end:
             return missing
     if cursor < end:
+        if covered_started and end - cursor <= tolerance:
+            return missing
         missing.append((cursor, end))
     return missing
+
+
+def missing_for_selection(selection: CoverageSelection, time_filter: TimeFilter, tolerance_sec: float) -> list[tuple[float, float]]:
+    return missing_intervals(time_filter, coverage_intervals(selection.selected, tolerance_sec), tolerance_sec)
+
+
+def partial_effective_filter(
+    requested: TimeFilter,
+    trades_selection: CoverageSelection,
+    books_selection: CoverageSelection,
+    tolerance_sec: float,
+    allow_missing_books: bool = False,
+) -> TimeFilter:
+    starts = [requested.start_ts, first_effective_coverage_ts(trades_selection, requested, tolerance_sec)]
+    ends = [requested.end_ts, last_effective_coverage_ts(trades_selection, requested, tolerance_sec)]
+    if not allow_missing_books:
+        starts.append(first_effective_coverage_ts(books_selection, requested, tolerance_sec))
+        ends.append(last_effective_coverage_ts(books_selection, requested, tolerance_sec))
+    clean_starts = [value for value in starts if value is not None and value > 0]
+    clean_ends = [value for value in ends if value is not None and value > 0]
+    return TimeFilter(start_ts=max(clean_starts) if clean_starts else None, end_ts=min(clean_ends) if clean_ends else None)
+
+
+def first_effective_coverage_ts(selection: CoverageSelection, requested: TimeFilter, tolerance_sec: float) -> float | None:
+    if requested.start_ts is None or requested.end_ts is None:
+        return selection.first_ts or None
+    for start_ts, end_ts in coverage_intervals(selection.selected, tolerance_sec):
+        if end_ts < requested.start_ts:
+            continue
+        if start_ts >= requested.end_ts:
+            break
+        return max(start_ts, requested.start_ts)
+    return None
+
+
+def last_effective_coverage_ts(selection: CoverageSelection, requested: TimeFilter, tolerance_sec: float) -> float | None:
+    if requested.start_ts is None or requested.end_ts is None:
+        return selection.last_ts or None
+    last_value: float | None = None
+    for start_ts, end_ts in coverage_intervals(selection.selected, tolerance_sec):
+        if end_ts < requested.start_ts:
+            continue
+        if start_ts >= requested.end_ts:
+            break
+        last_value = min(end_ts, requested.end_ts)
+    return last_value
 
 
 def format_coverage_error(
@@ -1124,9 +1213,16 @@ def build_events(
         yield from merge_sorted(trades, books)
 
 
-def iter_trade_events(paths: Sequence[Path], symbol: str, multiplier: float, stats: Stats, time_filter: TimeFilter) -> Iterator[ReplayEvent]:
+def iter_trade_events(
+    paths: Sequence[Path],
+    symbol: str,
+    multiplier: float,
+    stats: Stats,
+    time_filter: TimeFilter,
+    assume_sorted: bool = True,
+) -> Iterator[ReplayEvent]:
     yield from merge_many_sorted(
-        iter_trade_events_from_file(path, symbol, multiplier, stats, time_filter, seq_offset=idx * 100_000_000)
+        iter_trade_events_from_file(path, symbol, multiplier, stats, time_filter, seq_offset=idx * 100_000_000, assume_sorted=assume_sorted)
         for idx, path in enumerate(paths)
     )
 
@@ -1138,16 +1234,27 @@ def iter_trade_events_from_file(
     stats: Stats,
     time_filter: TimeFilter,
     seq_offset: int = 0,
+    assume_sorted: bool = True,
 ) -> Iterator[ReplayEvent]:
     seq = seq_offset
     for row in iter_rows(path, stats, time_filter):
         try:
+            ts = extract_row_ts_only(row)
+            if ts <= 0:
+                stats.malformed_rows += 1
+                continue
+            if time_filter.start_ts is not None and ts < time_filter.start_ts:
+                stats.filtered_trades += 1
+                continue
+            if time_filter.end_ts is not None and ts >= time_filter.end_ts:
+                stats.filtered_trades += 1
+                if assume_sorted:
+                    break
+                continue
+            if not row_matches_symbol(row, symbol):
+                continue
             trade = normalize_trade(row, symbol, multiplier)
             if not trade:
-                continue
-            ts = float(trade["ts"])
-            if not time_filter.includes(ts):
-                stats.filtered_trades += 1
                 continue
             seq += 1
             stats.trades += 1
@@ -1163,11 +1270,12 @@ def iter_book_events(
     stats: Stats,
     options: BookCleaningOptions,
     time_filter: TimeFilter,
+    assume_sorted: bool = True,
 ) -> Iterator[ReplayEvent]:
     seq = 0
     cleaner = BookEventCleaner(options=options, stats=stats)
     raw_books = merge_many_raw_books(
-        iter_normalized_book_rows_from_file(path, symbol, multiplier, stats, options, time_filter)
+        iter_normalized_book_rows_from_file(path, symbol, multiplier, stats, options, time_filter, assume_sorted=assume_sorted)
         for path in paths
     )
     for raw_book in raw_books:
@@ -1192,15 +1300,28 @@ def iter_normalized_book_rows_from_file(
     stats: Stats,
     options: BookCleaningOptions,
     time_filter: TimeFilter,
+    assume_sorted: bool = True,
 ) -> Iterator[dict[str, Any]]:
     for row in iter_rows(path, stats, time_filter):
         try:
-            raw_book = normalize_book(row, symbol, multiplier, options)
-            if not raw_book:
+            ts = extract_row_ts_only(row)
+            if ts <= 0:
+                stats.malformed_rows += 1
                 continue
-            if not time_filter.includes(float(raw_book["ts"])):
+            if time_filter.start_ts is not None and ts < time_filter.start_ts:
                 stats.filtered_books += 1
                 stats.filtered_raw_book_rows += 1
+                continue
+            if time_filter.end_ts is not None and ts >= time_filter.end_ts:
+                stats.filtered_books += 1
+                stats.filtered_raw_book_rows += 1
+                if assume_sorted:
+                    break
+                continue
+            if not row_matches_symbol(row, symbol):
+                continue
+            raw_book = normalize_book(row, symbol, multiplier, options)
+            if not raw_book:
                 continue
             yield raw_book
         except Exception:
