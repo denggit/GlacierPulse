@@ -106,11 +106,13 @@ class FileCoverage:
     path: Path
     first_ts: float
     last_ts: float
+    row_count: int = 0
+    malformed_ts_count: int = 0
 
-    def overlaps(self, time_filter: TimeFilter) -> bool:
-        if time_filter.start_ts is not None and self.last_ts < time_filter.start_ts:
+    def overlaps(self, time_filter: TimeFilter, tolerance_sec: float = 0.0) -> bool:
+        if time_filter.start_ts is not None and self.last_ts + tolerance_sec < time_filter.start_ts:
             return False
-        if time_filter.end_ts is not None and self.first_ts >= time_filter.end_ts:
+        if time_filter.end_ts is not None and self.first_ts - tolerance_sec >= time_filter.end_ts:
             return False
         return True
 
@@ -133,6 +135,20 @@ class CoverageSelection:
     @property
     def paths(self) -> list[Path]:
         return [item.path for item in self.selected]
+
+    @property
+    def row_count(self) -> int:
+        return sum(item.row_count for item in self.selected)
+
+    @property
+    def malformed_ts_count(self) -> int:
+        return sum(item.malformed_ts_count for item in self.selected)
+
+
+@dataclass
+class CoverageCacheStats:
+    hits: int = 0
+    misses: int = 0
 
 
 @dataclass
@@ -291,96 +307,112 @@ class BookEventCleaner:
         self.options = options
         self.stats = stats
         self.pending_bucket: int | None = None
-        self.pending_book: dict[str, Any] | None = None
-        self.prev_snapshot_bids: dict[float, float] = {}
-        self.prev_snapshot_asks: dict[float, float] = {}
+        self.bucket_bids_state: dict[float, float] = {}
+        self.bucket_asks_state: dict[float, float] = {}
+        self.bucket_ts: float = 0.0
+        self.bucket_recv_ts: float = 0.0
+        self.bucket_mode: str = "delta"
+        self.prev_sent_bids_state: dict[float, float] = {}
+        self.prev_sent_asks_state: dict[float, float] = {}
 
     def push(self, raw_book: dict[str, Any]) -> list[dict[str, Any]]:
         if self.options.bucket_ms <= 0:
-            cleaned = self._clean_for_replay(raw_book)
+            cleaned = self._clean_immediate(raw_book)
             return [cleaned] if cleaned else []
 
         bucket = int(float(raw_book["ts"]) * 1000.0 // float(self.options.bucket_ms))
-        if self.pending_book is None:
-            self.pending_bucket = bucket
-            self.pending_book = raw_book
+        if self.pending_bucket is None:
+            self._start_bucket(bucket, raw_book)
             return []
 
         if bucket == self.pending_bucket:
-            self.pending_book = self._coalesce_raw_books(self.pending_book, raw_book)
+            self._apply_raw_book_to_bucket(raw_book)
             self.stats.book_bucket_coalesces += 1
             return []
 
-        cleaned = self._clean_for_replay(self.pending_book)
-        self.pending_bucket = bucket
-        self.pending_book = raw_book
+        cleaned = self._finalize_bucket()
+        self._start_bucket(bucket, raw_book)
         return [cleaned] if cleaned else []
 
     def flush(self) -> list[dict[str, Any]]:
-        if self.pending_book is None:
+        if self.pending_bucket is None:
             return []
-        cleaned = self._clean_for_replay(self.pending_book)
-        self.pending_book = None
+        cleaned = self._finalize_bucket()
         self.pending_bucket = None
+        self.bucket_bids_state = {}
+        self.bucket_asks_state = {}
+        self.bucket_ts = 0.0
+        self.bucket_recv_ts = 0.0
+        self.bucket_mode = "delta"
         return [cleaned] if cleaned else []
 
-    def _coalesce_raw_books(self, base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
-        base_mode = base.get("_mode", "delta")
-        incoming_mode = incoming.get("_mode", "delta")
-        if incoming_mode == "snapshot":
-            return incoming
-        if base_mode == "snapshot":
-            return self._apply_delta_to_snapshot(base, incoming)
+    def _start_bucket(self, bucket: int, raw_book: dict[str, Any]) -> None:
+        self.pending_bucket = bucket
+        if raw_book.get("_mode", "delta") == "snapshot":
+            self.bucket_bids_state = {}
+            self.bucket_asks_state = {}
+        else:
+            self.bucket_bids_state = dict(self.prev_sent_bids_state)
+            self.bucket_asks_state = dict(self.prev_sent_asks_state)
+        self.bucket_ts = float(raw_book["ts"])
+        self.bucket_recv_ts = float(raw_book.get("recv_ts", raw_book["ts"]))
+        self.bucket_mode = str(raw_book.get("_mode", "delta"))
+        self._apply_raw_book_to_bucket(raw_book)
 
-        bids = merge_level_updates(base.get("bids", []), incoming.get("bids", []), side="bids", depth_limit=0)
-        asks = merge_level_updates(base.get("asks", []), incoming.get("asks", []), side="asks", depth_limit=0)
-        inferred_mode = "snapshot" if len(bids) + len(asks) >= self.options.snapshot_infer_min_levels else "delta"
-        return {
-            "bids": bids,
-            "asks": asks,
-            "ts": incoming["ts"],
-            "recv_ts": incoming.get("recv_ts", incoming["ts"]),
-            "_mode": inferred_mode,
-        }
-
-    def _apply_delta_to_snapshot(self, snapshot: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
-        bids = {float(price): float(size) for price, size in snapshot.get("bids", []) if float(size) > 0}
-        asks = {float(price): float(size) for price, size in snapshot.get("asks", []) if float(size) > 0}
-        apply_level_updates_to_state(bids, delta.get("bids", []))
-        apply_level_updates_to_state(asks, delta.get("asks", []))
-        return {
-            "bids": sort_levels_from_state(bids, side="bids", depth_limit=self.options.depth_limit),
-            "asks": sort_levels_from_state(asks, side="asks", depth_limit=self.options.depth_limit),
-            "ts": delta["ts"],
-            "recv_ts": delta.get("recv_ts", delta["ts"]),
-            "_mode": "snapshot",
-        }
-
-    def _clean_for_replay(self, raw_book: dict[str, Any]) -> dict[str, Any] | None:
+    def _apply_raw_book_to_bucket(self, raw_book: dict[str, Any]) -> None:
         mode = raw_book.get("_mode", "delta")
         if mode == "snapshot":
             self.stats.book_snapshot_rebuilds += 1
-            return self._snapshot_to_live_delta(raw_book)
+            self.bucket_bids_state = levels_to_state(raw_book.get("bids", []), side="bids", depth_limit=self.options.depth_limit)
+            self.bucket_asks_state = levels_to_state(raw_book.get("asks", []), side="asks", depth_limit=self.options.depth_limit)
+            self.bucket_mode = "snapshot"
+        else:
+            apply_level_updates_to_state(self.bucket_bids_state, raw_book.get("bids", []))
+            apply_level_updates_to_state(self.bucket_asks_state, raw_book.get("asks", []))
+        self.bucket_ts = float(raw_book["ts"])
+        self.bucket_recv_ts = float(raw_book.get("recv_ts", raw_book["ts"]))
+
+    def _finalize_bucket(self) -> dict[str, Any] | None:
+        current_bids = levels_to_state(
+            sort_levels_from_state(self.bucket_bids_state, side="bids", depth_limit=self.options.depth_limit),
+            side="bids",
+            depth_limit=self.options.depth_limit,
+        )
+        current_asks = levels_to_state(
+            sort_levels_from_state(self.bucket_asks_state, side="asks", depth_limit=self.options.depth_limit),
+            side="asks",
+            depth_limit=self.options.depth_limit,
+        )
+
+        bid_delta, bid_deletes = diff_states(self.prev_sent_bids_state, current_bids, side="bids")
+        ask_delta, ask_deletes = diff_states(self.prev_sent_asks_state, current_asks, side="asks")
+        self.stats.book_zero_delete_levels += bid_deletes + ask_deletes
+
+        self.prev_sent_bids_state = current_bids
+        self.prev_sent_asks_state = current_asks
+        if not bid_delta and not ask_delta:
+            return None
+        return {"bids": bid_delta, "asks": ask_delta, "ts": self.bucket_ts, "recv_ts": self.bucket_recv_ts}
+
+    def _clean_immediate(self, raw_book: dict[str, Any]) -> dict[str, Any] | None:
+        if raw_book.get("_mode", "delta") == "snapshot":
+            self._start_bucket(0, raw_book)
+            cleaned = self._finalize_bucket()
+            self.pending_bucket = None
+            self.bucket_bids_state = {}
+            self.bucket_asks_state = {}
+            return cleaned
 
         bids = normalize_levels_for_replay(raw_book.get("bids", []), side="bids", depth_limit=0)
         asks = normalize_levels_for_replay(raw_book.get("asks", []), side="asks", depth_limit=0)
+        self.pending_bucket = None
+        self.bucket_bids_state = {}
+        self.bucket_asks_state = {}
+        apply_level_updates_to_state(self.prev_sent_bids_state, bids)
+        apply_level_updates_to_state(self.prev_sent_asks_state, asks)
         if not bids and not asks:
             return None
         return {"bids": bids, "asks": asks, "ts": raw_book["ts"], "recv_ts": raw_book.get("recv_ts", raw_book["ts"])}
-
-    def _snapshot_to_live_delta(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
-        new_bids = levels_to_state(snapshot.get("bids", []), side="bids", depth_limit=self.options.depth_limit)
-        new_asks = levels_to_state(snapshot.get("asks", []), side="asks", depth_limit=self.options.depth_limit)
-
-        bid_delta, bid_deletes = diff_states(self.prev_snapshot_bids, new_bids, side="bids")
-        ask_delta, ask_deletes = diff_states(self.prev_snapshot_asks, new_asks, side="asks")
-        self.stats.book_zero_delete_levels += bid_deletes + ask_deletes
-
-        self.prev_snapshot_bids = new_bids
-        self.prev_snapshot_asks = new_asks
-        if not bid_delta and not ask_delta:
-            return None
-        return {"bids": bid_delta, "asks": ask_delta, "ts": snapshot["ts"], "recv_ts": snapshot.get("recv_ts", snapshot["ts"])}
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -403,6 +435,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-auto-discover-files", dest="auto_discover_files", action="store_false")
     p.add_argument("--require-full-coverage", dest="require_full_coverage", action="store_true", default=True)
     p.add_argument("--allow-partial-coverage", dest="allow_partial_coverage", action="store_true")
+    p.add_argument("--coverage-boundary-tolerance-sec", type=float, default=60.0, help="Tolerance used only for coverage boundary checks. Default: 60.")
+    p.add_argument("--coverage-cache-enabled", dest="coverage_cache_enabled", action="store_true", default=True)
+    p.add_argument("--no-coverage-cache-enabled", dest="coverage_cache_enabled", action="store_false")
+    p.add_argument("--coverage-cache-path", type=Path, default=ROOT / "data" / "okx" / "coverage_index" / "backtest_local_data_coverage.json")
     p.add_argument("--sort-in-memory", action="store_true")
     p.add_argument("--allow-missing-books", action="store_true")
     p.add_argument("--max-events", type=int, default=0)
@@ -453,6 +489,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     research_events_path = out_dir / "research_events.jsonl"
     summary_path = out_dir / "summary.json"
+    coverage_cache_stats = CoverageCacheStats()
+    coverage_cache = load_coverage_cache(args.coverage_cache_path) if args.coverage_cache_enabled else {}
 
     trades_selection = select_files_for_replay(
         trades_input,
@@ -462,6 +500,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         book_options=book_cleaning,
         requested_filter=requested_filter,
         auto_discover=bool(args.auto_discover_files),
+        coverage_tolerance_sec=float(args.coverage_boundary_tolerance_sec),
+        cache=coverage_cache,
+        cache_enabled=bool(args.coverage_cache_enabled),
+        cache_stats=coverage_cache_stats,
     )
     books_selection = (
         select_files_for_replay(
@@ -472,16 +514,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             book_options=book_cleaning,
             requested_filter=requested_filter,
             auto_discover=bool(args.auto_discover_files),
+            coverage_tolerance_sec=float(args.coverage_boundary_tolerance_sec),
+            cache=coverage_cache,
+            cache_enabled=bool(args.coverage_cache_enabled),
+            cache_stats=coverage_cache_stats,
         )
         if books_input
         else CoverageSelection(selected=[], all_coverage=[])
     )
+    if args.coverage_cache_enabled:
+        save_coverage_cache(args.coverage_cache_path, coverage_cache)
     effective_filter, time_alignment = resolve_effective_time_filter(
         requested_window=requested_window,
         trades_selection=trades_selection,
         books_selection=books_selection,
         require_full_coverage=bool(args.require_full_coverage and not args.allow_partial_coverage),
         allow_missing_books=bool(args.allow_missing_books and not books_input),
+        coverage_tolerance_sec=float(args.coverage_boundary_tolerance_sec),
+        coverage_cache_enabled=bool(args.coverage_cache_enabled),
+        coverage_cache_path=Path(args.coverage_cache_path),
+        coverage_cache_stats=coverage_cache_stats,
     )
 
     logger.info("[LOCAL-A1-RESEARCH-START] symbol=%s trades=%s books=%s out=%s", args.symbol, trades_input, books_input, out_dir)
@@ -522,7 +574,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fmt_utc(float(effective_filter.start_ts)),
             )
     else:
-        time_alignment.update({"book_warmup_rows": 0, "book_bootstrap_bid_levels": 0, "book_bootstrap_ask_levels": 0})
+        time_alignment.update(
+            {
+                "book_warmup_rows": 0,
+                "book_bootstrap_bid_levels": 0,
+                "book_bootstrap_ask_levels": 0,
+                "book_warmup_start_utc": "",
+                "book_warmup_end_utc": fmt_utc(effective_filter.start_ts or 0.0),
+                "book_warmup_last_row_utc": "",
+            }
+        )
 
     start = time.perf_counter()
     try:
@@ -675,13 +736,17 @@ def resolve_effective_time_filter(
     books_selection: CoverageSelection,
     require_full_coverage: bool,
     allow_missing_books: bool = False,
+    coverage_tolerance_sec: float = 0.0,
+    coverage_cache_enabled: bool = False,
+    coverage_cache_path: Path | None = None,
+    coverage_cache_stats: CoverageCacheStats | None = None,
 ) -> tuple[TimeFilter, dict[str, Any]]:
     requested = requested_window.time_filter
     missing: list[dict[str, Any]] = []
-    trades_missing = missing_intervals(requested, coverage_intervals(trades_selection.selected))
+    trades_missing = missing_intervals(requested, coverage_intervals(trades_selection.selected, coverage_tolerance_sec))
     books_missing: list[tuple[float, float]] = []
     if not allow_missing_books:
-        books_missing = missing_intervals(requested, coverage_intervals(books_selection.selected))
+        books_missing = missing_intervals(requested, coverage_intervals(books_selection.selected, coverage_tolerance_sec))
     for start_ts, end_ts in trades_missing:
         missing.append({"side": "trades", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)})
     for start_ts, end_ts in books_missing:
@@ -690,7 +755,7 @@ def resolve_effective_time_filter(
     full_coverage = not missing
     warnings: list[str] = []
     if require_full_coverage and not full_coverage:
-        raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing))
+        raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing, coverage_tolerance_sec))
 
     effective_start = requested.start_ts
     effective_end = requested.end_ts
@@ -700,7 +765,7 @@ def resolve_effective_time_filter(
         effective_start = max(starts) if starts else requested.start_ts
         effective_end = min(ends) if ends else requested.end_ts
         if effective_start is None or effective_end is None or effective_start >= effective_end:
-            raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing))
+            raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing, coverage_tolerance_sec))
         warnings.append(
             "partial coverage allowed; using intersection of requested/trades/books windows: "
             f"{fmt_utc(effective_start)} to {fmt_utc(effective_end)}"
@@ -728,6 +793,15 @@ def resolve_effective_time_filter(
         "trades_last_utc": fmt_utc(trades_selection.last_ts),
         "books_first_utc": fmt_utc(books_selection.first_ts),
         "books_last_utc": fmt_utc(books_selection.last_ts),
+        "coverage_boundary_tolerance_sec": float(coverage_tolerance_sec),
+        "trades_coverage_rows": trades_selection.row_count,
+        "books_coverage_rows": books_selection.row_count,
+        "trades_malformed_ts_count": trades_selection.malformed_ts_count,
+        "books_malformed_ts_count": books_selection.malformed_ts_count,
+        "coverage_cache_enabled": bool(coverage_cache_enabled),
+        "coverage_cache_path": str(coverage_cache_path) if coverage_cache_path else "",
+        "coverage_cache_hits": coverage_cache_stats.hits if coverage_cache_stats else 0,
+        "coverage_cache_misses": coverage_cache_stats.misses if coverage_cache_stats else 0,
         "full_coverage": full_coverage,
         "partial_coverage_used": bool(not full_coverage and not require_full_coverage),
         "warnings": warnings,
@@ -735,8 +809,13 @@ def resolve_effective_time_filter(
     return TimeFilter(start_ts=effective_start, end_ts=effective_end), alignment
 
 
-def coverage_intervals(coverage: Sequence[FileCoverage]) -> list[tuple[float, float]]:
-    intervals = sorted((item.first_ts, item.last_ts) for item in coverage if item.first_ts > 0 and item.last_ts > 0)
+def coverage_intervals(coverage: Sequence[FileCoverage], tolerance_sec: float = 0.0) -> list[tuple[float, float]]:
+    tolerance = max(0.0, float(tolerance_sec))
+    intervals = sorted(
+        (item.first_ts - tolerance, item.last_ts + tolerance)
+        for item in coverage
+        if item.first_ts > 0 and item.last_ts > 0
+    )
     if not intervals:
         return []
     merged: list[tuple[float, float]] = []
@@ -775,6 +854,7 @@ def format_coverage_error(
     trades_selection: CoverageSelection,
     books_selection: CoverageSelection,
     missing: Sequence[Mapping[str, Any]],
+    coverage_tolerance_sec: float = 0.0,
 ) -> str:
     missing_text = "; ".join(
         f"{item.get('side')} missing {item.get('start_utc')} to {item.get('end_utc')}" for item in missing
@@ -787,6 +867,7 @@ def format_coverage_error(
             f"trades coverage: {format_selection_coverage(trades_selection)}",
             f"books coverage: {format_selection_coverage(books_selection)}",
             f"missing side and missing interval: {missing_text}",
+            f"coverage boundary tolerance: {float(coverage_tolerance_sec)} sec",
             "Use --allow-partial-coverage to replay the intersection window.",
         ]
     )
@@ -806,17 +887,30 @@ def select_files_for_replay(
     book_options: BookCleaningOptions,
     requested_filter: TimeFilter,
     auto_discover: bool,
+    coverage_tolerance_sec: float = 0.0,
+    cache: dict[str, Any] | None = None,
+    cache_enabled: bool = False,
+    cache_stats: CoverageCacheStats | None = None,
 ) -> CoverageSelection:
     candidates = discover_supported_files(input_path)
     coverage = [
         item
         for item in (
-            scan_file_coverage(path, kind=kind, symbol=symbol, multiplier=multiplier, book_options=book_options)
+            get_file_coverage(
+                path,
+                kind=kind,
+                symbol=symbol,
+                multiplier=multiplier,
+                book_options=book_options,
+                cache=cache,
+                cache_enabled=cache_enabled,
+                cache_stats=cache_stats,
+            )
             for path in candidates
         )
         if item is not None
     ]
-    selected = [item for item in coverage if (item.overlaps(requested_filter) if auto_discover else True)]
+    selected = [item for item in coverage if (item.overlaps(requested_filter, coverage_tolerance_sec) if auto_discover else True)]
     selected.sort(key=lambda item: (item.first_ts, str(item.path)))
     return CoverageSelection(selected=selected, all_coverage=coverage)
 
@@ -845,25 +939,129 @@ def scan_file_coverage(
     scan_stats = Stats()
     first_ts = 0.0
     last_ts = 0.0
+    row_count = 0
+    malformed_ts_count = 0
     for row in iter_rows(path, scan_stats, TimeFilter()):
-        try:
-            normalized = (
-                normalize_trade(row, symbol, multiplier)
-                if kind == "trade"
-                else normalize_book(row, symbol, multiplier, book_options)
-            )
-            if not normalized:
-                continue
-            ts = float(normalized["ts"])
-        except Exception:
+        if not row_matches_symbol(row, symbol):
             continue
+        row_count += 1
+        ts = extract_row_ts_only(row)
         if ts <= 0:
+            malformed_ts_count += 1
             continue
         first_ts = ts if first_ts <= 0 else min(first_ts, ts)
         last_ts = max(last_ts, ts)
     if first_ts <= 0 or last_ts <= 0:
         return None
-    return FileCoverage(path=path, first_ts=first_ts, last_ts=last_ts)
+    return FileCoverage(path=path, first_ts=first_ts, last_ts=last_ts, row_count=row_count, malformed_ts_count=malformed_ts_count)
+
+
+def extract_row_ts_only(row: Mapping[str, Any]) -> float:
+    return normalize_ts(get_any(row, "ts", "timestamp", "time", "created_time", "0"))
+
+
+def row_matches_symbol(row: Mapping[str, Any], symbol: str) -> bool:
+    inst = get_any(row, "instId", "inst_id", "symbol", "instrument")
+    return True if inst in (None, "") else str(inst) == str(symbol)
+
+
+def get_file_coverage(
+    path: Path,
+    kind: str,
+    symbol: str,
+    multiplier: float,
+    book_options: BookCleaningOptions,
+    cache: dict[str, Any] | None = None,
+    cache_enabled: bool = False,
+    cache_stats: CoverageCacheStats | None = None,
+) -> FileCoverage | None:
+    if cache_enabled and cache is not None:
+        cached = read_cached_coverage(path, kind, symbol, cache)
+        if cached is not None:
+            if cache_stats:
+                cache_stats.hits += 1
+            return cached
+        if cache_stats:
+            cache_stats.misses += 1
+
+    coverage = scan_file_coverage(path, kind=kind, symbol=symbol, multiplier=multiplier, book_options=book_options)
+    if cache_enabled and cache is not None and coverage is not None:
+        write_cached_coverage(coverage, kind, symbol, cache)
+    return coverage
+
+
+def coverage_cache_key(path: Path, kind: str, symbol: str) -> str:
+    absolute = str(path.resolve())
+    return f"{kind}|{symbol}|{absolute}"
+
+
+def file_fingerprint(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    return str(path.resolve()), int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def read_cached_coverage(path: Path, kind: str, symbol: str, cache: Mapping[str, Any]) -> FileCoverage | None:
+    absolute, size, mtime_ns = file_fingerprint(path)
+    entry = cache.get(coverage_cache_key(path, kind, symbol))
+    if not isinstance(entry, Mapping):
+        return None
+    if (
+        entry.get("path") != absolute
+        or int(entry.get("size", -1)) != size
+        or int(entry.get("mtime_ns", -1)) != mtime_ns
+        or entry.get("kind") != kind
+        or entry.get("symbol") != symbol
+    ):
+        return None
+    first_ts = to_float(entry.get("first_ts"))
+    last_ts = to_float(entry.get("last_ts"))
+    if first_ts <= 0 or last_ts <= 0:
+        return None
+    return FileCoverage(
+        path=path,
+        first_ts=first_ts,
+        last_ts=last_ts,
+        row_count=int(entry.get("row_count", 0) or 0),
+        malformed_ts_count=int(entry.get("malformed_ts_count", 0) or 0),
+    )
+
+
+def write_cached_coverage(coverage: FileCoverage, kind: str, symbol: str, cache: dict[str, Any]) -> None:
+    absolute, size, mtime_ns = file_fingerprint(coverage.path)
+    cache[coverage_cache_key(coverage.path, kind, symbol)] = {
+        "path": absolute,
+        "size": size,
+        "mtime_ns": mtime_ns,
+        "kind": kind,
+        "symbol": symbol,
+        "first_ts": coverage.first_ts,
+        "last_ts": coverage.last_ts,
+        "row_count": coverage.row_count,
+        "malformed_ts_count": coverage.malformed_ts_count,
+        "scanned_at_utc": fmt_utc(time.time()),
+    }
+
+
+def load_coverage_cache(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log_warning("[LOCAL-COVERAGE-CACHE-WARNING] path=%s reason=load_failed:%s", path, exc)
+        return {}
+    if not isinstance(data, dict):
+        log_warning("[LOCAL-COVERAGE-CACHE-WARNING] path=%s reason=invalid_root", path)
+        return {}
+    return data
+
+
+def save_coverage_cache(path: Path, cache: Mapping[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception as exc:
+        log_warning("[LOCAL-COVERAGE-CACHE-WARNING] path=%s reason=write_failed:%s", path, exc)
 
 
 def warmup_books_state(
@@ -873,17 +1071,22 @@ def warmup_books_state(
     multiplier: float,
     options: BookCleaningOptions,
     start_ts: float,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     warmup_stats = Stats()
     cleaner = BookEventCleaner(options=options, stats=warmup_stats)
     warmup_rows = 0
+    first_warmup_ts = 0.0
+    last_warmup_ts = 0.0
     raw_books = merge_many_raw_books(
         iter_normalized_book_rows_from_file(path, symbol, multiplier, warmup_stats, options, TimeFilter(end_ts=start_ts))
         for path in book_files
     )
     for raw_book in raw_books:
-        if float(raw_book["ts"]) >= start_ts:
+        raw_ts = float(raw_book["ts"])
+        if raw_ts >= start_ts:
             continue
+        first_warmup_ts = raw_ts if first_warmup_ts <= 0 else min(first_warmup_ts, raw_ts)
+        last_warmup_ts = max(last_warmup_ts, raw_ts)
         warmup_rows += 1
         for book in cleaner.push(raw_book):
             runtime.ctx.apply_book_delta(book)
@@ -895,6 +1098,9 @@ def warmup_books_state(
         "book_warmup_rows": warmup_rows,
         "book_bootstrap_bid_levels": len(bids),
         "book_bootstrap_ask_levels": len(asks),
+        "book_warmup_start_utc": fmt_utc(first_warmup_ts),
+        "book_warmup_end_utc": fmt_utc(start_ts),
+        "book_warmup_last_row_utc": fmt_utc(last_warmup_ts),
     }
 
 
