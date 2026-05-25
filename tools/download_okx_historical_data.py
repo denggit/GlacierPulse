@@ -105,6 +105,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--inst-type", choices=["AUTO", "SWAP", "SPOT"], default="AUTO", help="OKX instrument type for books export. Default: AUTO.")
     p.add_argument("--inst-family", default="", help="OKX instrument family for SWAP books export. Default inferred from symbol, e.g. ETH-USDT-SWAP -> ETH-USDT.")
     p.add_argument("--date-aggr", choices=["daily", "monthly"], default="daily", help="OKX export date aggregation. Default: daily.")
+    p.add_argument("--allow-missing-book-days", action="store_true", help="Do not fail if a requested books date range returns zero export links.")
     return p.parse_args(argv)
 
 
@@ -190,17 +191,20 @@ def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterabl
 
     chunk_days = max(1, int(args.chunk_days))
     total_links = 0
+    missing_ranges: list[str] = []
     for chunk_start, chunk_end in date_chunks(start, end, chunk_days=chunk_days):
         begin_ms = date_start_ms(chunk_start)
-        end_ms = date_end_ms(chunk_end)
+        end_ms = date_end_exclusive_ms(chunk_end)
         date_tag = f"{chunk_start.isoformat()}_{chunk_end.isoformat()}"
         logger.info(
-            "[OKX-BOOKS-EXPORT-LINKS] symbol=%s inst_type=%s selector=%s module=%s range=%s",
+            "[OKX-BOOKS-EXPORT-LINKS] symbol=%s inst_type=%s selector=%s module=%s range=%s begin=%s end_exclusive=%s",
             args.symbol,
             inst_type,
             inst_selector,
             module,
             date_tag,
+            begin_ms,
+            end_ms,
         )
         response = request_okx_export_links(
             module=module,
@@ -215,6 +219,7 @@ def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterabl
         )
         items = extract_download_items(response)
         if not items:
+            missing_ranges.append(date_tag)
             logger.warning("[OKX-BOOKS-EXPORT-EMPTY] range=%s response_keys=%s", date_tag, sorted(response.keys()))
         else:
             for idx, item in enumerate(items, start=1):
@@ -226,6 +231,13 @@ def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterabl
 
         if args.export_sleep_sec > 0:
             time.sleep(float(args.export_sleep_sec))
+
+    if missing_ranges and not args.allow_missing_book_days:
+        raise SystemExit(
+            "OKX books export returned zero download links for requested range(s): "
+            + ", ".join(missing_ranges)
+            + ". If this is expected, rerun with --allow-missing-book-days."
+        )
 
     if total_links <= 0:
         raise SystemExit(
@@ -493,8 +505,9 @@ def date_start_ms(d: date) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def date_end_ms(d: date) -> int:
-    dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc) + timedelta(days=1) - timedelta(milliseconds=1)
+def date_end_exclusive_ms(d: date) -> int:
+    """Return the exclusive UTC boundary immediately after date d."""
+    dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc) + timedelta(days=1)
     return int(dt.timestamp() * 1000)
 
 
