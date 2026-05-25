@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import heapq
 import io
 import json
 import os
@@ -37,6 +38,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -86,6 +88,51 @@ class TimeFilter:
             "end_time_utc": fmt_utc(self.end_ts or 0.0),
             "end_is_exclusive": True,
         }
+
+
+@dataclass
+class RequestedWindow:
+    time_filter: TimeFilter
+    timezone_name: str
+    date_mode: str
+    requested_start_local: str
+    requested_end_local: str
+    requested_start_utc: str
+    requested_end_utc: str
+
+
+@dataclass
+class FileCoverage:
+    path: Path
+    first_ts: float
+    last_ts: float
+
+    def overlaps(self, time_filter: TimeFilter) -> bool:
+        if time_filter.start_ts is not None and self.last_ts < time_filter.start_ts:
+            return False
+        if time_filter.end_ts is not None and self.first_ts >= time_filter.end_ts:
+            return False
+        return True
+
+
+@dataclass
+class CoverageSelection:
+    selected: list[FileCoverage]
+    all_coverage: list[FileCoverage]
+
+    @property
+    def first_ts(self) -> float:
+        values = [item.first_ts for item in self.selected if item.first_ts > 0]
+        return min(values) if values else 0.0
+
+    @property
+    def last_ts(self) -> float:
+        values = [item.last_ts for item in self.selected if item.last_ts > 0]
+        return max(values) if values else 0.0
+
+    @property
+    def paths(self) -> list[Path]:
+        return [item.path for item in self.selected]
 
 
 @dataclass
@@ -346,10 +393,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-name", default="local_a1_research_replay")
     p.add_argument("--out-dir", type=Path)
     p.add_argument("--contract-multiplier", type=float)
-    p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD at 00:00:00 UTC.")
-    p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next day 00:00:00 UTC.")
-    p.add_argument("--start-time", help="Replay lower bound as ISO8601 UTC timestamp. Overrides --start-date.")
-    p.add_argument("--end-time", help="Replay upper bound as ISO8601 UTC timestamp. Overrides --end-date.")
+    p.add_argument("--timezone", default="Asia/Shanghai", help="Timezone for local dates and timezone-less ISO timestamps. Default: Asia/Shanghai.")
+    p.add_argument("--date-mode", choices=["local", "utc"], default="local", help="Interpret --start-date/--end-date as local natural days or UTC days. Default: local.")
+    p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD. In local mode this is 00:00:00 in --timezone.")
+    p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next local/UTC day 00:00:00.")
+    p.add_argument("--start-time", help="Replay lower bound as ISO8601 timestamp. Overrides --start-date. Timezone-less values use --timezone.")
+    p.add_argument("--end-time", help="Replay upper bound as ISO8601 timestamp. Overrides --end-date. Timezone-less values use --timezone.")
+    p.add_argument("--auto-discover-files", dest="auto_discover_files", action="store_true", default=True)
+    p.add_argument("--no-auto-discover-files", dest="auto_discover_files", action="store_false")
+    p.add_argument("--require-full-coverage", dest="require_full_coverage", action="store_true", default=True)
+    p.add_argument("--allow-partial-coverage", dest="allow_partial_coverage", action="store_true")
     p.add_argument("--sort-in-memory", action="store_true")
     p.add_argument("--allow-missing-books", action="store_true")
     p.add_argument("--max-events", type=int, default=0)
@@ -368,12 +421,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    time_filter = parse_time_filter(args)
-    trades_path = args.trades_file or args.trades_dir
-    books_path = args.books_file or args.books_dir
-    if not trades_path:
+    requested_window = parse_requested_window(args)
+    requested_filter = requested_window.time_filter
+    trades_input = args.trades_file or args.trades_dir
+    books_input = args.books_file or args.books_dir
+    if not trades_input:
         raise SystemExit("Missing --trades-dir or --trades-file")
-    if not books_path and not args.allow_missing_books:
+    if not books_input and not args.allow_missing_books:
         raise SystemExit("Missing --books-dir/--books-file. Use --allow-missing-books only for parser smoke tests.")
 
     out_dir = args.out_dir or (ROOT / "reports" / "backtests" / args.run_name)
@@ -400,24 +454,87 @@ def main(argv: Sequence[str] | None = None) -> int:
     research_events_path = out_dir / "research_events.jsonl"
     summary_path = out_dir / "summary.json"
 
-    logger.info("[LOCAL-A1-RESEARCH-START] symbol=%s trades=%s books=%s out=%s", args.symbol, trades_path, books_path, out_dir)
+    trades_selection = select_files_for_replay(
+        trades_input,
+        kind="trade",
+        symbol=str(args.symbol),
+        multiplier=float(multiplier),
+        book_options=book_cleaning,
+        requested_filter=requested_filter,
+        auto_discover=bool(args.auto_discover_files),
+    )
+    books_selection = (
+        select_files_for_replay(
+            books_input,
+            kind="book",
+            symbol=str(args.symbol),
+            multiplier=float(multiplier),
+            book_options=book_cleaning,
+            requested_filter=requested_filter,
+            auto_discover=bool(args.auto_discover_files),
+        )
+        if books_input
+        else CoverageSelection(selected=[], all_coverage=[])
+    )
+    effective_filter, time_alignment = resolve_effective_time_filter(
+        requested_window=requested_window,
+        trades_selection=trades_selection,
+        books_selection=books_selection,
+        require_full_coverage=bool(args.require_full_coverage and not args.allow_partial_coverage),
+        allow_missing_books=bool(args.allow_missing_books and not books_input),
+    )
+
+    logger.info("[LOCAL-A1-RESEARCH-START] symbol=%s trades=%s books=%s out=%s", args.symbol, trades_input, books_input, out_dir)
     logger.info("[LOCAL-A1-RESEARCH-MODE] no_main_py=true no_websocket=true no_iceberg_trader=true no_execution=true")
     logger.info("[LOCAL-BOOK-CLEANING] %s", asdict(book_cleaning))
-    logger.info("[LOCAL-TIME-FILTER] %s", time_filter.to_dict())
+    logger.info("[LOCAL-TIME-FILTER] %s", effective_filter.to_dict())
+    logger.info("[LOCAL-TIME-ALIGNMENT] %s", time_alignment)
+    for warning in time_alignment["warnings"]:
+        logger.warning("[LOCAL-TIME-ALIGNMENT-WARNING] %s", warning)
 
     runtime = LocalA1ResearchRuntime(symbol=str(args.symbol), research_events_path=research_events_path)
     stats = Stats()
+    if books_selection.paths and effective_filter.start_ts is not None:
+        warmup = warmup_books_state(
+            runtime=runtime,
+            book_files=books_selection.paths,
+            symbol=str(args.symbol),
+            multiplier=float(multiplier),
+            options=book_cleaning,
+            start_ts=float(effective_filter.start_ts),
+        )
+        time_alignment.update(warmup)
+        if warmup["book_bootstrap_bid_levels"] or warmup["book_bootstrap_ask_levels"]:
+            bootstrap_book = {
+                "bids": sort_levels_from_state(runtime.ctx.bids, side="bids", depth_limit=book_cleaning.depth_limit),
+                "asks": sort_levels_from_state(runtime.ctx.asks, side="asks", depth_limit=book_cleaning.depth_limit),
+                "ts": float(effective_filter.start_ts),
+                "recv_ts": float(effective_filter.start_ts),
+            }
+            stats.books += 1
+            runtime.on_book_update(bootstrap_book, stats)
+            stats.touch(float(effective_filter.start_ts))
+            logger.info(
+                "[LOCAL-BOOK-WARMUP] rows=%d bootstrap_bids=%d bootstrap_asks=%d ts=%s",
+                warmup["book_warmup_rows"],
+                warmup["book_bootstrap_bid_levels"],
+                warmup["book_bootstrap_ask_levels"],
+                fmt_utc(float(effective_filter.start_ts)),
+            )
+    else:
+        time_alignment.update({"book_warmup_rows": 0, "book_bootstrap_bid_levels": 0, "book_bootstrap_ask_levels": 0})
+
     start = time.perf_counter()
     try:
         events = build_events(
-            Path(trades_path),
-            Path(books_path) if books_path else None,
+            trades_selection.paths,
+            books_selection.paths,
             str(args.symbol),
             float(multiplier),
             stats,
             bool(args.sort_in_memory),
             book_cleaning,
-            time_filter,
+            effective_filter,
         )
         for idx, event in enumerate(events, start=1):
             if args.max_events and idx > args.max_events:
@@ -446,10 +563,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run_name": args.run_name,
         "symbol": args.symbol,
         "contract_multiplier": multiplier,
-        "trades_path": str(trades_path),
-        "books_path": str(books_path) if books_path else "",
+        "trades_path": str(trades_input),
+        "books_path": str(books_input) if books_input else "",
         "book_cleaning": asdict(book_cleaning),
-        "time_filter": time_filter.to_dict(),
+        "time_filter": effective_filter.to_dict(),
+        "time_alignment": time_alignment,
         "research_events_path": str(research_events_path),
         "research_jsonl_paths": {
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
@@ -488,21 +606,37 @@ def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, resea
     os.environ["A1_DYNAMIC_PARAM_PREVIEW_JSON_PATH"] = str(out_dir / "runtime_state" / "a1_dynamic_params.json")
 
 
-def parse_time_filter(args: argparse.Namespace) -> TimeFilter:
-    start_ts = parse_datetime_to_ts(args.start_time) if args.start_time else None
-    end_ts = parse_datetime_to_ts(args.end_time) if args.end_time else None
+def parse_requested_window(args: argparse.Namespace) -> RequestedWindow:
+    tz = load_timezone(str(args.timezone))
+    start_ts = parse_datetime_to_ts(args.start_time, tz) if args.start_time else None
+    end_ts = parse_datetime_to_ts(args.end_time, tz) if args.end_time else None
     if start_ts is None and args.start_date:
-        start_ts = date_to_start_ts(args.start_date)
+        start_ts = date_to_start_ts(args.start_date, tz, str(args.date_mode))
     if end_ts is None and args.end_date:
-        end_ts = date_to_next_day_start_ts(args.end_date)
+        end_ts = date_to_next_day_start_ts(args.end_date, tz, str(args.date_mode))
     if start_ts is not None and end_ts is not None and start_ts >= end_ts:
         raise SystemExit(
             f"Invalid time range: start ({fmt_utc(start_ts)}) must be before exclusive end ({fmt_utc(end_ts)})"
         )
-    return TimeFilter(start_ts=start_ts, end_ts=end_ts)
+    return RequestedWindow(
+        time_filter=TimeFilter(start_ts=start_ts, end_ts=end_ts),
+        timezone_name=str(args.timezone),
+        date_mode=str(args.date_mode),
+        requested_start_local=fmt_local(start_ts or 0.0, tz),
+        requested_end_local=fmt_local(end_ts or 0.0, tz),
+        requested_start_utc=fmt_utc(start_ts or 0.0),
+        requested_end_utc=fmt_utc(end_ts or 0.0),
+    )
 
 
-def parse_datetime_to_ts(text: str) -> float:
+def load_timezone(timezone_name: str) -> ZoneInfo:
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise SystemExit(f"Invalid timezone: {timezone_name}") from exc
+
+
+def parse_datetime_to_ts(text: str, default_tz: ZoneInfo) -> float:
     value = str(text).strip()
     if not value:
         raise SystemExit("Invalid empty timestamp")
@@ -513,31 +647,260 @@ def parse_datetime_to_ts(text: str) -> float:
     except ValueError as exc:
         raise SystemExit(f"Invalid ISO8601 timestamp: {text}") from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=default_tz)
     else:
         dt = dt.astimezone(timezone.utc)
     return float(dt.timestamp())
 
 
-def date_to_start_ts(date_text: str) -> float:
-    return parse_date_utc(date_text).timestamp()
+def date_to_start_ts(date_text: str, tz: ZoneInfo, date_mode: str) -> float:
+    return parse_date_start(date_text, tz, date_mode).timestamp()
 
 
-def date_to_next_day_start_ts(date_text: str) -> float:
-    return (parse_date_utc(date_text) + timedelta(days=1)).timestamp()
+def date_to_next_day_start_ts(date_text: str, tz: ZoneInfo, date_mode: str) -> float:
+    return (parse_date_start(date_text, tz, date_mode) + timedelta(days=1)).timestamp()
 
 
-def parse_date_utc(date_text: str) -> datetime:
+def parse_date_start(date_text: str, tz: ZoneInfo, date_mode: str) -> datetime:
     try:
         date_value = datetime.strptime(str(date_text).strip(), "%Y-%m-%d")
     except ValueError as exc:
         raise SystemExit(f"Invalid date, expected YYYY-MM-DD: {date_text}") from exc
-    return date_value.replace(tzinfo=timezone.utc)
+    return date_value.replace(tzinfo=timezone.utc if date_mode == "utc" else tz)
+
+
+def resolve_effective_time_filter(
+    requested_window: RequestedWindow,
+    trades_selection: CoverageSelection,
+    books_selection: CoverageSelection,
+    require_full_coverage: bool,
+    allow_missing_books: bool = False,
+) -> tuple[TimeFilter, dict[str, Any]]:
+    requested = requested_window.time_filter
+    missing: list[dict[str, Any]] = []
+    trades_missing = missing_intervals(requested, coverage_intervals(trades_selection.selected))
+    books_missing: list[tuple[float, float]] = []
+    if not allow_missing_books:
+        books_missing = missing_intervals(requested, coverage_intervals(books_selection.selected))
+    for start_ts, end_ts in trades_missing:
+        missing.append({"side": "trades", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)})
+    for start_ts, end_ts in books_missing:
+        missing.append({"side": "books", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)})
+
+    full_coverage = not missing
+    warnings: list[str] = []
+    if require_full_coverage and not full_coverage:
+        raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing))
+
+    effective_start = requested.start_ts
+    effective_end = requested.end_ts
+    if not full_coverage and not require_full_coverage:
+        starts = [value for value in [requested.start_ts, trades_selection.first_ts, books_selection.first_ts if not allow_missing_books else None] if value]
+        ends = [value for value in [requested.end_ts, trades_selection.last_ts, books_selection.last_ts if not allow_missing_books else None] if value]
+        effective_start = max(starts) if starts else requested.start_ts
+        effective_end = min(ends) if ends else requested.end_ts
+        if effective_start is None or effective_end is None or effective_start >= effective_end:
+            raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing))
+        warnings.append(
+            "partial coverage allowed; using intersection of requested/trades/books windows: "
+            f"{fmt_utc(effective_start)} to {fmt_utc(effective_end)}"
+        )
+
+    tz = load_timezone(requested_window.timezone_name)
+    alignment = {
+        "timezone": requested_window.timezone_name,
+        "date_mode": requested_window.date_mode,
+        "requested_start_local": requested_window.requested_start_local,
+        "requested_end_local": requested_window.requested_end_local,
+        "requested_start_utc": requested_window.requested_start_utc,
+        "requested_end_utc": requested_window.requested_end_utc,
+        "effective_start_utc": fmt_utc(effective_start or 0.0),
+        "effective_end_utc": fmt_utc(effective_end or 0.0),
+        "effective_start_local": fmt_local(effective_start or 0.0, tz),
+        "effective_end_local": fmt_local(effective_end or 0.0, tz),
+        "trades_selected_files": [str(path) for path in trades_selection.paths],
+        "books_selected_files": [str(path) for path in books_selection.paths],
+        "trades_first_ts": trades_selection.first_ts,
+        "trades_last_ts": trades_selection.last_ts,
+        "books_first_ts": books_selection.first_ts,
+        "books_last_ts": books_selection.last_ts,
+        "trades_first_utc": fmt_utc(trades_selection.first_ts),
+        "trades_last_utc": fmt_utc(trades_selection.last_ts),
+        "books_first_utc": fmt_utc(books_selection.first_ts),
+        "books_last_utc": fmt_utc(books_selection.last_ts),
+        "full_coverage": full_coverage,
+        "partial_coverage_used": bool(not full_coverage and not require_full_coverage),
+        "warnings": warnings,
+    }
+    return TimeFilter(start_ts=effective_start, end_ts=effective_end), alignment
+
+
+def coverage_intervals(coverage: Sequence[FileCoverage]) -> list[tuple[float, float]]:
+    intervals = sorted((item.first_ts, item.last_ts) for item in coverage if item.first_ts > 0 and item.last_ts > 0)
+    if not intervals:
+        return []
+    merged: list[tuple[float, float]] = []
+    cur_start, cur_end = intervals[0]
+    for start_ts, end_ts in intervals[1:]:
+        if start_ts <= cur_end:
+            cur_end = max(cur_end, end_ts)
+        else:
+            merged.append((cur_start, cur_end))
+            cur_start, cur_end = start_ts, end_ts
+    merged.append((cur_start, cur_end))
+    return merged
+
+
+def missing_intervals(time_filter: TimeFilter, intervals: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+    if time_filter.start_ts is None or time_filter.end_ts is None:
+        return []
+    missing: list[tuple[float, float]] = []
+    cursor = float(time_filter.start_ts)
+    end = float(time_filter.end_ts)
+    for start_ts, last_ts in intervals:
+        if last_ts < cursor:
+            continue
+        if start_ts > cursor:
+            missing.append((cursor, min(start_ts, end)))
+        cursor = max(cursor, last_ts)
+        if cursor >= end:
+            return missing
+    if cursor < end:
+        missing.append((cursor, end))
+    return missing
+
+
+def format_coverage_error(
+    requested_window: RequestedWindow,
+    trades_selection: CoverageSelection,
+    books_selection: CoverageSelection,
+    missing: Sequence[Mapping[str, Any]],
+) -> str:
+    missing_text = "; ".join(
+        f"{item.get('side')} missing {item.get('start_utc')} to {item.get('end_utc')}" for item in missing
+    ) or "none"
+    return "\n".join(
+        [
+            "Requested replay window is not fully covered by selected local files.",
+            f"requested local window: {requested_window.requested_start_local} to {requested_window.requested_end_local}",
+            f"requested UTC window: {requested_window.requested_start_utc} to {requested_window.requested_end_utc}",
+            f"trades coverage: {format_selection_coverage(trades_selection)}",
+            f"books coverage: {format_selection_coverage(books_selection)}",
+            f"missing side and missing interval: {missing_text}",
+            "Use --allow-partial-coverage to replay the intersection window.",
+        ]
+    )
+
+
+def format_selection_coverage(selection: CoverageSelection) -> str:
+    if not selection.selected:
+        return "none"
+    return f"{fmt_utc(selection.first_ts)} to {fmt_utc(selection.last_ts)} files={len(selection.selected)}"
+
+
+def select_files_for_replay(
+    input_path: Path,
+    kind: str,
+    symbol: str,
+    multiplier: float,
+    book_options: BookCleaningOptions,
+    requested_filter: TimeFilter,
+    auto_discover: bool,
+) -> CoverageSelection:
+    candidates = discover_supported_files(input_path)
+    coverage = [
+        item
+        for item in (
+            scan_file_coverage(path, kind=kind, symbol=symbol, multiplier=multiplier, book_options=book_options)
+            for path in candidates
+        )
+        if item is not None
+    ]
+    selected = [item for item in coverage if (item.overlaps(requested_filter) if auto_discover else True)]
+    selected.sort(key=lambda item: (item.first_ts, str(item.path)))
+    return CoverageSelection(selected=selected, all_coverage=coverage)
+
+
+def discover_supported_files(input_path: Path) -> list[Path]:
+    path = Path(input_path)
+    if path.is_file():
+        return [path] if is_supported_data_path(path) else []
+    if not path.is_dir():
+        raise SystemExit(f"Input path does not exist: {input_path}")
+    return sorted(child for child in path.rglob("*") if child.is_file() and not should_skip_path(child) and is_supported_data_path(child))
+
+
+def is_supported_data_path(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith((".csv", ".zip", ".gz", ".tar", ".tar.gz", ".tgz", ".json", ".jsonl", ".ndjson"))
+
+
+def scan_file_coverage(
+    path: Path,
+    kind: str,
+    symbol: str,
+    multiplier: float,
+    book_options: BookCleaningOptions,
+) -> FileCoverage | None:
+    scan_stats = Stats()
+    first_ts = 0.0
+    last_ts = 0.0
+    for row in iter_rows(path, scan_stats, TimeFilter()):
+        try:
+            normalized = (
+                normalize_trade(row, symbol, multiplier)
+                if kind == "trade"
+                else normalize_book(row, symbol, multiplier, book_options)
+            )
+            if not normalized:
+                continue
+            ts = float(normalized["ts"])
+        except Exception:
+            continue
+        if ts <= 0:
+            continue
+        first_ts = ts if first_ts <= 0 else min(first_ts, ts)
+        last_ts = max(last_ts, ts)
+    if first_ts <= 0 or last_ts <= 0:
+        return None
+    return FileCoverage(path=path, first_ts=first_ts, last_ts=last_ts)
+
+
+def warmup_books_state(
+    runtime: LocalA1ResearchRuntime,
+    book_files: Sequence[Path],
+    symbol: str,
+    multiplier: float,
+    options: BookCleaningOptions,
+    start_ts: float,
+) -> dict[str, int]:
+    warmup_stats = Stats()
+    cleaner = BookEventCleaner(options=options, stats=warmup_stats)
+    warmup_rows = 0
+    raw_books = merge_many_raw_books(
+        iter_normalized_book_rows_from_file(path, symbol, multiplier, warmup_stats, options, TimeFilter(end_ts=start_ts))
+        for path in book_files
+    )
+    for raw_book in raw_books:
+        if float(raw_book["ts"]) >= start_ts:
+            continue
+        warmup_rows += 1
+        for book in cleaner.push(raw_book):
+            runtime.ctx.apply_book_delta(book)
+    for book in cleaner.flush():
+        runtime.ctx.apply_book_delta(book)
+    bids = sort_levels_from_state(runtime.ctx.bids, side="bids", depth_limit=options.depth_limit)
+    asks = sort_levels_from_state(runtime.ctx.asks, side="asks", depth_limit=options.depth_limit)
+    return {
+        "book_warmup_rows": warmup_rows,
+        "book_bootstrap_bid_levels": len(bids),
+        "book_bootstrap_ask_levels": len(asks),
+    }
 
 
 def build_events(
-    trades_path: Path,
-    books_path: Path | None,
+    trade_files: Sequence[Path],
+    book_files: Sequence[Path],
     symbol: str,
     multiplier: float,
     stats: Stats,
@@ -545,8 +908,8 @@ def build_events(
     book_cleaning: BookCleaningOptions,
     time_filter: TimeFilter,
 ) -> Iterator[ReplayEvent]:
-    trades = iter_trade_events(trades_path, symbol, multiplier, stats, time_filter)
-    books = iter_book_events(books_path, symbol, multiplier, stats, book_cleaning, time_filter) if books_path else iter(())
+    trades = iter_trade_events(trade_files, symbol, multiplier, stats, time_filter)
+    books = iter_book_events(book_files, symbol, multiplier, stats, book_cleaning, time_filter) if book_files else iter(())
     if sort_in_memory:
         all_events = list(trades) + list(books)
         all_events.sort()
@@ -555,8 +918,22 @@ def build_events(
         yield from merge_sorted(trades, books)
 
 
-def iter_trade_events(path: Path, symbol: str, multiplier: float, stats: Stats, time_filter: TimeFilter) -> Iterator[ReplayEvent]:
-    seq = 0
+def iter_trade_events(paths: Sequence[Path], symbol: str, multiplier: float, stats: Stats, time_filter: TimeFilter) -> Iterator[ReplayEvent]:
+    yield from merge_many_sorted(
+        iter_trade_events_from_file(path, symbol, multiplier, stats, time_filter, seq_offset=idx * 100_000_000)
+        for idx, path in enumerate(paths)
+    )
+
+
+def iter_trade_events_from_file(
+    path: Path,
+    symbol: str,
+    multiplier: float,
+    stats: Stats,
+    time_filter: TimeFilter,
+    seq_offset: int = 0,
+) -> Iterator[ReplayEvent]:
+    seq = seq_offset
     for row in iter_rows(path, stats, time_filter):
         try:
             trade = normalize_trade(row, symbol, multiplier)
@@ -574,7 +951,7 @@ def iter_trade_events(path: Path, symbol: str, multiplier: float, stats: Stats, 
 
 
 def iter_book_events(
-    path: Path,
+    paths: Sequence[Path],
     symbol: str,
     multiplier: float,
     stats: Stats,
@@ -583,16 +960,13 @@ def iter_book_events(
 ) -> Iterator[ReplayEvent]:
     seq = 0
     cleaner = BookEventCleaner(options=options, stats=stats)
-    for row in iter_rows(path, stats, time_filter):
+    raw_books = merge_many_raw_books(
+        iter_normalized_book_rows_from_file(path, symbol, multiplier, stats, options, time_filter)
+        for path in paths
+    )
+    for raw_book in raw_books:
         try:
             stats.raw_book_rows += 1
-            raw_book = normalize_book(row, symbol, multiplier, options)
-            if not raw_book:
-                continue
-            if not time_filter.includes(float(raw_book["ts"])):
-                stats.filtered_books += 1
-                stats.filtered_raw_book_rows += 1
-                continue
             for book in cleaner.push(raw_book):
                 seq += 1
                 stats.books += 1
@@ -603,6 +977,28 @@ def iter_book_events(
         seq += 1
         stats.books += 1
         yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
+
+
+def iter_normalized_book_rows_from_file(
+    path: Path,
+    symbol: str,
+    multiplier: float,
+    stats: Stats,
+    options: BookCleaningOptions,
+    time_filter: TimeFilter,
+) -> Iterator[dict[str, Any]]:
+    for row in iter_rows(path, stats, time_filter):
+        try:
+            raw_book = normalize_book(row, symbol, multiplier, options)
+            if not raw_book:
+                continue
+            if not time_filter.includes(float(raw_book["ts"])):
+                stats.filtered_books += 1
+                stats.filtered_raw_book_rows += 1
+                continue
+            yield raw_book
+        except Exception:
+            stats.malformed_rows += 1
 
 
 def merge_sorted(a_iter: Iterator[ReplayEvent], b_iter: Iterator[ReplayEvent]) -> Iterator[ReplayEvent]:
@@ -617,15 +1013,48 @@ def merge_sorted(a_iter: Iterator[ReplayEvent], b_iter: Iterator[ReplayEvent]) -
             b = next(b_iter, None)
 
 
+def merge_many_sorted(iterators: Sequence[Iterator[ReplayEvent]]) -> Iterator[ReplayEvent]:
+    heap: list[tuple[float, int, int, ReplayEvent, Iterator[ReplayEvent]]] = []
+    counter = 0
+    for iterator in iterators:
+        event = next(iterator, None)
+        if event is None:
+            continue
+        heapq.heappush(heap, (event.ts, event.seq, counter, event, iterator))
+        counter += 1
+    while heap:
+        _, _, _, event, iterator = heapq.heappop(heap)
+        yield event
+        next_event = next(iterator, None)
+        if next_event is not None:
+            heapq.heappush(heap, (next_event.ts, next_event.seq, counter, next_event, iterator))
+            counter += 1
+
+
+def merge_many_raw_books(iterators: Sequence[Iterator[dict[str, Any]]]) -> Iterator[dict[str, Any]]:
+    heap: list[tuple[float, int, dict[str, Any], Iterator[dict[str, Any]]]] = []
+    counter = 0
+    for iterator in iterators:
+        row = next(iterator, None)
+        if row is None:
+            continue
+        heapq.heappush(heap, (float(row["ts"]), counter, row, iterator))
+        counter += 1
+    while heap:
+        _, _, row, iterator = heapq.heappop(heap)
+        yield row
+        next_row = next(iterator, None)
+        if next_row is not None:
+            heapq.heappush(heap, (float(next_row["ts"]), counter, next_row, iterator))
+            counter += 1
+
+
 def iter_rows(path: Path, stats: Stats, time_filter: TimeFilter) -> Iterator[dict[str, Any]]:
     if path.is_dir():
         for child in sorted(p for p in path.rglob("*") if p.is_file()):
             if should_skip_path(child):
                 continue
             yield from iter_rows(child, stats, time_filter)
-        return
-    if file_outside_time_filter(path, time_filter):
-        log_file_skip(str(path), "outside_time_filter_filename_date", stats)
         return
     suffix = path.suffix.lower()
     if is_tar_archive_path(path):
@@ -636,9 +1065,6 @@ def iter_rows(path: Path, stats: Stats, time_filter: TimeFilter) -> Iterator[dic
                     if should_skip_path(inner):
                         continue
                     source = f"{path}::{member.name}"
-                    if file_outside_time_filter(inner, time_filter):
-                        log_file_skip(source, "outside_time_filter_filename_date", stats)
-                        continue
                     try:
                         raw = tf.extractfile(member)
                         if raw is None:
@@ -660,9 +1086,6 @@ def iter_rows(path: Path, stats: Stats, time_filter: TimeFilter) -> Iterator[dic
                     if name.endswith("/") or should_skip_path(inner):
                         continue
                     source = f"{path}::{name}"
-                    if file_outside_time_filter(inner, time_filter):
-                        log_file_skip(source, "outside_time_filter_filename_date", stats)
-                        continue
                     try:
                         with zf.open(name) as raw:
                             text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
@@ -1004,6 +1427,12 @@ def normalize_ts(value: Any) -> float:
 
 def fmt_utc(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(ts))) if ts and ts > 0 else ""
+
+
+def fmt_local(ts: float, tz: ZoneInfo) -> str:
+    if not ts or ts <= 0:
+        return ""
+    return datetime.fromtimestamp(float(ts), tz).isoformat(timespec="seconds")
 
 
 if __name__ == "__main__":
