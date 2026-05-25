@@ -29,9 +29,9 @@ A1 iceberg events are recorded for research. They are not sent to execution.
 
 OKX official historical data page says trade history is tick-level from September 2021 onwards, and order book is high-resolution L2 data from March 2023 onwards.
 
-### 1.1 Trades: use OKX CDN template mode
+### 1.1 Trades
 
-For OKX trade history, use this URL template:
+For OKX trade history, use this CDN URL template:
 
 ```text
 https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip
@@ -54,48 +54,36 @@ Files will be saved to:
 data/okx/raw/trades/ETH-USDT-SWAP/
 ```
 
-### 1.2 Books: do not use a fake static template
+### 1.2 Books
 
-I have not confirmed a stable public static URL template for OKX high-resolution L2 order book files.
-
-Open-source reverse-engineering shows OKX order book historical data is served through the historical data export API:
-
-```text
-POST /priapi/v5/broker/public/trade-data/download-link
-```
-
-That export API may require browser session cookies. Therefore, do not hard-code a guessed books template into this project.
-
-For now, get books using one of these paths:
-
-```text
-Option A: copy official OKX book download URLs into --url or --manifest
-Option B: later implement a cookie-based OKX export downloader
-```
-
-Direct URL mode for one or a few official OKX book links:
+For OKX historical L2 order book data, use export-link mode. The command shape is close to the trades command, but it does not use a static URL template:
 
 ```bash
 python tools/download_okx_historical_data.py \
   --kind books \
   --symbol ETH-USDT-SWAP \
-  --url '<PASTE_ONE_OFFICIAL_OKX_BOOK_DOWNLOAD_URL_HERE>'
+  --start-date 2025-05-01 \
+  --end-date 2026-05-01
 ```
 
-Manifest mode for many official OKX book links:
+For 5000-depth books:
 
 ```bash
 python tools/download_okx_historical_data.py \
   --kind books \
   --symbol ETH-USDT-SWAP \
-  --manifest data/okx/manifests/eth_books_urls.txt
+  --start-date 2025-05-01 \
+  --end-date 2026-05-01 \
+  --books-depth 5000
 ```
 
-Book files will be saved to:
+Books export mode requests official OKX historical-data export links and downloads the returned files into:
 
 ```text
 data/okx/raw/books/ETH-USDT-SWAP/
 ```
+
+If OKX returns zero download links, the tool fails clearly. In that case, use the OKX historical-data website to export the book files and then pass the official file URLs with `--url` or `--manifest`.
 
 ## 2. Run local A1 research replay
 
@@ -182,7 +170,7 @@ For `ETH-USDT-SWAP`, the default contract multiplier is `0.1`, matching the proj
 
 ## 4. Recommended first validation
 
-Start with one day of trades first:
+Start with one day of trades:
 
 ```bash
 python tools/download_okx_historical_data.py \
@@ -193,18 +181,17 @@ python tools/download_okx_historical_data.py \
   --url-template 'https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip'
 ```
 
-Then run a trades-only parser smoke test:
+Then try one day of books:
 
 ```bash
-python tools/backtest_local_data.py \
+python tools/download_okx_historical_data.py \
+  --kind books \
   --symbol ETH-USDT-SWAP \
-  --trades-dir data/okx/raw/trades/ETH-USDT-SWAP \
-  --run-name eth_swap_one_day_trades_parser_check \
-  --allow-missing-books \
-  --max-events 100000
+  --start-date 2025-05-01 \
+  --end-date 2025-05-01
 ```
 
-After book files are available, run full A1 research replay:
+After both files are available, run full A1 research replay:
 
 ```bash
 python tools/backtest_local_data.py \
