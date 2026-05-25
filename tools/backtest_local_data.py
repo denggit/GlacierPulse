@@ -48,6 +48,12 @@ TEXT_SUFFIXES = {".csv", ".jsonl", ".ndjson", ".json"}
 JSON_LINE_SUFFIXES = {".jsonl", ".ndjson"}
 JSON_SUFFIXES = {".json", ".jsonl", ".ndjson"}
 CONTRACT_MULTIPLIERS = {"ETH-USDT-SWAP": 0.1}
+LOCAL_REPLAY_LOG_OVERRIDE_ENV_KEYS = (
+    "V62_INTEGRATION_HEARTBEAT_ENABLED",
+    "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED",
+    "V62_LOG_COMPONENT_STATUS_ON_START",
+    "V62_LOG_CONFIG_SNAPSHOT_ON_START",
+)
 
 
 @dataclass(order=True)
@@ -556,6 +562,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
             "a1_reaction_events": os.getenv("A1_REACTION_EVENT_RECORDER_JSONL_PATH", "logs/research/a1_reaction_events.jsonl"),
         },
+        "local_replay_log_overrides": {
+            key: os.getenv(key, "")
+            for key in LOCAL_REPLAY_LOG_OVERRIDE_ENV_KEYS
+        },
         "report_generation": report_generation,
         "elapsed_sec": round(elapsed, 6),
         "events_per_sec": round((stats.trades + stats.books) / elapsed, 3) if elapsed > 0 else 0.0,
@@ -663,6 +673,10 @@ def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, resea
     os.environ.setdefault("PHASE3_REAL_TRADING_ENABLED", "false")
     os.environ.setdefault("VIRTUAL_SHADOW_MODE", "false")
     os.environ.setdefault("A1_REACTION_TO_VIRTUAL_POSITION_ENABLED", "false")
+    os.environ.setdefault("V62_INTEGRATION_HEARTBEAT_ENABLED", "false")
+    os.environ.setdefault("V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", "false")
+    os.environ.setdefault("V62_LOG_COMPONENT_STATUS_ON_START", "false")
+    os.environ.setdefault("V62_LOG_CONFIG_SNAPSHOT_ON_START", "false")
 
     if args.use_shared_research_logs:
         return

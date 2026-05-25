@@ -1,5 +1,6 @@
 import inspect
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,61 @@ def _patch_empty_replay(monkeypatch: pytest.MonkeyPatch) -> None:
         "build_events",
         lambda trades_files, books_files, symbol, multiplier, stats, sort_in_memory, book_cleaning, time_filter: iter(()),
     )
+
+
+def _runtime_args():
+    return backtest.parse_args(
+        [
+            "--trades-file",
+            "trades.jsonl",
+            "--books-file",
+            "books.jsonl",
+        ]
+    )
+
+
+def test_local_replay_disables_heartbeat_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("V62_INTEGRATION_HEARTBEAT_ENABLED", raising=False)
+    monkeypatch.delenv("V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", raising=False)
+
+    backtest.configure_runtime_environment(
+        args=_runtime_args(),
+        out_dir=tmp_path / "out",
+        research_dir=tmp_path / "out" / "research",
+    )
+
+    assert os.environ["V62_INTEGRATION_HEARTBEAT_ENABLED"] == "false"
+    assert os.environ["V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED"] == "false"
+
+
+def test_local_replay_does_not_override_explicit_heartbeat_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("V62_INTEGRATION_HEARTBEAT_ENABLED", "true")
+    monkeypatch.setenv("V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", "true")
+
+    backtest.configure_runtime_environment(
+        args=_runtime_args(),
+        out_dir=tmp_path / "out",
+        research_dir=tmp_path / "out" / "research",
+    )
+
+    assert os.environ["V62_INTEGRATION_HEARTBEAT_ENABLED"] == "true"
+    assert os.environ["V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED"] == "true"
+
+
+def test_jsonl_recorders_still_enabled(tmp_path, monkeypatch):
+    monkeypatch.delenv("PHASE1_CANDIDATE_RECORDER_WRITE_JSONL", raising=False)
+    monkeypatch.delenv("A1_REACTION_EVENT_RECORDER_WRITE_JSONL", raising=False)
+    monkeypatch.delenv("V62_INTEGRATION_HEARTBEAT_ENABLED", raising=False)
+    monkeypatch.delenv("V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED", raising=False)
+
+    backtest.configure_runtime_environment(
+        args=_runtime_args(),
+        out_dir=tmp_path / "out",
+        research_dir=tmp_path / "out" / "research",
+    )
+
+    assert os.environ["PHASE1_CANDIDATE_RECORDER_WRITE_JSONL"] == "true"
+    assert os.environ["A1_REACTION_EVENT_RECORDER_WRITE_JSONL"] == "true"
 
 
 def test_generate_reports_requires_kline(tmp_path):
