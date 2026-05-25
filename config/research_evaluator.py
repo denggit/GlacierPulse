@@ -72,7 +72,7 @@ def _int_list_config(name: str, default: list[int]) -> list[int]:
 
 V62_LOG_PROFILE = _str_config(
     "V62_LOG_PROFILE",
-    "RESEARCH_DETAILED",
+    "PRODUCTION_SAFE",
 ).upper()
 
 
@@ -91,27 +91,27 @@ def _log_default_for_profile(
 
 V62_LOG_PENDING_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_PENDING_ICEBERG_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_IGNORE_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_IGNORE_ICEBERG_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_SPOOFING_WITHDRAWAL_ENABLED = _bool_config(
     "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_SETTLED_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_SETTLED_ICEBERG_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_PHASE1_QUALITY_ENABLED = _bool_config(
     "V62_LOG_PHASE1_QUALITY_ENABLED",
-    _log_default_for_profile(True, True, False),
+    False,
 )
 V62_LOG_CANCEL_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_CANCEL_ICEBERG_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_PENDING_DROP_ENABLED = _bool_config(
     "V62_LOG_PENDING_DROP_ENABLED",
@@ -123,11 +123,11 @@ V62_LOG_A1_ICEBERG_EVENT_ENABLED = _bool_config(
 )
 V62_LOG_A1_ZONE_NEW_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_NEW_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_A1_ZONE_UPDATE_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_UPDATE_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_A1_ZONE_BROKEN_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_BROKEN_ENABLED",
@@ -135,27 +135,27 @@ V62_LOG_A1_ZONE_BROKEN_ENABLED = _bool_config(
 )
 V62_LOG_A1_ZONE_EXPIRED_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_EXPIRED_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_A1_ZONE_STRESSED_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_STRESSED_ENABLED",
-    _log_default_for_profile(True, False, False),
+    False,
 )
 V62_LOG_A1_ZONE_FROZEN_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_FROZEN_ENABLED",
-    _log_default_for_profile(True, True, True),
+    False,
 )
 V62_LOG_A1_ZONE_OUTCOME_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_OUTCOME_ENABLED",
-    _log_default_for_profile(True, True, False),
+    False,
 )
 V62_LOG_PHASE2_REGISTERED_ENABLED = _bool_config(
     "V62_LOG_PHASE2_REGISTERED_ENABLED",
-    _log_default_for_profile(True, True, False),
+    False,
 )
 V62_LOG_PHASE2_STATE_ENABLED = _bool_config(
     "V62_LOG_PHASE2_STATE_ENABLED",
-    _log_default_for_profile(True, True, False),
+    False,
 )
 V62_LOG_PHASE2_CONFIRMED_ENABLED = _bool_config(
     "V62_LOG_PHASE2_CONFIRMED_ENABLED",
@@ -368,7 +368,7 @@ A1_REACTION_EVENT_RECORDER_JSONL_PATH = _str_config(
 )
 A1_REACTION_EVENT_RECORDER_MAX_RECENT_EVENTS = _int_config("A1_REACTION_EVENT_RECORDER_MAX_RECENT_EVENTS", 5000)
 
-V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED = _bool_config("V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED", _log_default_for_profile(True, True, False))
+V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED = _bool_config("V62_LOG_A1_REACTION_RESEARCH_EVENT_ENABLED", False)
 
 
 PHASE1_TRUTH_SHADOW_ENABLED = _bool_config("PHASE1_TRUTH_SHADOW_ENABLED", True)
