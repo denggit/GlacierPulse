@@ -439,6 +439,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--coverage-cache-enabled", dest="coverage_cache_enabled", action="store_true", default=True)
     p.add_argument("--no-coverage-cache-enabled", dest="coverage_cache_enabled", action="store_false")
     p.add_argument("--coverage-cache-path", type=Path, default=ROOT / "data" / "okx" / "coverage_index" / "backtest_local_data_coverage.json")
+    p.add_argument("--filename-date-hint-enabled", dest="filename_date_hint_enabled", action="store_true", default=True)
+    p.add_argument("--no-filename-date-hint-enabled", dest="filename_date_hint_enabled", action="store_false")
+    p.add_argument("--filename-date-hint-padding-days", type=int, default=2)
+    p.add_argument("--full-directory-coverage-scan", action="store_true", default=False)
     p.add_argument("--sort-in-memory", action="store_true")
     p.add_argument("--allow-missing-books", action="store_true")
     p.add_argument("--max-events", type=int, default=0)
@@ -491,6 +495,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     summary_path = out_dir / "summary.json"
     coverage_cache_stats = CoverageCacheStats()
     coverage_cache = load_coverage_cache(args.coverage_cache_path) if args.coverage_cache_enabled else {}
+    filename_hint_summary: dict[str, Any] = {
+        "enabled": bool(args.filename_date_hint_enabled),
+        "padding_days": max(0, int(args.filename_date_hint_padding_days)),
+        "full_directory_coverage_scan": bool(args.full_directory_coverage_scan),
+        "trades_candidates_before": 0,
+        "trades_candidates_after": 0,
+        "books_candidates_before": 0,
+        "books_candidates_after": 0,
+    }
 
     trades_selection = select_files_for_replay(
         trades_input,
@@ -504,6 +517,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         cache=coverage_cache,
         cache_enabled=bool(args.coverage_cache_enabled),
         cache_stats=coverage_cache_stats,
+        timezone_name=str(args.timezone),
+        filename_date_hint_enabled=bool(args.filename_date_hint_enabled),
+        filename_date_hint_padding_days=max(0, int(args.filename_date_hint_padding_days)),
+        full_directory_coverage_scan=bool(args.full_directory_coverage_scan),
+        filename_hint_summary=filename_hint_summary,
     )
     books_selection = (
         select_files_for_replay(
@@ -518,6 +536,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             cache=coverage_cache,
             cache_enabled=bool(args.coverage_cache_enabled),
             cache_stats=coverage_cache_stats,
+            timezone_name=str(args.timezone),
+            filename_date_hint_enabled=bool(args.filename_date_hint_enabled),
+            filename_date_hint_padding_days=max(0, int(args.filename_date_hint_padding_days)),
+            full_directory_coverage_scan=bool(args.full_directory_coverage_scan),
+            filename_hint_summary=filename_hint_summary,
         )
         if books_input
         else CoverageSelection(selected=[], all_coverage=[])
@@ -629,6 +652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "book_cleaning": asdict(book_cleaning),
         "time_filter": effective_filter.to_dict(),
         "time_alignment": time_alignment,
+        "filename_date_hint": filename_hint_summary,
         "research_events_path": str(research_events_path),
         "research_jsonl_paths": {
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
@@ -980,8 +1004,34 @@ def select_files_for_replay(
     cache: dict[str, Any] | None = None,
     cache_enabled: bool = False,
     cache_stats: CoverageCacheStats | None = None,
+    timezone_name: str = "Asia/Shanghai",
+    filename_date_hint_enabled: bool = True,
+    filename_date_hint_padding_days: int = 2,
+    full_directory_coverage_scan: bool = False,
+    filename_hint_summary: dict[str, Any] | None = None,
 ) -> CoverageSelection:
     candidates = discover_supported_files(input_path)
+    candidates_before = len(candidates)
+    if not full_directory_coverage_scan and filename_date_hint_enabled:
+        candidates = filter_candidates_by_filename_date_hint(
+            candidates,
+            requested_filter,
+            timezone_name=timezone_name,
+            padding_days=filename_date_hint_padding_days,
+        )
+    candidates_after = len(candidates)
+    if filename_hint_summary is not None:
+        prefix = "trades" if kind == "trade" else "books"
+        filename_hint_summary[f"{prefix}_candidates_before"] = candidates_before
+        filename_hint_summary[f"{prefix}_candidates_after"] = candidates_after
+    log_info(
+        "[LOCAL-FILENAME-HINT] kind=%s candidates_before=%d candidates_after=%d padding_days=%d full_scan=%s",
+        kind,
+        candidates_before,
+        candidates_after,
+        max(0, int(filename_date_hint_padding_days)),
+        str(bool(full_directory_coverage_scan)).lower(),
+    )
     coverage = [
         item
         for item in (
@@ -1002,6 +1052,47 @@ def select_files_for_replay(
     selected = [item for item in coverage if (item.overlaps(requested_filter, coverage_tolerance_sec) if auto_discover else True)]
     selected.sort(key=lambda item: (item.first_ts, str(item.path)))
     return CoverageSelection(selected=selected, all_coverage=coverage)
+
+
+def filter_candidates_by_filename_date_hint(
+    candidates: list[Path],
+    requested_filter: TimeFilter,
+    timezone_name: str,
+    padding_days: int,
+) -> list[Path]:
+    if requested_filter.start_ts is None or requested_filter.end_ts is None:
+        return candidates
+    if requested_filter.start_ts >= requested_filter.end_ts:
+        return candidates
+
+    padding = max(0, int(padding_days))
+    start_date = datetime.fromtimestamp(float(requested_filter.start_ts), timezone.utc).date()
+    # end_ts is exclusive; subtract a tiny amount so an exact midnight end does not add an extra day.
+    end_probe_ts = max(float(requested_filter.start_ts), float(requested_filter.end_ts) - 0.000001)
+    end_date = datetime.fromtimestamp(end_probe_ts, timezone.utc).date()
+    min_date = start_date - timedelta(days=padding)
+    max_date = end_date + timedelta(days=padding)
+
+    filtered: list[Path] = []
+    for path in candidates:
+        file_date = extract_date_from_name(path.name)
+        if file_date is None:
+            filtered.append(path)
+            continue
+        hint_date = file_date.date()
+        if min_date <= hint_date <= max_date:
+            filtered.append(path)
+
+    if not filtered and candidates:
+        log_warning(
+            "[LOCAL-FILENAME-HINT-WARNING] candidates_after=0 fallback=full_candidates padding_days=%d timezone=%s requested_start=%s requested_end=%s",
+            padding,
+            timezone_name,
+            fmt_utc(requested_filter.start_ts or 0.0),
+            fmt_utc(requested_filter.end_ts or 0.0),
+        )
+        return candidates
+    return filtered
 
 
 def discover_supported_files(input_path: Path) -> list[Path]:
