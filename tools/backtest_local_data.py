@@ -28,10 +28,13 @@ import gzip
 import io
 import json
 import os
+import re
 import sys
+import tarfile
 import time
 import zipfile
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -42,6 +45,8 @@ if str(ROOT) not in sys.path:
 logger = None
 
 TEXT_SUFFIXES = {".csv", ".jsonl", ".ndjson", ".json"}
+JSON_LINE_SUFFIXES = {".jsonl", ".ndjson"}
+JSON_SUFFIXES = {".json", ".jsonl", ".ndjson"}
 CONTRACT_MULTIPLIERS = {"ETH-USDT-SWAP": 0.1}
 
 
@@ -62,10 +67,35 @@ class BookCleaningOptions:
 
 
 @dataclass
+class TimeFilter:
+    start_ts: float | None = None
+    end_ts: float | None = None
+
+    def includes(self, ts: float) -> bool:
+        if self.start_ts is not None and ts < self.start_ts:
+            return False
+        if self.end_ts is not None and ts >= self.end_ts:
+            return False
+        return True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "start_ts": self.start_ts,
+            "end_ts": self.end_ts,
+            "start_time_utc": fmt_utc(self.start_ts or 0.0),
+            "end_time_utc": fmt_utc(self.end_ts or 0.0),
+            "end_is_exclusive": True,
+        }
+
+
+@dataclass
 class Stats:
     trades: int = 0
     books: int = 0
     raw_book_rows: int = 0
+    filtered_trades: int = 0
+    filtered_books: int = 0
+    filtered_raw_book_rows: int = 0
     book_bucket_coalesces: int = 0
     book_snapshot_rebuilds: int = 0
     book_zero_delete_levels: int = 0
@@ -74,6 +104,8 @@ class Stats:
     spoofing_withdrawal_events: int = 0
     ignored_engine_returns: int = 0
     malformed_rows: int = 0
+    parsed_files: int = 0
+    skipped_files: int = 0
     first_ts: float = 0.0
     last_ts: float = 0.0
 
@@ -88,6 +120,9 @@ class Stats:
             "trades": self.trades,
             "books": self.books,
             "raw_book_rows": self.raw_book_rows,
+            "filtered_trades": self.filtered_trades,
+            "filtered_books": self.filtered_books,
+            "filtered_raw_book_rows": self.filtered_raw_book_rows,
             "book_bucket_coalesces": self.book_bucket_coalesces,
             "book_snapshot_rebuilds": self.book_snapshot_rebuilds,
             "book_zero_delete_levels": self.book_zero_delete_levels,
@@ -96,6 +131,8 @@ class Stats:
             "spoofing_withdrawal_events": self.spoofing_withdrawal_events,
             "ignored_engine_returns": self.ignored_engine_returns,
             "malformed_rows": self.malformed_rows,
+            "parsed_files": self.parsed_files,
+            "skipped_files": self.skipped_files,
             "first_ts": self.first_ts,
             "last_ts": self.last_ts,
             "first_time_utc": fmt_utc(self.first_ts),
@@ -309,6 +346,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-name", default="local_a1_research_replay")
     p.add_argument("--out-dir", type=Path)
     p.add_argument("--contract-multiplier", type=float)
+    p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD at 00:00:00 UTC.")
+    p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next day 00:00:00 UTC.")
+    p.add_argument("--start-time", help="Replay lower bound as ISO8601 UTC timestamp. Overrides --start-date.")
+    p.add_argument("--end-time", help="Replay upper bound as ISO8601 UTC timestamp. Overrides --end-date.")
     p.add_argument("--sort-in-memory", action="store_true")
     p.add_argument("--allow-missing-books", action="store_true")
     p.add_argument("--max-events", type=int, default=0)
@@ -327,6 +368,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    time_filter = parse_time_filter(args)
     trades_path = args.trades_file or args.trades_dir
     books_path = args.books_file or args.books_dir
     if not trades_path:
@@ -361,6 +403,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("[LOCAL-A1-RESEARCH-START] symbol=%s trades=%s books=%s out=%s", args.symbol, trades_path, books_path, out_dir)
     logger.info("[LOCAL-A1-RESEARCH-MODE] no_main_py=true no_websocket=true no_iceberg_trader=true no_execution=true")
     logger.info("[LOCAL-BOOK-CLEANING] %s", asdict(book_cleaning))
+    logger.info("[LOCAL-TIME-FILTER] %s", time_filter.to_dict())
 
     runtime = LocalA1ResearchRuntime(symbol=str(args.symbol), research_events_path=research_events_path)
     stats = Stats()
@@ -374,6 +417,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stats,
             bool(args.sort_in_memory),
             book_cleaning,
+            time_filter,
         )
         for idx, event in enumerate(events, start=1):
             if args.max_events and idx > args.max_events:
@@ -405,6 +449,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "trades_path": str(trades_path),
         "books_path": str(books_path) if books_path else "",
         "book_cleaning": asdict(book_cleaning),
+        "time_filter": time_filter.to_dict(),
         "research_events_path": str(research_events_path),
         "research_jsonl_paths": {
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
@@ -443,6 +488,53 @@ def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, resea
     os.environ["A1_DYNAMIC_PARAM_PREVIEW_JSON_PATH"] = str(out_dir / "runtime_state" / "a1_dynamic_params.json")
 
 
+def parse_time_filter(args: argparse.Namespace) -> TimeFilter:
+    start_ts = parse_datetime_to_ts(args.start_time) if args.start_time else None
+    end_ts = parse_datetime_to_ts(args.end_time) if args.end_time else None
+    if start_ts is None and args.start_date:
+        start_ts = date_to_start_ts(args.start_date)
+    if end_ts is None and args.end_date:
+        end_ts = date_to_next_day_start_ts(args.end_date)
+    if start_ts is not None and end_ts is not None and start_ts >= end_ts:
+        raise SystemExit(
+            f"Invalid time range: start ({fmt_utc(start_ts)}) must be before exclusive end ({fmt_utc(end_ts)})"
+        )
+    return TimeFilter(start_ts=start_ts, end_ts=end_ts)
+
+
+def parse_datetime_to_ts(text: str) -> float:
+    value = str(text).strip()
+    if not value:
+        raise SystemExit("Invalid empty timestamp")
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid ISO8601 timestamp: {text}") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return float(dt.timestamp())
+
+
+def date_to_start_ts(date_text: str) -> float:
+    return parse_date_utc(date_text).timestamp()
+
+
+def date_to_next_day_start_ts(date_text: str) -> float:
+    return (parse_date_utc(date_text) + timedelta(days=1)).timestamp()
+
+
+def parse_date_utc(date_text: str) -> datetime:
+    try:
+        date_value = datetime.strptime(str(date_text).strip(), "%Y-%m-%d")
+    except ValueError as exc:
+        raise SystemExit(f"Invalid date, expected YYYY-MM-DD: {date_text}") from exc
+    return date_value.replace(tzinfo=timezone.utc)
+
+
 def build_events(
     trades_path: Path,
     books_path: Path | None,
@@ -451,9 +543,10 @@ def build_events(
     stats: Stats,
     sort_in_memory: bool,
     book_cleaning: BookCleaningOptions,
+    time_filter: TimeFilter,
 ) -> Iterator[ReplayEvent]:
-    trades = iter_trade_events(trades_path, symbol, multiplier, stats)
-    books = iter_book_events(books_path, symbol, multiplier, stats, book_cleaning) if books_path else iter(())
+    trades = iter_trade_events(trades_path, symbol, multiplier, stats, time_filter)
+    books = iter_book_events(books_path, symbol, multiplier, stats, book_cleaning, time_filter) if books_path else iter(())
     if sort_in_memory:
         all_events = list(trades) + list(books)
         all_events.sort()
@@ -462,28 +555,43 @@ def build_events(
         yield from merge_sorted(trades, books)
 
 
-def iter_trade_events(path: Path, symbol: str, multiplier: float, stats: Stats) -> Iterator[ReplayEvent]:
+def iter_trade_events(path: Path, symbol: str, multiplier: float, stats: Stats, time_filter: TimeFilter) -> Iterator[ReplayEvent]:
     seq = 0
-    for row in iter_rows(path):
+    for row in iter_rows(path, stats, time_filter):
         try:
             trade = normalize_trade(row, symbol, multiplier)
             if not trade:
                 continue
+            ts = float(trade["ts"])
+            if not time_filter.includes(ts):
+                stats.filtered_trades += 1
+                continue
             seq += 1
             stats.trades += 1
-            yield ReplayEvent(float(trade["ts"]), seq, "trade", trade)
+            yield ReplayEvent(ts, seq, "trade", trade)
         except Exception:
             stats.malformed_rows += 1
 
 
-def iter_book_events(path: Path, symbol: str, multiplier: float, stats: Stats, options: BookCleaningOptions) -> Iterator[ReplayEvent]:
+def iter_book_events(
+    path: Path,
+    symbol: str,
+    multiplier: float,
+    stats: Stats,
+    options: BookCleaningOptions,
+    time_filter: TimeFilter,
+) -> Iterator[ReplayEvent]:
     seq = 0
     cleaner = BookEventCleaner(options=options, stats=stats)
-    for row in iter_rows(path):
+    for row in iter_rows(path, stats, time_filter):
         try:
             stats.raw_book_rows += 1
             raw_book = normalize_book(row, symbol, multiplier, options)
             if not raw_book:
+                continue
+            if not time_filter.includes(float(raw_book["ts"])):
+                stats.filtered_books += 1
+                stats.filtered_raw_book_rows += 1
                 continue
             for book in cleaner.push(raw_book):
                 seq += 1
@@ -509,51 +617,234 @@ def merge_sorted(a_iter: Iterator[ReplayEvent], b_iter: Iterator[ReplayEvent]) -
             b = next(b_iter, None)
 
 
-def iter_rows(path: Path) -> Iterator[dict[str, Any]]:
+def iter_rows(path: Path, stats: Stats, time_filter: TimeFilter) -> Iterator[dict[str, Any]]:
     if path.is_dir():
         for child in sorted(p for p in path.rglob("*") if p.is_file()):
-            if child.suffix.lower() in TEXT_SUFFIXES or child.suffix.lower() in {".gz", ".zip"}:
-                yield from iter_rows(child)
+            if should_skip_path(child):
+                continue
+            yield from iter_rows(child, stats, time_filter)
+        return
+    if file_outside_time_filter(path, time_filter):
+        log_file_skip(str(path), "outside_time_filter_filename_date", stats)
         return
     suffix = path.suffix.lower()
+    if is_tar_archive_path(path):
+        try:
+            with tarfile.open(path, "r:*") as tf:
+                for member in sorted((m for m in tf.getmembers() if m.isfile()), key=lambda m: m.name):
+                    inner = Path(member.name)
+                    if should_skip_path(inner):
+                        continue
+                    source = f"{path}::{member.name}"
+                    if file_outside_time_filter(inner, time_filter):
+                        log_file_skip(source, "outside_time_filter_filename_date", stats)
+                        continue
+                    try:
+                        raw = tf.extractfile(member)
+                        if raw is None:
+                            log_file_skip(source, "empty tar member", stats)
+                            continue
+                        with raw:
+                            text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
+                            yield from iter_text_rows(text, inner.suffix.lower(), source, stats)
+                    except Exception as exc:
+                        log_file_skip(source, str(exc), stats)
+        except Exception as exc:
+            log_file_skip(str(path), str(exc), stats)
+        return
     if suffix == ".zip":
-        with zipfile.ZipFile(path) as zf:
-            for name in sorted(zf.namelist()):
-                if Path(name).suffix.lower() not in TEXT_SUFFIXES:
-                    continue
-                with zf.open(name) as raw:
-                    yield from iter_text_rows(io.TextIOWrapper(raw, encoding="utf-8", errors="replace"), Path(name).suffix.lower())
+        try:
+            with zipfile.ZipFile(path) as zf:
+                for name in sorted(zf.namelist()):
+                    inner = Path(name)
+                    if name.endswith("/") or should_skip_path(inner):
+                        continue
+                    source = f"{path}::{name}"
+                    if file_outside_time_filter(inner, time_filter):
+                        log_file_skip(source, "outside_time_filter_filename_date", stats)
+                        continue
+                    try:
+                        with zf.open(name) as raw:
+                            text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
+                            yield from iter_text_rows(text, inner.suffix.lower(), source, stats)
+                    except Exception as exc:
+                        log_file_skip(source, str(exc), stats)
+        except Exception as exc:
+            log_file_skip(str(path), str(exc), stats)
         return
     if suffix == ".gz":
-        inner = path.with_suffix("").suffix.lower() or ".csv"
-        with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as f:
-            yield from iter_text_rows(f, inner)
+        inner = path.with_suffix("").suffix.lower()
+        try:
+            with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as f:
+                yield from iter_text_rows(f, inner, str(path), stats)
+        except Exception as exc:
+            log_file_skip(str(path), str(exc), stats)
         return
-    if suffix in TEXT_SUFFIXES:
+    try:
         with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
-            yield from iter_text_rows(f, suffix)
+            yield from iter_text_rows(f, suffix, str(path), stats)
+    except Exception as exc:
+        log_file_skip(str(path), str(exc), stats)
 
 
-def iter_text_rows(f: io.TextIOBase, suffix: str) -> Iterator[dict[str, Any]]:
-    if suffix == ".csv":
-        sample = f.read(4096)
+def iter_text_rows(f: io.TextIOBase, suffix: str, source: str, stats: Stats) -> Iterator[dict[str, Any]]:
+    sample = f.read(4096)
+    try:
         f.seek(0)
+    except Exception as exc:
+        log_file_skip(source, f"stream is not seekable after sniffing: {exc}", stats)
+        return
+    detected_format = detect_text_format(suffix, sample)
+    if not detected_format:
+        log_file_skip(source, "empty or unsupported text content", stats)
+        return
+
+    log_file_detected(source, detected_format, stats)
+    if detected_format == "csv":
+        yield from iter_csv_rows(f, sample, source, stats)
+    elif detected_format == "json":
+        yield from iter_json_rows(f, source, stats)
+    elif detected_format == "jsonl":
+        yield from iter_jsonl_rows(f, source, stats)
+
+
+def iter_csv_rows(f: io.TextIOBase, sample: str, source: str, stats: Stats) -> Iterator[dict[str, Any]]:
+    try:
         has_header = csv.Sniffer().has_header(sample) if sample.strip() else False
+    except csv.Error:
+        has_header = False
+    try:
         if has_header:
             yield from csv.DictReader(f)
         else:
             for row in csv.reader(f):
+                if not row:
+                    continue
                 yield {str(i): value for i, value in enumerate(row)}
+    except csv.Error as exc:
+        stats.malformed_rows += 1
+        log_file_skip(source, f"csv_error:{exc}", stats)
+
+
+def iter_json_rows(f: io.TextIOBase, source: str, stats: Stats) -> Iterator[dict[str, Any]]:
+    text = f.read()
+    if not text.strip():
         return
-    for line in f:
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        stats.malformed_rows += 1
+        log_file_skip(source, f"json_decode_error:{exc}", stats)
+        return
+    yield from expand_json_rows(obj)
+
+
+def iter_jsonl_rows(f: io.TextIOBase, source: str, stats: Stats) -> Iterator[dict[str, Any]]:
+    warned = False
+    for line_no, line in enumerate(f, start=1):
         line = line.strip()
         if not line:
             continue
-        obj = json.loads(line)
-        rows = obj if isinstance(obj, list) else obj.get("data") if isinstance(obj, dict) and isinstance(obj.get("data"), list) else [obj]
-        for row in rows:
-            if isinstance(row, dict):
-                yield row
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            stats.malformed_rows += 1
+            if not warned:
+                log_warning(
+                    "[LOCAL-REPLAY-MALFORMED-ROW] path=%s line=%d reason=json_decode_error:%s",
+                    source,
+                    line_no,
+                    exc,
+                )
+                warned = True
+            continue
+        yield from expand_json_rows(obj)
+
+
+def expand_json_rows(obj: Any) -> Iterator[dict[str, Any]]:
+    rows = obj if isinstance(obj, list) else obj.get("data") if isinstance(obj, dict) and isinstance(obj.get("data"), list) else [obj]
+    for row in rows:
+        if isinstance(row, dict):
+            yield row
+
+
+def detect_text_format(suffix: str, sample: str) -> str:
+    stripped = sample.lstrip()
+    if not stripped:
+        return ""
+    suffix = suffix.lower()
+    first = stripped[0]
+    looks_json = first in {"{", "["}
+    if suffix == ".csv":
+        return "csv"
+    if suffix == ".json" and looks_json:
+        return "json"
+    if suffix in JSON_LINE_SUFFIXES and looks_json:
+        return "jsonl"
+    if suffix in JSON_SUFFIXES and not looks_json:
+        return "csv"
+    if looks_json:
+        return "json" if first == "[" else "jsonl"
+    return "csv"
+
+
+def should_skip_path(path: Path) -> bool:
+    return any(part.startswith(".") for part in path.parts)
+
+
+def file_outside_time_filter(path: Path, time_filter: TimeFilter) -> bool:
+    file_date = extract_date_from_name(path.name)
+    if file_date is None:
+        return False
+    day_start = datetime(file_date.year, file_date.month, file_date.day, tzinfo=timezone.utc).timestamp()
+    day_end = day_start + 86400.0
+    if time_filter.start_ts is not None and day_end <= time_filter.start_ts:
+        return True
+    if time_filter.end_ts is not None and day_start >= time_filter.end_ts:
+        return True
+    return False
+
+
+def extract_date_from_name(name: str) -> datetime | None:
+    match = re.search(r"(20\d{2})-(\d{2})-(\d{2})", name)
+    if not match:
+        return None
+    try:
+        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+
+
+def is_tar_archive_path(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"))
+
+
+def log_file_detected(source: str, detected_format: str, stats: Stats) -> None:
+    stats.parsed_files += 1
+    log_info("[LOCAL-REPLAY-FILE] path=%s detected_format=%s skipped=false", source, detected_format)
+
+
+def log_file_skip(source: str, reason: str, stats: Stats) -> None:
+    stats.skipped_files += 1
+    if reason == "outside_time_filter_filename_date":
+        log_info("[LOCAL-REPLAY-FILE-SKIP] path=%s reason=%s", source, reason)
+    else:
+        log_warning("[LOCAL-REPLAY-FILE-SKIP] path=%s reason=%s", source, reason)
+
+
+def log_info(message: str, *args: Any) -> None:
+    if logger:
+        logger.info(message, *args)
+    else:
+        print(message % args if args else message)
+
+
+def log_warning(message: str, *args: Any) -> None:
+    if logger:
+        logger.warning(message, *args)
+    else:
+        print(message % args if args else message, file=sys.stderr)
 
 
 def normalize_trade(row: Mapping[str, Any], symbol: str, multiplier: float) -> dict[str, Any] | None:
