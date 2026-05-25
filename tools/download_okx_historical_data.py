@@ -40,6 +40,7 @@ Downloaded files are saved under:
 from __future__ import annotations
 
 import argparse
+import email.utils
 import hashlib
 import json
 import sys
@@ -67,6 +68,8 @@ OKX_EXPORT_ENDPOINT = "https://www.okx.com/priapi/v5/broker/public/trade-data/do
 OKX_HISTORICAL_DATA_REFERER = "https://www.okx.com/en-us/historical-data"
 OKX_BOOK_MODULE_400 = "4"
 OKX_BOOK_MODULE_5000 = "5"
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+OKX_TOO_MANY_REQUESTS_CODE = "50011"
 
 
 @dataclass
@@ -89,10 +92,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--overwrite", action="store_true", help="Re-download existing files.")
     p.add_argument("--dry-run", action="store_true", help="Print tasks without downloading. Books export mode still requests links.")
     p.add_argument("--timeout", type=int, default=60, help="File download timeout seconds.")
-    p.add_argument("--retries", type=int, default=3)
-    p.add_argument("--sleep-sec", type=float, default=0.5, help="Sleep between downloads to avoid hammering the official endpoint.")
+    p.add_argument("--retries", type=int, default=3, help="File download retries.")
+    p.add_argument("--sleep-sec", type=float, default=0.5, help="Sleep between file downloads.")
 
     p.add_argument("--export-timeout", type=int, default=300, help="OKX export-link request timeout seconds.")
+    p.add_argument("--export-retries", type=int, default=6, help="Retries for OKX export-link requests, especially HTTP 429.")
+    p.add_argument("--export-backoff-sec", type=float, default=10.0, help="Base backoff seconds for OKX export-link retries.")
+    p.add_argument("--export-sleep-sec", type=float, default=3.0, help="Sleep after each OKX export-link request.")
     p.add_argument("--chunk-days", type=int, default=1, help="Days per OKX export request for books mode. Default: 1.")
     p.add_argument("--books-depth", type=int, choices=[400, 5000], default=400, help="Requested OKX order book depth. Default: 400.")
     p.add_argument("--books-module", default="", help="Override OKX export module code. Default: 4 for depth 400, 5 for depth 5000.")
@@ -104,20 +110,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    tasks = list(build_tasks(args))
-    if not tasks:
-        raise SystemExit(
-            "No download tasks generated. Provide --url, --manifest, --url-template, "
-            "or use --kind books with --start-date/--end-date for OKX export mode."
-        )
-
     manifest_out = args.out_root / args.kind / args.symbol / "download_manifest.jsonl"
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("[OKX-DOWNLOAD-START] kind=%s symbol=%s tasks=%d out=%s", args.kind, args.symbol, len(tasks), manifest_out.parent)
-    ok = skipped = failed = 0
+    logger.info("[OKX-DOWNLOAD-START] kind=%s symbol=%s out=%s", args.kind, args.symbol, manifest_out.parent)
+    ok = skipped = failed = total = 0
     with manifest_out.open("a", encoding="utf-8") as mf:
-        for task in tasks:
+        for task in build_tasks(args):
+            total += 1
             if args.dry_run:
                 print(f"DRY-RUN {task.url} -> {task.output_path}")
                 continue
@@ -132,7 +132,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             mf.flush()
             if args.sleep_sec > 0:
                 time.sleep(float(args.sleep_sec))
-    logger.info("[OKX-DOWNLOAD-DONE] downloaded=%d skipped=%d failed=%d manifest=%s", ok, skipped, failed, manifest_out)
+
+    if total <= 0:
+        raise SystemExit(
+            "No download tasks generated. Provide --url, --manifest, --url-template, "
+            "or use --kind books with --start-date/--end-date for OKX export mode."
+        )
+    logger.info("[OKX-DOWNLOAD-DONE] tasks=%d downloaded=%d skipped=%d failed=%d manifest=%s", total, ok, skipped, failed, manifest_out)
     return 1 if failed else 0
 
 
@@ -204,17 +210,23 @@ def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterabl
             end_ms=str(end_ms),
             date_aggr=str(args.date_aggr),
             timeout=int(args.export_timeout),
+            retries=int(args.export_retries),
+            backoff_sec=float(args.export_backoff_sec),
         )
         items = extract_download_items(response)
         if not items:
             logger.warning("[OKX-BOOKS-EXPORT-EMPTY] range=%s response_keys=%s", date_tag, sorted(response.keys()))
-            continue
-        for idx, item in enumerate(items, start=1):
-            total_links += 1
-            url = item["url"]
-            fallback = f"{args.symbol}_{args.kind}_{date_tag}_{idx:04d}.dat"
-            file_name = item.get("file_name") or filename_from_url(url, fallback=fallback)
-            yield DownloadTask(url=url, output_path=out_dir / safe_output_filename(file_name, fallback=fallback), date_tag=date_tag)
+        else:
+            for idx, item in enumerate(items, start=1):
+                total_links += 1
+                url = item["url"]
+                fallback = f"{args.symbol}_{args.kind}_{date_tag}_{idx:04d}.dat"
+                file_name = item.get("file_name") or filename_from_url(url, fallback=fallback)
+                yield DownloadTask(url=url, output_path=out_dir / safe_output_filename(file_name, fallback=fallback), date_tag=date_tag)
+
+        if args.export_sleep_sec > 0:
+            time.sleep(float(args.export_sleep_sec))
+
     if total_links <= 0:
         raise SystemExit(
             "OKX books export generated zero download links. This can mean the requested date/instrument has no data, "
@@ -244,6 +256,8 @@ def request_okx_export_links(
     end_ms: str,
     date_aggr: str,
     timeout: int,
+    retries: int,
+    backoff_sec: float,
 ) -> dict[str, Any]:
     body = {
         "module": str(module),
@@ -263,20 +277,86 @@ def request_okx_export_links(
         "Referer": OKX_HISTORICAL_DATA_REFERER,
     }
     data = json.dumps(body, separators=(",", ":")).encode("utf-8")
-    req = urllib.request.Request(OKX_EXPORT_ENDPOINT, data=data, headers=headers, method="POST")
+    last_error = ""
+    max_attempts = max(1, int(retries))
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(OKX_EXPORT_ENDPOINT, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                payload = resp.read().decode("utf-8", errors="replace")
+            result = json.loads(payload)
+            if str(result.get("code")) != "0":
+                if str(result.get("code")) == OKX_TOO_MANY_REQUESTS_CODE and attempt < max_attempts:
+                    sleep_sec = export_retry_sleep(attempt, backoff_sec, retry_after=None)
+                    logger.warning(
+                        "[OKX-BOOKS-EXPORT-RETRY] attempt=%d/%d code=%s msg=%s sleep=%.1fs",
+                        attempt,
+                        max_attempts,
+                        result.get("code"),
+                        result.get("msg"),
+                        sleep_sec,
+                    )
+                    time.sleep(sleep_sec)
+                    continue
+                raise RuntimeError(f"OKX export request returned error: {result}")
+            data_obj = result.get("data")
+            if isinstance(data_obj, dict):
+                return data_obj
+            return {"data": data_obj}
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            last_error = f"HTTP {exc.code}: {detail}"
+            if exc.code in RETRYABLE_HTTP_CODES and attempt < max_attempts:
+                retry_after = parse_retry_after(exc.headers.get("Retry-After"))
+                sleep_sec = export_retry_sleep(attempt, backoff_sec, retry_after=retry_after)
+                logger.warning(
+                    "[OKX-BOOKS-EXPORT-RETRY] attempt=%d/%d http=%s sleep=%.1fs detail=%s",
+                    attempt,
+                    max_attempts,
+                    exc.code,
+                    sleep_sec,
+                    detail,
+                )
+                time.sleep(sleep_sec)
+                continue
+            raise RuntimeError(f"OKX export request failed {last_error}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            last_error = repr(exc)
+            if attempt < max_attempts:
+                sleep_sec = export_retry_sleep(attempt, backoff_sec, retry_after=None)
+                logger.warning(
+                    "[OKX-BOOKS-EXPORT-RETRY] attempt=%d/%d sleep=%.1fs error=%s",
+                    attempt,
+                    max_attempts,
+                    sleep_sec,
+                    last_error,
+                )
+                time.sleep(sleep_sec)
+                continue
+            raise RuntimeError(f"OKX export request failed: {last_error}") from exc
+    raise RuntimeError(f"OKX export request failed after {max_attempts} attempts: {last_error}")
+
+
+def export_retry_sleep(attempt: int, backoff_sec: float, retry_after: float | None) -> float:
+    if retry_after is not None and retry_after > 0:
+        return min(float(retry_after), 300.0)
+    return min(max(float(backoff_sec), 1.0) * (2 ** max(0, attempt - 1)), 300.0)
+
+
+def parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    text = value.strip()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"OKX export request failed HTTP {exc.code}: {detail}") from exc
-    result = json.loads(payload)
-    if str(result.get("code")) != "0":
-        raise RuntimeError(f"OKX export request returned error: {result}")
-    data_obj = result.get("data")
-    if isinstance(data_obj, dict):
-        return data_obj
-    return {"data": data_obj}
+        return max(0.0, float(text))
+    except ValueError:
+        try:
+            dt = email.utils.parsedate_to_datetime(text)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+        except Exception:
+            return None
 
 
 def extract_download_items(payload: Mapping[str, Any]) -> list[dict[str, str]]:
