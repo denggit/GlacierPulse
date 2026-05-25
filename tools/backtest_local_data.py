@@ -29,7 +29,6 @@ import heapq
 import io
 import json
 import os
-import re
 import sys
 import tarfile
 import time
@@ -38,7 +37,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -88,67 +86,6 @@ class TimeFilter:
             "end_time_utc": fmt_utc(self.end_ts or 0.0),
             "end_is_exclusive": True,
         }
-
-
-@dataclass
-class RequestedWindow:
-    time_filter: TimeFilter
-    timezone_name: str
-    date_mode: str
-    requested_start_local: str
-    requested_end_local: str
-    requested_start_utc: str
-    requested_end_utc: str
-
-
-@dataclass
-class FileCoverage:
-    path: Path
-    first_ts: float
-    last_ts: float
-    row_count: int = 0
-    malformed_ts_count: int = 0
-
-    def overlaps(self, time_filter: TimeFilter, tolerance_sec: float = 0.0) -> bool:
-        if time_filter.start_ts is not None and self.last_ts + tolerance_sec < time_filter.start_ts:
-            return False
-        if time_filter.end_ts is not None and self.first_ts - tolerance_sec >= time_filter.end_ts:
-            return False
-        return True
-
-
-@dataclass
-class CoverageSelection:
-    selected: list[FileCoverage]
-    all_coverage: list[FileCoverage]
-
-    @property
-    def first_ts(self) -> float:
-        values = [item.first_ts for item in self.selected if item.first_ts > 0]
-        return min(values) if values else 0.0
-
-    @property
-    def last_ts(self) -> float:
-        values = [item.last_ts for item in self.selected if item.last_ts > 0]
-        return max(values) if values else 0.0
-
-    @property
-    def paths(self) -> list[Path]:
-        return [item.path for item in self.selected]
-
-    @property
-    def row_count(self) -> int:
-        return sum(item.row_count for item in self.selected)
-
-    @property
-    def malformed_ts_count(self) -> int:
-        return sum(item.malformed_ts_count for item in self.selected)
-
-
-@dataclass
-class CoverageCacheStats:
-    hits: int = 0
-    misses: int = 0
 
 
 @dataclass
@@ -425,24 +362,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-name", default="local_a1_research_replay")
     p.add_argument("--out-dir", type=Path)
     p.add_argument("--contract-multiplier", type=float)
-    p.add_argument("--timezone", default="Asia/Shanghai", help="Timezone for local dates and timezone-less ISO timestamps. Default: Asia/Shanghai.")
-    p.add_argument("--date-mode", choices=["local", "utc"], default="local", help="Interpret --start-date/--end-date as local natural days or UTC days. Default: local.")
-    p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD. In local mode this is 00:00:00 in --timezone.")
-    p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next local/UTC day 00:00:00.")
-    p.add_argument("--start-time", help="Replay lower bound as ISO8601 timestamp. Overrides --start-date. Timezone-less values use --timezone.")
-    p.add_argument("--end-time", help="Replay upper bound as ISO8601 timestamp. Overrides --end-date. Timezone-less values use --timezone.")
-    p.add_argument("--auto-discover-files", dest="auto_discover_files", action="store_true", default=True)
-    p.add_argument("--no-auto-discover-files", dest="auto_discover_files", action="store_false")
-    p.add_argument("--require-full-coverage", dest="require_full_coverage", action="store_true", default=True)
-    p.add_argument("--allow-partial-coverage", dest="allow_partial_coverage", action="store_true")
-    p.add_argument("--coverage-boundary-tolerance-sec", type=float, default=60.0, help="Tolerance used only for coverage boundary checks. Default: 60.")
-    p.add_argument("--coverage-cache-enabled", dest="coverage_cache_enabled", action="store_true", default=True)
-    p.add_argument("--no-coverage-cache-enabled", dest="coverage_cache_enabled", action="store_false")
-    p.add_argument("--coverage-cache-path", type=Path, default=ROOT / "data" / "okx" / "coverage_index" / "backtest_local_data_coverage.json")
-    p.add_argument("--filename-date-hint-enabled", dest="filename_date_hint_enabled", action="store_true", default=True)
-    p.add_argument("--no-filename-date-hint-enabled", dest="filename_date_hint_enabled", action="store_false")
-    p.add_argument("--filename-date-hint-padding-days", type=int, default=2)
-    p.add_argument("--full-directory-coverage-scan", action="store_true", default=False)
+    p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD at 00:00:00 UTC.")
+    p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next day 00:00:00 UTC.")
+    p.add_argument("--start-time", help="Replay lower bound as ISO8601 UTC timestamp. Timezone-less values are UTC.")
+    p.add_argument("--end-time", help="Replay upper bound as ISO8601 UTC timestamp. Timezone-less values are UTC.")
     p.add_argument("--sort-in-memory", action="store_true")
     p.add_argument("--allow-missing-books", action="store_true")
     p.add_argument("--max-events", type=int, default=0)
@@ -461,14 +384,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    requested_window = parse_requested_window(args)
-    requested_filter = requested_window.time_filter
+    time_filter = parse_time_window(args)
     trades_input = args.trades_file or args.trades_dir
     books_input = args.books_file or args.books_dir
     if not trades_input:
         raise SystemExit("Missing --trades-dir or --trades-file")
     if not books_input and not args.allow_missing_books:
         raise SystemExit("Missing --books-dir/--books-file. Use --allow-missing-books only for parser smoke tests.")
+
+    date_set = utc_date_set_for_filter(time_filter)
+    trades_files = [Path(args.trades_file)] if args.trades_file else select_files_by_utc_dates(Path(args.trades_dir), date_set, "trades")
+    books_files = (
+        [Path(args.books_file)]
+        if args.books_file
+        else select_files_by_utc_dates(Path(args.books_dir), date_set, "books")
+        if books_input
+        else []
+    )
+    selection_mode = "explicit_file" if args.trades_file and (args.books_file or not books_input) else "utc_filename_date"
 
     out_dir = args.out_dir or (ROOT / "reports" / "backtests" / args.run_name)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -493,132 +426,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     research_events_path = out_dir / "research_events.jsonl"
     summary_path = out_dir / "summary.json"
-    coverage_cache_stats = CoverageCacheStats()
-    coverage_cache = load_coverage_cache(args.coverage_cache_path) if args.coverage_cache_enabled else {}
-    filename_hint_summary: dict[str, Any] = {
-        "enabled": bool(args.filename_date_hint_enabled),
-        "padding_days": max(0, int(args.filename_date_hint_padding_days)),
-        "full_directory_coverage_scan": bool(args.full_directory_coverage_scan),
-        "trades_candidates_before": 0,
-        "trades_candidates_after": 0,
-        "books_candidates_before": 0,
-        "books_candidates_after": 0,
-    }
-
-    trades_selection = select_files_for_replay(
-        trades_input,
-        kind="trade",
-        symbol=str(args.symbol),
-        multiplier=float(multiplier),
-        book_options=book_cleaning,
-        requested_filter=requested_filter,
-        auto_discover=bool(args.auto_discover_files),
-        coverage_tolerance_sec=float(args.coverage_boundary_tolerance_sec),
-        cache=coverage_cache,
-        cache_enabled=bool(args.coverage_cache_enabled),
-        cache_stats=coverage_cache_stats,
-        timezone_name=str(args.timezone),
-        filename_date_hint_enabled=bool(args.filename_date_hint_enabled),
-        filename_date_hint_padding_days=max(0, int(args.filename_date_hint_padding_days)),
-        full_directory_coverage_scan=bool(args.full_directory_coverage_scan),
-        filename_hint_summary=filename_hint_summary,
-    )
-    books_selection = (
-        select_files_for_replay(
-            books_input,
-            kind="book",
-            symbol=str(args.symbol),
-            multiplier=float(multiplier),
-            book_options=book_cleaning,
-            requested_filter=requested_filter,
-            auto_discover=bool(args.auto_discover_files),
-            coverage_tolerance_sec=float(args.coverage_boundary_tolerance_sec),
-            cache=coverage_cache,
-            cache_enabled=bool(args.coverage_cache_enabled),
-            cache_stats=coverage_cache_stats,
-            timezone_name=str(args.timezone),
-            filename_date_hint_enabled=bool(args.filename_date_hint_enabled),
-            filename_date_hint_padding_days=max(0, int(args.filename_date_hint_padding_days)),
-            full_directory_coverage_scan=bool(args.full_directory_coverage_scan),
-            filename_hint_summary=filename_hint_summary,
-        )
-        if books_input
-        else CoverageSelection(selected=[], all_coverage=[])
-    )
-    if args.coverage_cache_enabled:
-        save_coverage_cache(args.coverage_cache_path, coverage_cache)
-    effective_filter, time_alignment = resolve_effective_time_filter(
-        requested_window=requested_window,
-        trades_selection=trades_selection,
-        books_selection=books_selection,
-        require_full_coverage=bool(args.require_full_coverage and not args.allow_partial_coverage),
-        allow_missing_books=bool(args.allow_missing_books and not books_input),
-        coverage_tolerance_sec=float(args.coverage_boundary_tolerance_sec),
-        coverage_cache_enabled=bool(args.coverage_cache_enabled),
-        coverage_cache_path=Path(args.coverage_cache_path),
-        coverage_cache_stats=coverage_cache_stats,
-    )
 
     logger.info("[LOCAL-A1-RESEARCH-START] symbol=%s trades=%s books=%s out=%s", args.symbol, trades_input, books_input, out_dir)
     logger.info("[LOCAL-A1-RESEARCH-MODE] no_main_py=true no_websocket=true no_iceberg_trader=true no_execution=true")
     logger.info("[LOCAL-BOOK-CLEANING] %s", asdict(book_cleaning))
-    logger.info("[LOCAL-TIME-FILTER] %s", effective_filter.to_dict())
-    logger.info("[LOCAL-TIME-ALIGNMENT] %s", time_alignment)
-    for warning in time_alignment["warnings"]:
-        logger.warning("[LOCAL-TIME-ALIGNMENT-WARNING] %s", warning)
+    logger.info("[LOCAL-TIME-FILTER] %s", time_filter.to_dict())
+    logger.info("[LOCAL-SELECTED-FILES] trades=%s books=%s mode=%s", [str(path) for path in trades_files], [str(path) for path in books_files], selection_mode)
 
     runtime = LocalA1ResearchRuntime(symbol=str(args.symbol), research_events_path=research_events_path)
     stats = Stats()
-    if books_selection.paths and effective_filter.start_ts is not None:
+    warmup = {
+        "book_warmup_rows": 0,
+        "book_bootstrap_bid_levels": 0,
+        "book_bootstrap_ask_levels": 0,
+        "book_warmup_start_utc": "",
+        "book_warmup_end_utc": fmt_utc(time_filter.start_ts or 0.0),
+        "book_warmup_last_row_utc": "",
+    }
+    if books_files and time_filter.start_ts is not None:
         warmup = warmup_books_state(
             runtime=runtime,
-            book_files=books_selection.paths,
+            book_files=books_files,
             symbol=str(args.symbol),
             multiplier=float(multiplier),
             options=book_cleaning,
-            start_ts=float(effective_filter.start_ts),
+            start_ts=float(time_filter.start_ts),
         )
-        time_alignment.update(warmup)
         if warmup["book_bootstrap_bid_levels"] or warmup["book_bootstrap_ask_levels"]:
             bootstrap_book = {
                 "bids": sort_levels_from_state(runtime.ctx.bids, side="bids", depth_limit=book_cleaning.depth_limit),
                 "asks": sort_levels_from_state(runtime.ctx.asks, side="asks", depth_limit=book_cleaning.depth_limit),
-                "ts": float(effective_filter.start_ts),
-                "recv_ts": float(effective_filter.start_ts),
+                "ts": float(time_filter.start_ts),
+                "recv_ts": float(time_filter.start_ts),
             }
             stats.books += 1
             runtime.on_book_update(bootstrap_book, stats)
-            stats.touch(float(effective_filter.start_ts))
+            stats.touch(float(time_filter.start_ts))
             logger.info(
                 "[LOCAL-BOOK-WARMUP] rows=%d bootstrap_bids=%d bootstrap_asks=%d ts=%s",
                 warmup["book_warmup_rows"],
                 warmup["book_bootstrap_bid_levels"],
                 warmup["book_bootstrap_ask_levels"],
-                fmt_utc(float(effective_filter.start_ts)),
+                fmt_utc(float(time_filter.start_ts)),
             )
-    else:
-        time_alignment.update(
-            {
-                "book_warmup_rows": 0,
-                "book_bootstrap_bid_levels": 0,
-                "book_bootstrap_ask_levels": 0,
-                "book_warmup_start_utc": "",
-                "book_warmup_end_utc": fmt_utc(effective_filter.start_ts or 0.0),
-                "book_warmup_last_row_utc": "",
-            }
-        )
 
     start = time.perf_counter()
     try:
         events = build_events(
-            trades_selection.paths,
-            books_selection.paths,
+            trades_files,
+            books_files,
             str(args.symbol),
             float(multiplier),
             stats,
             bool(args.sort_in_memory),
             book_cleaning,
-            effective_filter,
+            time_filter,
         )
         for idx, event in enumerate(events, start=1):
             if args.max_events and idx > args.max_events:
@@ -649,10 +511,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         "contract_multiplier": multiplier,
         "trades_path": str(trades_input),
         "books_path": str(books_input) if books_input else "",
+        "time_window": {
+            "start_utc": fmt_utc(time_filter.start_ts or 0.0),
+            "end_utc": fmt_utc(time_filter.end_ts or 0.0),
+            "time_assumption": "UTC",
+        },
+        "selected_files": {
+            "trades": [str(path) for path in trades_files],
+            "books": [str(path) for path in books_files],
+            "selection_mode": selection_mode,
+        },
+        "runtime_mode": "local_research_replay",
+        "execution_enabled": False,
         "book_cleaning": asdict(book_cleaning),
-        "time_filter": effective_filter.to_dict(),
-        "time_alignment": time_alignment,
-        "filename_date_hint": filename_hint_summary,
+        "book_warmup": warmup,
         "research_events_path": str(research_events_path),
         "research_jsonl_paths": {
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
@@ -691,37 +563,19 @@ def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, resea
     os.environ["A1_DYNAMIC_PARAM_PREVIEW_JSON_PATH"] = str(out_dir / "runtime_state" / "a1_dynamic_params.json")
 
 
-def parse_requested_window(args: argparse.Namespace) -> RequestedWindow:
-    tz = load_timezone(str(args.timezone))
-    start_ts = parse_datetime_to_ts(args.start_time, tz) if args.start_time else None
-    end_ts = parse_datetime_to_ts(args.end_time, tz) if args.end_time else None
+def parse_time_window(args: argparse.Namespace) -> TimeFilter:
+    start_ts = parse_datetime_to_ts(args.start_time) if args.start_time else None
+    end_ts = parse_datetime_to_ts(args.end_time) if args.end_time else None
     if start_ts is None and args.start_date:
-        start_ts = date_to_start_ts(args.start_date, tz, str(args.date_mode))
+        start_ts = date_to_start_ts(args.start_date)
     if end_ts is None and args.end_date:
-        end_ts = date_to_next_day_start_ts(args.end_date, tz, str(args.date_mode))
+        end_ts = date_to_next_day_start_ts(args.end_date)
     if start_ts is not None and end_ts is not None and start_ts >= end_ts:
-        raise SystemExit(
-            f"Invalid time range: start ({fmt_utc(start_ts)}) must be before exclusive end ({fmt_utc(end_ts)})"
-        )
-    return RequestedWindow(
-        time_filter=TimeFilter(start_ts=start_ts, end_ts=end_ts),
-        timezone_name=str(args.timezone),
-        date_mode=str(args.date_mode),
-        requested_start_local=fmt_local(start_ts or 0.0, tz),
-        requested_end_local=fmt_local(end_ts or 0.0, tz),
-        requested_start_utc=fmt_utc(start_ts or 0.0),
-        requested_end_utc=fmt_utc(end_ts or 0.0),
-    )
+        raise SystemExit(f"Invalid time range: start ({fmt_utc(start_ts)}) must be before exclusive end ({fmt_utc(end_ts)})")
+    return TimeFilter(start_ts=start_ts, end_ts=end_ts)
 
 
-def load_timezone(timezone_name: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(timezone_name)
-    except ZoneInfoNotFoundError as exc:
-        raise SystemExit(f"Invalid timezone: {timezone_name}") from exc
-
-
-def parse_datetime_to_ts(text: str, default_tz: ZoneInfo) -> float:
+def parse_datetime_to_ts(text: str) -> float:
     value = str(text).strip()
     if not value:
         raise SystemExit("Invalid empty timestamp")
@@ -732,367 +586,62 @@ def parse_datetime_to_ts(text: str, default_tz: ZoneInfo) -> float:
     except ValueError as exc:
         raise SystemExit(f"Invalid ISO8601 timestamp: {text}") from exc
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=default_tz)
+        dt = dt.replace(tzinfo=timezone.utc)
     else:
         dt = dt.astimezone(timezone.utc)
     return float(dt.timestamp())
 
 
-def date_to_start_ts(date_text: str, tz: ZoneInfo, date_mode: str) -> float:
-    return parse_date_start(date_text, tz, date_mode).timestamp()
+def date_to_start_ts(date_text: str) -> float:
+    return parse_date_utc(date_text).timestamp()
 
 
-def date_to_next_day_start_ts(date_text: str, tz: ZoneInfo, date_mode: str) -> float:
-    return (parse_date_start(date_text, tz, date_mode) + timedelta(days=1)).timestamp()
+def date_to_next_day_start_ts(date_text: str) -> float:
+    return (parse_date_utc(date_text) + timedelta(days=1)).timestamp()
 
 
-def parse_date_start(date_text: str, tz: ZoneInfo, date_mode: str) -> datetime:
+def parse_date_utc(date_text: str) -> datetime:
     try:
         date_value = datetime.strptime(str(date_text).strip(), "%Y-%m-%d")
     except ValueError as exc:
         raise SystemExit(f"Invalid date, expected YYYY-MM-DD: {date_text}") from exc
-    return date_value.replace(tzinfo=timezone.utc if date_mode == "utc" else tz)
+    return date_value.replace(tzinfo=timezone.utc)
 
 
-def resolve_effective_time_filter(
-    requested_window: RequestedWindow,
-    trades_selection: CoverageSelection,
-    books_selection: CoverageSelection,
-    require_full_coverage: bool,
-    allow_missing_books: bool = False,
-    coverage_tolerance_sec: float = 0.0,
-    coverage_cache_enabled: bool = False,
-    coverage_cache_path: Path | None = None,
-    coverage_cache_stats: CoverageCacheStats | None = None,
-) -> tuple[TimeFilter, dict[str, Any]]:
-    requested = requested_window.time_filter
-    missing: list[dict[str, Any]] = []
-    trades_missing = missing_for_selection(trades_selection, requested, coverage_tolerance_sec)
-    books_missing: list[tuple[float, float]] = []
-    if not allow_missing_books:
-        books_missing = missing_for_selection(books_selection, requested, coverage_tolerance_sec)
-    for start_ts, end_ts in trades_missing:
-        missing.append({"side": "trades", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)})
-    for start_ts, end_ts in books_missing:
-        missing.append({"side": "books", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)})
-
-    full_coverage = not missing
-    warnings: list[str] = []
-    if require_full_coverage and not full_coverage:
-        raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing, coverage_tolerance_sec))
-
-    effective_start = requested.start_ts
-    effective_end = requested.end_ts
-    if not full_coverage and not require_full_coverage:
-        effective_filter = partial_effective_filter(
-            requested,
-            trades_selection,
-            books_selection,
-            coverage_tolerance_sec,
-            allow_missing_books=allow_missing_books,
-        )
-        effective_start = effective_filter.start_ts
-        effective_end = effective_filter.end_ts
-        if effective_start is None or effective_end is None:
-            raise SystemExit(format_coverage_error(requested_window, trades_selection, books_selection, missing, coverage_tolerance_sec))
-        effective_missing = missing_for_selection(trades_selection, effective_filter, coverage_tolerance_sec)
-        if not allow_missing_books:
-            effective_missing += missing_for_selection(books_selection, effective_filter, coverage_tolerance_sec)
-        if effective_start >= effective_end or effective_missing:
-            internal_missing = [
-                {"side": "partial", "start_utc": fmt_utc(start_ts), "end_utc": fmt_utc(end_ts)}
-                for start_ts, end_ts in effective_missing
-            ]
-            raise SystemExit(
-                format_coverage_error(
-                    requested_window,
-                    trades_selection,
-                    books_selection,
-                    internal_missing or missing,
-                    coverage_tolerance_sec,
-                )
-            )
-        if requested.start_ts is not None and effective_start > requested.start_ts:
-            warnings.append(
-                "partial coverage trimmed head: "
-                f"{fmt_utc(requested.start_ts)} to {fmt_utc(effective_start)}"
-            )
-        if requested.end_ts is not None and effective_end < requested.end_ts:
-            warnings.append(
-                "partial coverage trimmed tail: "
-                f"{fmt_utc(effective_end)} to {fmt_utc(requested.end_ts)}"
-            )
-        warnings.append(f"partial coverage effective window: {fmt_utc(effective_start)} to {fmt_utc(effective_end)}")
-
-    tz = load_timezone(requested_window.timezone_name)
-    alignment = {
-        "timezone": requested_window.timezone_name,
-        "date_mode": requested_window.date_mode,
-        "requested_start_local": requested_window.requested_start_local,
-        "requested_end_local": requested_window.requested_end_local,
-        "requested_start_utc": requested_window.requested_start_utc,
-        "requested_end_utc": requested_window.requested_end_utc,
-        "effective_start_utc": fmt_utc(effective_start or 0.0),
-        "effective_end_utc": fmt_utc(effective_end or 0.0),
-        "effective_start_local": fmt_local(effective_start or 0.0, tz),
-        "effective_end_local": fmt_local(effective_end or 0.0, tz),
-        "trades_selected_files": [str(path) for path in trades_selection.paths],
-        "books_selected_files": [str(path) for path in books_selection.paths],
-        "trades_first_ts": trades_selection.first_ts,
-        "trades_last_ts": trades_selection.last_ts,
-        "books_first_ts": books_selection.first_ts,
-        "books_last_ts": books_selection.last_ts,
-        "trades_first_utc": fmt_utc(trades_selection.first_ts),
-        "trades_last_utc": fmt_utc(trades_selection.last_ts),
-        "books_first_utc": fmt_utc(books_selection.first_ts),
-        "books_last_utc": fmt_utc(books_selection.last_ts),
-        "coverage_boundary_tolerance_sec": float(coverage_tolerance_sec),
-        "trades_coverage_rows": trades_selection.row_count,
-        "books_coverage_rows": books_selection.row_count,
-        "trades_malformed_ts_count": trades_selection.malformed_ts_count,
-        "books_malformed_ts_count": books_selection.malformed_ts_count,
-        "coverage_cache_enabled": bool(coverage_cache_enabled),
-        "coverage_cache_path": str(coverage_cache_path) if coverage_cache_path else "",
-        "coverage_cache_hits": coverage_cache_stats.hits if coverage_cache_stats else 0,
-        "coverage_cache_misses": coverage_cache_stats.misses if coverage_cache_stats else 0,
-        "full_coverage": full_coverage,
-        "partial_coverage_used": bool(not full_coverage and not require_full_coverage),
-        "warnings": warnings,
-    }
-    return TimeFilter(start_ts=effective_start, end_ts=effective_end), alignment
-
-
-def coverage_intervals(coverage: Sequence[FileCoverage], tolerance_sec: float = 0.0) -> list[tuple[float, float]]:
-    tolerance = max(0.0, float(tolerance_sec))
-    intervals = sorted(
-        (item.first_ts, item.last_ts)
-        for item in coverage
-        if item.first_ts > 0 and item.last_ts > 0
-    )
-    if not intervals:
-        return []
-    merged: list[tuple[float, float]] = []
-    cur_start, cur_end = intervals[0]
-    for start_ts, end_ts in intervals[1:]:
-        if start_ts <= cur_end or start_ts - cur_end <= tolerance:
-            cur_end = max(cur_end, end_ts)
-        else:
-            merged.append((cur_start, cur_end))
-            cur_start, cur_end = start_ts, end_ts
-    merged.append((cur_start, cur_end))
-    return merged
-
-
-def missing_intervals(
-    time_filter: TimeFilter,
-    intervals: Sequence[tuple[float, float]],
-    tolerance_sec: float = 0.0,
-) -> list[tuple[float, float]]:
+def utc_date_set_for_filter(time_filter: TimeFilter) -> set[str]:
     if time_filter.start_ts is None or time_filter.end_ts is None:
-        return []
-    tolerance = max(0.0, float(tolerance_sec))
-    missing: list[tuple[float, float]] = []
-    cursor = float(time_filter.start_ts)
-    end = float(time_filter.end_ts)
-    covered_started = False
-    for start_ts, last_ts in intervals:
-        if last_ts < cursor:
-            continue
-        if start_ts >= end:
-            break
-        if start_ts > cursor:
-            if not covered_started and start_ts - cursor <= tolerance:
-                pass
-            else:
-                missing.append((cursor, min(start_ts, end)))
-        cursor = max(cursor, last_ts)
-        covered_started = True
-        if cursor >= end:
-            return missing
-    if cursor < end:
-        if covered_started and end - cursor <= tolerance:
-            return missing
-        missing.append((cursor, end))
-    return missing
-
-
-def missing_for_selection(selection: CoverageSelection, time_filter: TimeFilter, tolerance_sec: float) -> list[tuple[float, float]]:
-    return missing_intervals(time_filter, coverage_intervals(selection.selected, tolerance_sec), tolerance_sec)
-
-
-def partial_effective_filter(
-    requested: TimeFilter,
-    trades_selection: CoverageSelection,
-    books_selection: CoverageSelection,
-    tolerance_sec: float,
-    allow_missing_books: bool = False,
-) -> TimeFilter:
-    starts = [requested.start_ts, first_effective_coverage_ts(trades_selection, requested, tolerance_sec)]
-    ends = [requested.end_ts, last_effective_coverage_ts(trades_selection, requested, tolerance_sec)]
-    if not allow_missing_books:
-        starts.append(first_effective_coverage_ts(books_selection, requested, tolerance_sec))
-        ends.append(last_effective_coverage_ts(books_selection, requested, tolerance_sec))
-    clean_starts = [value for value in starts if value is not None and value > 0]
-    clean_ends = [value for value in ends if value is not None and value > 0]
-    return TimeFilter(start_ts=max(clean_starts) if clean_starts else None, end_ts=min(clean_ends) if clean_ends else None)
-
-
-def first_effective_coverage_ts(selection: CoverageSelection, requested: TimeFilter, tolerance_sec: float) -> float | None:
-    if requested.start_ts is None or requested.end_ts is None:
-        return selection.first_ts or None
-    for start_ts, end_ts in coverage_intervals(selection.selected, tolerance_sec):
-        if end_ts < requested.start_ts:
-            continue
-        if start_ts >= requested.end_ts:
-            break
-        return max(start_ts, requested.start_ts)
-    return None
-
-
-def last_effective_coverage_ts(selection: CoverageSelection, requested: TimeFilter, tolerance_sec: float) -> float | None:
-    if requested.start_ts is None or requested.end_ts is None:
-        return selection.last_ts or None
-    last_value: float | None = None
-    for start_ts, end_ts in coverage_intervals(selection.selected, tolerance_sec):
-        if end_ts < requested.start_ts:
-            continue
-        if start_ts >= requested.end_ts:
-            break
-        last_value = min(end_ts, requested.end_ts)
-    return last_value
-
-
-def format_coverage_error(
-    requested_window: RequestedWindow,
-    trades_selection: CoverageSelection,
-    books_selection: CoverageSelection,
-    missing: Sequence[Mapping[str, Any]],
-    coverage_tolerance_sec: float = 0.0,
-) -> str:
-    missing_text = "; ".join(
-        f"{item.get('side')} missing {item.get('start_utc')} to {item.get('end_utc')}" for item in missing
-    ) or "none"
-    return "\n".join(
-        [
-            "Requested replay window is not fully covered by selected local files.",
-            f"requested local window: {requested_window.requested_start_local} to {requested_window.requested_end_local}",
-            f"requested UTC window: {requested_window.requested_start_utc} to {requested_window.requested_end_utc}",
-            f"trades coverage: {format_selection_coverage(trades_selection)}",
-            f"books coverage: {format_selection_coverage(books_selection)}",
-            f"missing side and missing interval: {missing_text}",
-            f"coverage boundary tolerance: {float(coverage_tolerance_sec)} sec",
-            "Use --allow-partial-coverage to replay the intersection window.",
-        ]
-    )
-
-
-def format_selection_coverage(selection: CoverageSelection) -> str:
-    if not selection.selected:
-        return "none"
-    return f"{fmt_utc(selection.first_ts)} to {fmt_utc(selection.last_ts)} files={len(selection.selected)}"
-
-
-def select_files_for_replay(
-    input_path: Path,
-    kind: str,
-    symbol: str,
-    multiplier: float,
-    book_options: BookCleaningOptions,
-    requested_filter: TimeFilter,
-    auto_discover: bool,
-    coverage_tolerance_sec: float = 0.0,
-    cache: dict[str, Any] | None = None,
-    cache_enabled: bool = False,
-    cache_stats: CoverageCacheStats | None = None,
-    timezone_name: str = "Asia/Shanghai",
-    filename_date_hint_enabled: bool = True,
-    filename_date_hint_padding_days: int = 2,
-    full_directory_coverage_scan: bool = False,
-    filename_hint_summary: dict[str, Any] | None = None,
-) -> CoverageSelection:
-    candidates = discover_supported_files(input_path)
-    candidates_before = len(candidates)
-    if not full_directory_coverage_scan and filename_date_hint_enabled:
-        candidates = filter_candidates_by_filename_date_hint(
-            candidates,
-            requested_filter,
-            timezone_name=timezone_name,
-            padding_days=filename_date_hint_padding_days,
-        )
-    candidates_after = len(candidates)
-    if filename_hint_summary is not None:
-        prefix = "trades" if kind == "trade" else "books"
-        filename_hint_summary[f"{prefix}_candidates_before"] = candidates_before
-        filename_hint_summary[f"{prefix}_candidates_after"] = candidates_after
-    log_info(
-        "[LOCAL-FILENAME-HINT] kind=%s candidates_before=%d candidates_after=%d padding_days=%d full_scan=%s",
-        kind,
-        candidates_before,
-        candidates_after,
-        max(0, int(filename_date_hint_padding_days)),
-        str(bool(full_directory_coverage_scan)).lower(),
-    )
-    coverage = [
-        item
-        for item in (
-            get_file_coverage(
-                path,
-                kind=kind,
-                symbol=symbol,
-                multiplier=multiplier,
-                book_options=book_options,
-                cache=cache,
-                cache_enabled=cache_enabled,
-                cache_stats=cache_stats,
-            )
-            for path in candidates
-        )
-        if item is not None
-    ]
-    selected = [item for item in coverage if (item.overlaps(requested_filter, coverage_tolerance_sec) if auto_discover else True)]
-    selected.sort(key=lambda item: (item.first_ts, str(item.path)))
-    return CoverageSelection(selected=selected, all_coverage=coverage)
-
-
-def filter_candidates_by_filename_date_hint(
-    candidates: list[Path],
-    requested_filter: TimeFilter,
-    timezone_name: str,
-    padding_days: int,
-) -> list[Path]:
-    if requested_filter.start_ts is None or requested_filter.end_ts is None:
-        return candidates
-    if requested_filter.start_ts >= requested_filter.end_ts:
-        return candidates
-
-    padding = max(0, int(padding_days))
-    start_date = datetime.fromtimestamp(float(requested_filter.start_ts), timezone.utc).date()
-    # end_ts is exclusive; subtract a tiny amount so an exact midnight end does not add an extra day.
-    end_probe_ts = max(float(requested_filter.start_ts), float(requested_filter.end_ts) - 0.000001)
+        return set()
+    if time_filter.start_ts >= time_filter.end_ts:
+        raise SystemExit(f"Invalid time range: start ({fmt_utc(time_filter.start_ts)}) must be before exclusive end ({fmt_utc(time_filter.end_ts)})")
+    start_date = datetime.fromtimestamp(float(time_filter.start_ts), timezone.utc).date()
+    end_probe_ts = max(float(time_filter.start_ts), float(time_filter.end_ts) - 0.000001)
     end_date = datetime.fromtimestamp(end_probe_ts, timezone.utc).date()
-    min_date = start_date - timedelta(days=padding)
-    max_date = end_date + timedelta(days=padding)
+    values = set()
+    current = start_date
+    while current <= end_date:
+        values.add(current.isoformat())
+        current += timedelta(days=1)
+    return values
 
-    filtered: list[Path] = []
-    for path in candidates:
-        file_date = extract_date_from_name(path.name)
-        if file_date is None:
-            filtered.append(path)
-            continue
-        hint_date = file_date.date()
-        if min_date <= hint_date <= max_date:
-            filtered.append(path)
 
-    if not filtered and candidates:
-        log_warning(
-            "[LOCAL-FILENAME-HINT-WARNING] candidates_after=0 fallback=full_candidates padding_days=%d timezone=%s requested_start=%s requested_end=%s",
-            padding,
-            timezone_name,
-            fmt_utc(requested_filter.start_ts or 0.0),
-            fmt_utc(requested_filter.end_ts or 0.0),
-        )
+def select_files_by_utc_dates(input_path: Path, date_set: set[str], kind: str) -> list[Path]:
+    candidates = discover_supported_files(input_path)
+    if not date_set:
         return candidates
-    return filtered
+
+    selected: list[Path] = []
+    missing_dates: list[str] = []
+    for date_text in sorted(date_set):
+        matches = [path for path in candidates if date_text in path.name]
+        if not matches:
+            missing_dates.append(date_text)
+        selected.extend(matches)
+    if missing_dates:
+        raise SystemExit(f"Missing {kind} files for UTC date(s): {', '.join(missing_dates)} in {input_path}")
+
+    deduped = sorted(dict.fromkeys(selected))
+    log_info("[LOCAL-FILE-SELECTION] kind=%s mode=utc_filename_date dates=%s files=%s", kind, sorted(date_set), [str(path) for path in deduped])
+    return deduped
 
 
 def discover_supported_files(input_path: Path) -> list[Path]:
@@ -1109,33 +658,6 @@ def is_supported_data_path(path: Path) -> bool:
     return name.endswith((".csv", ".zip", ".gz", ".tar", ".tar.gz", ".tgz", ".json", ".jsonl", ".ndjson"))
 
 
-def scan_file_coverage(
-    path: Path,
-    kind: str,
-    symbol: str,
-    multiplier: float,
-    book_options: BookCleaningOptions,
-) -> FileCoverage | None:
-    scan_stats = Stats()
-    first_ts = 0.0
-    last_ts = 0.0
-    row_count = 0
-    malformed_ts_count = 0
-    for row in iter_rows(path, scan_stats, TimeFilter()):
-        if not row_matches_symbol(row, symbol):
-            continue
-        row_count += 1
-        ts = extract_row_ts_only(row)
-        if ts <= 0:
-            malformed_ts_count += 1
-            continue
-        first_ts = ts if first_ts <= 0 else min(first_ts, ts)
-        last_ts = max(last_ts, ts)
-    if first_ts <= 0 or last_ts <= 0:
-        return None
-    return FileCoverage(path=path, first_ts=first_ts, last_ts=last_ts, row_count=row_count, malformed_ts_count=malformed_ts_count)
-
-
 def extract_row_ts_only(row: Mapping[str, Any]) -> float:
     return normalize_ts(get_any(row, "ts", "timestamp", "time", "created_time", "0"))
 
@@ -1143,105 +665,6 @@ def extract_row_ts_only(row: Mapping[str, Any]) -> float:
 def row_matches_symbol(row: Mapping[str, Any], symbol: str) -> bool:
     inst = get_any(row, "instId", "inst_id", "symbol", "instrument")
     return True if inst in (None, "") else str(inst) == str(symbol)
-
-
-def get_file_coverage(
-    path: Path,
-    kind: str,
-    symbol: str,
-    multiplier: float,
-    book_options: BookCleaningOptions,
-    cache: dict[str, Any] | None = None,
-    cache_enabled: bool = False,
-    cache_stats: CoverageCacheStats | None = None,
-) -> FileCoverage | None:
-    if cache_enabled and cache is not None:
-        cached = read_cached_coverage(path, kind, symbol, cache)
-        if cached is not None:
-            if cache_stats:
-                cache_stats.hits += 1
-            return cached
-        if cache_stats:
-            cache_stats.misses += 1
-
-    coverage = scan_file_coverage(path, kind=kind, symbol=symbol, multiplier=multiplier, book_options=book_options)
-    if cache_enabled and cache is not None and coverage is not None:
-        write_cached_coverage(coverage, kind, symbol, cache)
-    return coverage
-
-
-def coverage_cache_key(path: Path, kind: str, symbol: str) -> str:
-    absolute = str(path.resolve())
-    return f"{kind}|{symbol}|{absolute}"
-
-
-def file_fingerprint(path: Path) -> tuple[str, int, int]:
-    stat = path.stat()
-    return str(path.resolve()), int(stat.st_size), int(stat.st_mtime_ns)
-
-
-def read_cached_coverage(path: Path, kind: str, symbol: str, cache: Mapping[str, Any]) -> FileCoverage | None:
-    absolute, size, mtime_ns = file_fingerprint(path)
-    entry = cache.get(coverage_cache_key(path, kind, symbol))
-    if not isinstance(entry, Mapping):
-        return None
-    if (
-        entry.get("path") != absolute
-        or int(entry.get("size", -1)) != size
-        or int(entry.get("mtime_ns", -1)) != mtime_ns
-        or entry.get("kind") != kind
-        or entry.get("symbol") != symbol
-    ):
-        return None
-    first_ts = to_float(entry.get("first_ts"))
-    last_ts = to_float(entry.get("last_ts"))
-    if first_ts <= 0 or last_ts <= 0:
-        return None
-    return FileCoverage(
-        path=path,
-        first_ts=first_ts,
-        last_ts=last_ts,
-        row_count=int(entry.get("row_count", 0) or 0),
-        malformed_ts_count=int(entry.get("malformed_ts_count", 0) or 0),
-    )
-
-
-def write_cached_coverage(coverage: FileCoverage, kind: str, symbol: str, cache: dict[str, Any]) -> None:
-    absolute, size, mtime_ns = file_fingerprint(coverage.path)
-    cache[coverage_cache_key(coverage.path, kind, symbol)] = {
-        "path": absolute,
-        "size": size,
-        "mtime_ns": mtime_ns,
-        "kind": kind,
-        "symbol": symbol,
-        "first_ts": coverage.first_ts,
-        "last_ts": coverage.last_ts,
-        "row_count": coverage.row_count,
-        "malformed_ts_count": coverage.malformed_ts_count,
-        "scanned_at_utc": fmt_utc(time.time()),
-    }
-
-
-def load_coverage_cache(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        log_warning("[LOCAL-COVERAGE-CACHE-WARNING] path=%s reason=load_failed:%s", path, exc)
-        return {}
-    if not isinstance(data, dict):
-        log_warning("[LOCAL-COVERAGE-CACHE-WARNING] path=%s reason=invalid_root", path)
-        return {}
-    return data
-
-
-def save_coverage_cache(path: Path, cache: Mapping[str, Any]) -> None:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cache, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    except Exception as exc:
-        log_warning("[LOCAL-COVERAGE-CACHE-WARNING] path=%s reason=write_failed:%s", path, exc)
 
 
 def warmup_books_state(
@@ -1633,29 +1056,6 @@ def should_skip_path(path: Path) -> bool:
     return any(part.startswith(".") for part in path.parts)
 
 
-def file_outside_time_filter(path: Path, time_filter: TimeFilter) -> bool:
-    file_date = extract_date_from_name(path.name)
-    if file_date is None:
-        return False
-    day_start = datetime(file_date.year, file_date.month, file_date.day, tzinfo=timezone.utc).timestamp()
-    day_end = day_start + 86400.0
-    if time_filter.start_ts is not None and day_end <= time_filter.start_ts:
-        return True
-    if time_filter.end_ts is not None and day_start >= time_filter.end_ts:
-        return True
-    return False
-
-
-def extract_date_from_name(name: str) -> datetime | None:
-    match = re.search(r"(20\d{2})-(\d{2})-(\d{2})", name)
-    if not match:
-        return None
-    try:
-        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    except ValueError:
-        return None
-
-
 def is_tar_archive_path(path: Path) -> bool:
     name = path.name.lower()
     return name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz"))
@@ -1668,10 +1068,7 @@ def log_file_detected(source: str, detected_format: str, stats: Stats) -> None:
 
 def log_file_skip(source: str, reason: str, stats: Stats) -> None:
     stats.skipped_files += 1
-    if reason == "outside_time_filter_filename_date":
-        log_info("[LOCAL-REPLAY-FILE-SKIP] path=%s reason=%s", source, reason)
-    else:
-        log_warning("[LOCAL-REPLAY-FILE-SKIP] path=%s reason=%s", source, reason)
+    log_warning("[LOCAL-REPLAY-FILE-SKIP] path=%s reason=%s", source, reason)
 
 
 def log_info(message: str, *args: Any) -> None:
@@ -1845,12 +1242,6 @@ def normalize_ts(value: Any) -> float:
 
 def fmt_utc(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(ts))) if ts and ts > 0 else ""
-
-
-def fmt_local(ts: float, tz: ZoneInfo) -> str:
-    if not ts or ts <= 0:
-        return ""
-    return datetime.fromtimestamp(float(ts), tz).isoformat(timespec="seconds")
 
 
 if __name__ == "__main__":

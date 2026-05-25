@@ -1,3 +1,5 @@
+import inspect
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -13,140 +15,148 @@ def _ts(text: str) -> float:
     return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
 
 
-def _requested() -> backtest.RequestedWindow:
-    return backtest.RequestedWindow(
-        time_filter=backtest.TimeFilter(_ts("2026-05-20T00:00:00Z"), _ts("2026-05-20T20:00:00Z")),
-        timezone_name="Asia/Shanghai",
-        date_mode="local",
-        requested_start_local="2026-05-20T08:00:00+08:00",
-        requested_end_local="2026-05-21T04:00:00+08:00",
-        requested_start_utc="2026-05-20T00:00:00Z",
-        requested_end_utc="2026-05-20T20:00:00Z",
-    )
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
 
-def _selection(*pairs: tuple[str, str]) -> backtest.CoverageSelection:
-    return backtest.CoverageSelection(
-        selected=[
-            backtest.FileCoverage(
-                path=Path(__file__),
-                first_ts=_ts(start),
-                last_ts=_ts(end),
-                row_count=2,
-            )
-            for start, end in pairs
-        ],
-        all_coverage=[],
-    )
+def _trade(ts: float, price: float = 2500.0, size: float = 10.0) -> dict:
+    return {"instId": SYMBOL, "px": price, "sz": size, "side": "buy", "ts": ts}
 
 
-def test_boundary_tolerance_does_not_fail_on_subsecond_edges():
-    requested = backtest.RequestedWindow(
-        time_filter=backtest.TimeFilter(_ts("2026-05-20T16:00:00Z"), _ts("2026-05-23T16:00:00Z")),
-        timezone_name="Asia/Shanghai",
-        date_mode="local",
-        requested_start_local="2026-05-21T00:00:00+08:00",
-        requested_end_local="2026-05-24T00:00:00+08:00",
-        requested_start_utc="2026-05-20T16:00:00Z",
-        requested_end_utc="2026-05-23T16:00:00Z",
-    )
-    trades = _selection(("2026-05-20T16:00:00.082Z", "2026-05-23T15:59:59.731Z"))
-    books = _selection(("2026-05-20T16:00:00Z", "2026-05-23T16:00:00Z"))
-
-    _, alignment = backtest.resolve_effective_time_filter(
-        requested,
-        trades,
-        books,
-        require_full_coverage=True,
-        coverage_tolerance_sec=60.0,
-    )
-
-    assert alignment["full_coverage"] is True
+def _book(ts: float, bid: float = 2499.0, ask: float = 2501.0) -> dict:
+    return {
+        "instId": SYMBOL,
+        "ts": ts,
+        "bids": [[bid, 10.0]],
+        "asks": [[ask, 10.0]],
+        "action": "snapshot",
+    }
 
 
-def test_internal_gap_90_seconds_with_60_second_tolerance_fails():
-    requested = _requested()
-    trades = _selection(
-        ("2026-05-20T00:00:00Z", "2026-05-20T10:00:00Z"),
-        ("2026-05-20T10:01:30Z", "2026-05-20T20:00:00Z"),
-    )
-    books = _selection(("2026-05-20T00:00:00Z", "2026-05-20T20:00:00Z"))
+def _touch_days(directory: Path, prefix: str, days: list[str], suffix: str = ".csv") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for day in days:
+        (directory / f"{prefix}-{day}{suffix}").write_text("", encoding="utf-8")
+
+
+def test_select_files_same_utc_date(tmp_path):
+    trades_dir = tmp_path / "trades"
+    books_dir = tmp_path / "books"
+    days = ["2026-05-20", "2026-05-21", "2026-05-22"]
+    _touch_days(trades_dir, "trades", days)
+    _touch_days(books_dir, "books", days)
+    time_filter = backtest.TimeFilter(_ts("2026-05-21T01:00:00Z"), _ts("2026-05-21T02:00:00Z"))
+    date_set = backtest.utc_date_set_for_filter(time_filter)
+
+    trades = backtest.select_files_by_utc_dates(trades_dir, date_set, "trades")
+    books = backtest.select_files_by_utc_dates(books_dir, date_set, "books")
+
+    assert [path.name for path in trades] == ["trades-2026-05-21.csv"]
+    assert [path.name for path in books] == ["books-2026-05-21.csv"]
+
+
+def test_select_files_cross_utc_date(tmp_path):
+    trades_dir = tmp_path / "trades"
+    books_dir = tmp_path / "books"
+    days = ["2026-05-21", "2026-05-22"]
+    _touch_days(trades_dir, "trades", days)
+    _touch_days(books_dir, "books", days)
+    time_filter = backtest.TimeFilter(_ts("2026-05-21T23:30:00Z"), _ts("2026-05-22T00:30:00Z"))
+    date_set = backtest.utc_date_set_for_filter(time_filter)
+
+    trades = backtest.select_files_by_utc_dates(trades_dir, date_set, "trades")
+    books = backtest.select_files_by_utc_dates(books_dir, date_set, "books")
+
+    assert [path.name for path in trades] == ["trades-2026-05-21.csv", "trades-2026-05-22.csv"]
+    assert [path.name for path in books] == ["books-2026-05-21.csv", "books-2026-05-22.csv"]
+
+
+def test_does_not_scan_unrelated_dates(tmp_path, monkeypatch):
+    trades_dir = tmp_path / "trades"
+    _touch_days(trades_dir, "trades", [f"2026-04-{day:02d}" for day in range(1, 31)])
+    _touch_days(trades_dir, "trades", [f"2026-05-{day:02d}" for day in range(1, 31)])
+    time_filter = backtest.TimeFilter(_ts("2026-05-21T01:00:00Z"), _ts("2026-05-21T02:00:00Z"))
+
+    def fail_if_scanned(*args, **kwargs):
+        raise AssertionError("select_files_by_utc_dates must not read file contents")
+
+    monkeypatch.setattr(backtest, "iter_rows", fail_if_scanned)
+    selected = backtest.select_files_by_utc_dates(trades_dir, backtest.utc_date_set_for_filter(time_filter), "trades")
+
+    assert [path.name for path in selected] == ["trades-2026-05-21.csv"]
+
+
+def test_missing_utc_date_raises(tmp_path):
+    trades_dir = tmp_path / "trades"
+    _touch_days(trades_dir, "trades", ["2026-05-21"])
+    date_set = {"2026-05-21", "2026-05-22"}
 
     with pytest.raises(SystemExit) as exc:
-        backtest.resolve_effective_time_filter(
-            requested,
-            trades,
-            books,
-            require_full_coverage=True,
-            coverage_tolerance_sec=60.0,
+        backtest.select_files_by_utc_dates(trades_dir, date_set, "trades")
+
+    assert "Missing trades files for UTC date(s): 2026-05-22" in str(exc.value)
+
+
+def test_row_timestamp_not_shifted(tmp_path):
+    ts = _ts("2026-05-21T01:00:00Z")
+    trade_file = tmp_path / "trades-2026-05-21.jsonl"
+    book_file = tmp_path / "books-2026-05-21.jsonl"
+    _write_jsonl(trade_file, [_trade(ts)])
+    _write_jsonl(book_file, [_book(ts)])
+    stats = backtest.Stats()
+    time_filter = backtest.TimeFilter(ts - 1, ts + 1)
+
+    events = list(
+        backtest.build_events(
+            [trade_file],
+            [book_file],
+            SYMBOL,
+            0.1,
+            stats,
+            sort_in_memory=False,
+            book_cleaning=backtest.BookCleaningOptions(bucket_ms=0.0),
+            time_filter=time_filter,
         )
-
-    message = str(exc.value)
-    assert "trades missing 2026-05-20T10:00:00Z to 2026-05-20T10:01:30Z" in message
-    assert "coverage boundary tolerance: 60.0 sec" in message
-
-
-def test_allow_partial_trims_head_but_not_middle_gap():
-    requested = _requested()
-    trades_head_missing = _selection(("2026-05-20T08:00:00Z", "2026-05-20T20:00:00Z"))
-    books_full = _selection(("2026-05-20T00:00:00Z", "2026-05-20T20:00:00Z"))
-
-    effective, alignment = backtest.resolve_effective_time_filter(
-        requested,
-        trades_head_missing,
-        books_full,
-        require_full_coverage=False,
-        coverage_tolerance_sec=60.0,
     )
-    assert effective.start_ts == _ts("2026-05-20T08:00:00Z")
-    assert alignment["partial_coverage_used"] is True
-    assert any("trimmed head" in warning for warning in alignment["warnings"])
 
-    trades_middle_gap = _selection(
-        ("2026-05-20T00:00:00Z", "2026-05-20T10:00:00Z"),
-        ("2026-05-20T10:10:00Z", "2026-05-20T20:00:00Z"),
-    )
-    with pytest.raises(SystemExit) as exc:
-        backtest.resolve_effective_time_filter(
-            requested,
-            trades_middle_gap,
-            books_full,
-            require_full_coverage=False,
-            coverage_tolerance_sec=60.0,
+    assert events
+    assert {event.ts for event in events} == {ts}
+    assert all(event.payload["ts"] == ts for event in events)
+
+
+def test_trades_books_merge_by_row_ts(tmp_path):
+    trade_file = tmp_path / "z-trades-2026-05-21.jsonl"
+    book_file = tmp_path / "a-books-2026-05-21.jsonl"
+    t1 = _ts("2026-05-21T01:00:01Z")
+    t2 = _ts("2026-05-21T01:00:00Z")
+    _write_jsonl(trade_file, [_trade(t1)])
+    _write_jsonl(book_file, [_book(t2)])
+
+    events = list(
+        backtest.build_events(
+            [trade_file],
+            [book_file],
+            SYMBOL,
+            0.1,
+            backtest.Stats(),
+            sort_in_memory=False,
+            book_cleaning=backtest.BookCleaningOptions(bucket_ms=0.0),
+            time_filter=backtest.TimeFilter(t2 - 1, t1 + 1),
         )
-    assert "missing" in str(exc.value)
+    )
+
+    assert [event.kind for event in events] == ["book", "trade"]
+    assert [event.ts for event in events] == [t2, t1]
 
 
-def test_scan_file_coverage_reads_ts_without_parsing_invalid_book_json(tmp_path):
-    path = tmp_path / "books.csv"
+def test_fast_ts_prefilter_before_normalize_book(tmp_path, monkeypatch):
+    path = tmp_path / "books-2026-05-21.csv"
     path.write_text(
         "\n".join(
             [
                 "instId,ts,bids,asks",
-                'ETH-USDT-SWAP,1776864000000,"not-json","still-not-json"',
-                'ETH-USDT-SWAP,1776864060000,"bad","bad"',
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    coverage = backtest.scan_file_coverage(path, "book", SYMBOL, 0.1, backtest.BookCleaningOptions())
-
-    assert coverage is not None
-    assert coverage.first_ts == pytest.approx(1776864000.0)
-    assert coverage.last_ts == pytest.approx(1776864060.0)
-    assert coverage.row_count == 2
-
-
-def test_book_replay_prefilters_ts_before_normalize_book(tmp_path, monkeypatch):
-    path = tmp_path / "books.csv"
-    path.write_text(
-        "\n".join(
-            [
-                "instId,ts,bids,asks",
-                'ETH-USDT-SWAP,1776864000000,"[[2500,10]]","[[2501,10]]"',
-                'ETH-USDT-SWAP,1776865000000,"not-json-after-end","bad"',
+                'ETH-USDT-SWAP,1779325200000,"[[2500,10]]","[[2501,10]]"',
+                'ETH-USDT-SWAP,1779328800000,"not-json-after-end","bad"',
             ]
         )
         + "\n",
@@ -167,7 +177,7 @@ def test_book_replay_prefilters_ts_before_normalize_book(tmp_path, monkeypatch):
             0.1,
             backtest.Stats(),
             backtest.BookCleaningOptions(),
-            backtest.TimeFilter(start_ts=1776863000.0, end_ts=1776864500.0),
+            backtest.TimeFilter(start_ts=1779325199.0, end_ts=1779325300.0),
             assume_sorted=True,
         )
     )
@@ -176,127 +186,11 @@ def test_book_replay_prefilters_ts_before_normalize_book(tmp_path, monkeypatch):
     assert calls["count"] == 1
 
 
-def test_filename_date_hint_filters_large_directory_to_padded_utc_dates(tmp_path):
-    candidates = [tmp_path / f"trades-2026-04-{day:02d}.zip" for day in range(1, 31)]
-    requested = backtest.TimeFilter(_ts("2026-04-20T00:00:00Z"), _ts("2026-04-20T01:00:00Z"))
+def test_research_only_no_trader_no_pnl():
+    module_source = inspect.getsource(backtest)
+    runtime_source = inspect.getsource(backtest.LocalA1ResearchRuntime)
 
-    filtered = backtest.filter_candidates_by_filename_date_hint(
-        candidates,
-        requested,
-        timezone_name="Asia/Shanghai",
-        padding_days=2,
-    )
-    names = {path.name for path in filtered}
-
-    assert "trades-2026-04-01.zip" not in names
-    assert names == {f"trades-2026-04-{day:02d}.zip" for day in range(18, 23)}
-
-
-def test_filename_date_hint_for_local_time_window_keeps_requested_utc_neighborhood(tmp_path):
-    candidates = [tmp_path / f"trades-2026-05-{day:02d}.zip" for day in range(1, 32)]
-    requested = backtest.TimeFilter(_ts("2026-05-20T16:00:00Z"), _ts("2026-05-20T17:00:00Z"))
-
-    filtered = backtest.filter_candidates_by_filename_date_hint(
-        candidates,
-        requested,
-        timezone_name="Asia/Shanghai",
-        padding_days=2,
-    )
-    names = {path.name for path in filtered}
-
-    assert names == {f"trades-2026-05-{day:02d}.zip" for day in range(18, 23)}
-    assert "trades-2026-05-01.zip" not in names
-
-
-def test_filename_date_hint_keeps_files_without_parseable_date(tmp_path):
-    candidates = [tmp_path / "trades-latest.zip", tmp_path / "trades-2026-04-01.zip"]
-    requested = backtest.TimeFilter(_ts("2026-04-20T00:00:00Z"), _ts("2026-04-20T01:00:00Z"))
-
-    filtered = backtest.filter_candidates_by_filename_date_hint(
-        candidates,
-        requested,
-        timezone_name="Asia/Shanghai",
-        padding_days=2,
-    )
-
-    assert tmp_path / "trades-latest.zip" in filtered
-    assert tmp_path / "trades-2026-04-01.zip" not in filtered
-
-
-def test_filename_date_hint_fallbacks_to_all_candidates_when_empty(tmp_path, capsys):
-    candidates = [tmp_path / "trades-2026-04-01.zip", tmp_path / "trades-2026-04-02.zip"]
-    requested = backtest.TimeFilter(_ts("2026-05-20T00:00:00Z"), _ts("2026-05-20T01:00:00Z"))
-
-    filtered = backtest.filter_candidates_by_filename_date_hint(
-        candidates,
-        requested,
-        timezone_name="Asia/Shanghai",
-        padding_days=0,
-    )
-    captured = capsys.readouterr()
-
-    assert filtered == candidates
-    assert "LOCAL-FILENAME-HINT-WARNING" in captured.err
-
-
-def test_select_files_full_directory_scan_skips_hint_filter(tmp_path, monkeypatch):
-    trades_dir = tmp_path / "trades"
-    trades_dir.mkdir()
-    for day in range(1, 31):
-        (trades_dir / f"trades-2026-04-{day:02d}.csv").write_text("", encoding="utf-8")
-    seen = []
-
-    def fake_get_file_coverage(path, **kwargs):
-        seen.append(path.name)
-        return backtest.FileCoverage(path=path, first_ts=_ts("2026-04-20T00:00:00Z"), last_ts=_ts("2026-04-20T01:00:00Z"))
-
-    monkeypatch.setattr(backtest, "get_file_coverage", fake_get_file_coverage)
-    summary = {}
-    backtest.select_files_for_replay(
-        trades_dir,
-        "trade",
-        SYMBOL,
-        0.1,
-        backtest.BookCleaningOptions(),
-        backtest.TimeFilter(_ts("2026-04-20T00:00:00Z"), _ts("2026-04-20T01:00:00Z")),
-        auto_discover=True,
-        coverage_tolerance_sec=60.0,
-        full_directory_coverage_scan=True,
-        filename_hint_summary=summary,
-    )
-
-    assert len(seen) == 30
-    assert summary["trades_candidates_before"] == 30
-    assert summary["trades_candidates_after"] == 30
-
-
-def test_filename_hint_only_limits_scan_candidates_final_selection_uses_row_ts(tmp_path):
-    trades_dir = tmp_path / "trades"
-    trades_dir.mkdir()
-    inside = trades_dir / "trades-2026-04-20.csv"
-    outside = trades_dir / "trades-2026-04-21.csv"
-    far = trades_dir / "trades-2026-04-01.csv"
-    inside.write_text("instId,px,sz,side,ts\nETH-USDT-SWAP,2500,1,buy,1776645000000\n", encoding="utf-8")
-    outside.write_text("instId,px,sz,side,ts\nETH-USDT-SWAP,2500,1,buy,1776902400000\n", encoding="utf-8")
-    far.write_text("instId,px,sz,side,ts\nETH-USDT-SWAP,2500,1,buy,1775001600000\n", encoding="utf-8")
-    requested = backtest.TimeFilter(_ts("2026-04-20T00:00:00Z"), _ts("2026-04-20T01:00:00Z"))
-    summary = {}
-
-    selection = backtest.select_files_for_replay(
-        trades_dir,
-        "trade",
-        SYMBOL,
-        0.1,
-        backtest.BookCleaningOptions(),
-        requested,
-        auto_discover=True,
-        coverage_tolerance_sec=0.0,
-        filename_date_hint_enabled=True,
-        filename_date_hint_padding_days=1,
-        full_directory_coverage_scan=False,
-        filename_hint_summary=summary,
-    )
-
-    assert summary["trades_candidates_before"] == 3
-    assert summary["trades_candidates_after"] == 2
-    assert selection.paths == [inside]
+    assert "IcebergTrader(" not in module_source
+    assert "process_signal(" not in runtime_source
+    assert "opens_or_closes_positions" in module_source
+    assert "simulates_pnl" in module_source
