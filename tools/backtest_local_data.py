@@ -10,6 +10,14 @@ runtime semantics:
 - handle returned A1 research events like main.py does
 - never instantiate IcebergTrader
 - never simulate open/close orders
+
+The local book replay path includes a cleaning layer to make historical files
+behave closer to the live OKX `books` channel used by main.py:
+
+- default depth limit: 400 levels per side
+- default book event cadence: 100ms buckets
+- historical snapshots can be converted into deltas before entering MarketContext
+- contract quantities are converted into ETH amounts using the same multiplier
 """
 
 from __future__ import annotations
@@ -23,7 +31,7 @@ import os
 import sys
 import time
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -46,9 +54,21 @@ class ReplayEvent:
 
 
 @dataclass
+class BookCleaningOptions:
+    event_mode: str = "auto"
+    depth_limit: int = 400
+    bucket_ms: float = 100.0
+    snapshot_infer_min_levels: int = 100
+
+
+@dataclass
 class Stats:
     trades: int = 0
     books: int = 0
+    raw_book_rows: int = 0
+    book_bucket_coalesces: int = 0
+    book_snapshot_rebuilds: int = 0
+    book_zero_delete_levels: int = 0
     research_events: int = 0
     a1_iceberg_events: int = 0
     spoofing_withdrawal_events: int = 0
@@ -67,6 +87,10 @@ class Stats:
         return {
             "trades": self.trades,
             "books": self.books,
+            "raw_book_rows": self.raw_book_rows,
+            "book_bucket_coalesces": self.book_bucket_coalesces,
+            "book_snapshot_rebuilds": self.book_snapshot_rebuilds,
+            "book_zero_delete_levels": self.book_zero_delete_levels,
             "research_events": self.research_events,
             "a1_iceberg_events": self.a1_iceberg_events,
             "spoofing_withdrawal_events": self.spoofing_withdrawal_events,
@@ -119,12 +143,7 @@ class LocalA1ResearchRuntime:
         self.handle_research_event(event, current_price=current_price, source="book", stats=stats)
 
     def handle_research_event(self, event: dict[str, Any] | None, current_price: float, source: str, stats: Stats) -> None:
-        """Research-only equivalent of main.py handle_signal().
-
-        The current live main.py returns immediately for ICEBERG_ABSORPTION events
-        and keeps A1 single-event trading disabled. This method keeps the same
-        semantics: record and log research events, but never dispatch execution.
-        """
+        """Research-only equivalent of main.py handle_signal()."""
         if not event:
             return
 
@@ -162,7 +181,6 @@ class LocalA1ResearchRuntime:
             )
             return
 
-        # Keep visibility for unexpected returns, but do not treat them as trades.
         stats.ignored_engine_returns += 1
         self._write_research_event(event, current_price=current_price, source=source, ignored=True)
 
@@ -182,6 +200,105 @@ class LocalA1ResearchRuntime:
         self.research_events_file.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) + "\n")
 
 
+class BookEventCleaner:
+    """Normalize historical book rows to live-like OKX `books` update events."""
+
+    def __init__(self, options: BookCleaningOptions, stats: Stats):
+        self.options = options
+        self.stats = stats
+        self.pending_bucket: int | None = None
+        self.pending_book: dict[str, Any] | None = None
+        self.prev_snapshot_bids: dict[float, float] = {}
+        self.prev_snapshot_asks: dict[float, float] = {}
+
+    def push(self, raw_book: dict[str, Any]) -> list[dict[str, Any]]:
+        if self.options.bucket_ms <= 0:
+            cleaned = self._clean_for_replay(raw_book)
+            return [cleaned] if cleaned else []
+
+        bucket = int(float(raw_book["ts"]) * 1000.0 // float(self.options.bucket_ms))
+        if self.pending_book is None:
+            self.pending_bucket = bucket
+            self.pending_book = raw_book
+            return []
+
+        if bucket == self.pending_bucket:
+            self.pending_book = self._coalesce_raw_books(self.pending_book, raw_book)
+            self.stats.book_bucket_coalesces += 1
+            return []
+
+        cleaned = self._clean_for_replay(self.pending_book)
+        self.pending_bucket = bucket
+        self.pending_book = raw_book
+        return [cleaned] if cleaned else []
+
+    def flush(self) -> list[dict[str, Any]]:
+        if self.pending_book is None:
+            return []
+        cleaned = self._clean_for_replay(self.pending_book)
+        self.pending_book = None
+        self.pending_bucket = None
+        return [cleaned] if cleaned else []
+
+    def _coalesce_raw_books(self, base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        base_mode = base.get("_mode", "delta")
+        incoming_mode = incoming.get("_mode", "delta")
+        if incoming_mode == "snapshot":
+            return incoming
+        if base_mode == "snapshot":
+            return self._apply_delta_to_snapshot(base, incoming)
+
+        bids = merge_level_updates(base.get("bids", []), incoming.get("bids", []), side="bids", depth_limit=0)
+        asks = merge_level_updates(base.get("asks", []), incoming.get("asks", []), side="asks", depth_limit=0)
+        inferred_mode = "snapshot" if len(bids) + len(asks) >= self.options.snapshot_infer_min_levels else "delta"
+        return {
+            "bids": bids,
+            "asks": asks,
+            "ts": incoming["ts"],
+            "recv_ts": incoming.get("recv_ts", incoming["ts"]),
+            "_mode": inferred_mode,
+        }
+
+    def _apply_delta_to_snapshot(self, snapshot: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
+        bids = {float(price): float(size) for price, size in snapshot.get("bids", []) if float(size) > 0}
+        asks = {float(price): float(size) for price, size in snapshot.get("asks", []) if float(size) > 0}
+        apply_level_updates_to_state(bids, delta.get("bids", []))
+        apply_level_updates_to_state(asks, delta.get("asks", []))
+        return {
+            "bids": sort_levels_from_state(bids, side="bids", depth_limit=self.options.depth_limit),
+            "asks": sort_levels_from_state(asks, side="asks", depth_limit=self.options.depth_limit),
+            "ts": delta["ts"],
+            "recv_ts": delta.get("recv_ts", delta["ts"]),
+            "_mode": "snapshot",
+        }
+
+    def _clean_for_replay(self, raw_book: dict[str, Any]) -> dict[str, Any] | None:
+        mode = raw_book.get("_mode", "delta")
+        if mode == "snapshot":
+            self.stats.book_snapshot_rebuilds += 1
+            return self._snapshot_to_live_delta(raw_book)
+
+        bids = normalize_levels_for_replay(raw_book.get("bids", []), side="bids", depth_limit=0)
+        asks = normalize_levels_for_replay(raw_book.get("asks", []), side="asks", depth_limit=0)
+        if not bids and not asks:
+            return None
+        return {"bids": bids, "asks": asks, "ts": raw_book["ts"], "recv_ts": raw_book.get("recv_ts", raw_book["ts"])}
+
+    def _snapshot_to_live_delta(self, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        new_bids = levels_to_state(snapshot.get("bids", []), side="bids", depth_limit=self.options.depth_limit)
+        new_asks = levels_to_state(snapshot.get("asks", []), side="asks", depth_limit=self.options.depth_limit)
+
+        bid_delta, bid_deletes = diff_states(self.prev_snapshot_bids, new_bids, side="bids")
+        ask_delta, ask_deletes = diff_states(self.prev_snapshot_asks, new_asks, side="asks")
+        self.stats.book_zero_delete_levels += bid_deletes + ask_deletes
+
+        self.prev_snapshot_bids = new_bids
+        self.prev_snapshot_asks = new_asks
+        if not bid_delta and not ask_delta:
+            return None
+        return {"bids": bid_delta, "asks": ask_delta, "ts": snapshot["ts"], "recv_ts": snapshot.get("recv_ts", snapshot["ts"])}
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Replay local OKX historical data through the A1 research-only engine path.")
     p.add_argument("--symbol", default="ETH-USDT-SWAP")
@@ -196,6 +313,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--allow-missing-books", action="store_true")
     p.add_argument("--max-events", type=int, default=0)
     p.add_argument("--progress-every", type=int, default=100_000)
+    p.add_argument("--books-event-mode", choices=["auto", "delta", "snapshot"], default="auto", help="How historical book rows should be interpreted before replay. Default: auto.")
+    p.add_argument("--books-depth-limit", type=int, default=400, help="Depth limit per side for snapshot-style historical books. Default: 400.")
+    p.add_argument("--books-bucket-ms", type=float, default=100.0, help="Coalesce book updates into this many milliseconds to mimic OKX live books cadence. Use 0 to disable. Default: 100.")
+    p.add_argument("--books-snapshot-infer-min-levels", type=int, default=100, help="In auto mode, treat a coalesced book event as snapshot once it contains at least this many levels. Default: 100.")
     p.add_argument(
         "--use-shared-research-logs",
         action="store_true",
@@ -228,11 +349,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger = get_logger("BacktestLocalData")
 
     multiplier = args.contract_multiplier or CONTRACT_MULTIPLIERS.get(args.symbol, 1.0)
+    book_cleaning = BookCleaningOptions(
+        event_mode=str(args.books_event_mode),
+        depth_limit=max(1, int(args.books_depth_limit)),
+        bucket_ms=float(args.books_bucket_ms),
+        snapshot_infer_min_levels=max(1, int(args.books_snapshot_infer_min_levels)),
+    )
     research_events_path = out_dir / "research_events.jsonl"
     summary_path = out_dir / "summary.json"
 
     logger.info("[LOCAL-A1-RESEARCH-START] symbol=%s trades=%s books=%s out=%s", args.symbol, trades_path, books_path, out_dir)
     logger.info("[LOCAL-A1-RESEARCH-MODE] no_main_py=true no_websocket=true no_iceberg_trader=true no_execution=true")
+    logger.info("[LOCAL-BOOK-CLEANING] %s", asdict(book_cleaning))
 
     runtime = LocalA1ResearchRuntime(symbol=str(args.symbol), research_events_path=research_events_path)
     stats = Stats()
@@ -245,6 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             float(multiplier),
             stats,
             bool(args.sort_in_memory),
+            book_cleaning,
         )
         for idx, event in enumerate(events, start=1):
             if args.max_events and idx > args.max_events:
@@ -256,10 +385,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 runtime.on_book_update(event.payload, stats)
             if args.progress_every and idx % args.progress_every == 0:
                 logger.info(
-                    "[LOCAL-A1-RESEARCH-PROGRESS] events=%d trades=%d books=%d research_events=%d a1_icebergs=%d last=%s",
+                    "[LOCAL-A1-RESEARCH-PROGRESS] events=%d trades=%d books=%d raw_book_rows=%d research_events=%d a1_icebergs=%d last=%s",
                     idx,
                     stats.trades,
                     stats.books,
+                    stats.raw_book_rows,
                     stats.research_events,
                     stats.a1_iceberg_events,
                     fmt_utc(stats.last_ts),
@@ -274,6 +404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "contract_multiplier": multiplier,
         "trades_path": str(trades_path),
         "books_path": str(books_path) if books_path else "",
+        "book_cleaning": asdict(book_cleaning),
         "research_events_path": str(research_events_path),
         "research_jsonl_paths": {
             "phase1_candidates": os.getenv("PHASE1_CANDIDATE_RECORDER_JSONL_PATH", "logs/research/phase1_candidates.jsonl"),
@@ -297,7 +428,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, research_dir: Path) -> None:
-    # Safety first: local replay must never enable real execution.
     os.environ.setdefault("REAL_EXECUTION_ENABLED", "false")
     os.environ.setdefault("PHASE3_REAL_TRADING_ENABLED", "false")
     os.environ.setdefault("VIRTUAL_SHADOW_MODE", "false")
@@ -306,8 +436,6 @@ def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, resea
     if args.use_shared_research_logs:
         return
 
-    # Isolate research JSONL files per local run. This keeps offline runs from
-    # mixing with live logs/research outputs.
     os.environ["PHASE1_CANDIDATE_RECORDER_WRITE_JSONL"] = "true"
     os.environ["PHASE1_CANDIDATE_RECORDER_JSONL_PATH"] = str(research_dir / "phase1_candidates.jsonl")
     os.environ["A1_REACTION_EVENT_RECORDER_WRITE_JSONL"] = "true"
@@ -315,9 +443,17 @@ def configure_runtime_environment(args: argparse.Namespace, out_dir: Path, resea
     os.environ["A1_DYNAMIC_PARAM_PREVIEW_JSON_PATH"] = str(out_dir / "runtime_state" / "a1_dynamic_params.json")
 
 
-def build_events(trades_path: Path, books_path: Path | None, symbol: str, multiplier: float, stats: Stats, sort_in_memory: bool) -> Iterator[ReplayEvent]:
+def build_events(
+    trades_path: Path,
+    books_path: Path | None,
+    symbol: str,
+    multiplier: float,
+    stats: Stats,
+    sort_in_memory: bool,
+    book_cleaning: BookCleaningOptions,
+) -> Iterator[ReplayEvent]:
     trades = iter_trade_events(trades_path, symbol, multiplier, stats)
-    books = iter_book_events(books_path, symbol, multiplier, stats) if books_path else iter(())
+    books = iter_book_events(books_path, symbol, multiplier, stats, book_cleaning) if books_path else iter(())
     if sort_in_memory:
         all_events = list(trades) + list(books)
         all_events.sort()
@@ -340,18 +476,25 @@ def iter_trade_events(path: Path, symbol: str, multiplier: float, stats: Stats) 
             stats.malformed_rows += 1
 
 
-def iter_book_events(path: Path, symbol: str, multiplier: float, stats: Stats) -> Iterator[ReplayEvent]:
+def iter_book_events(path: Path, symbol: str, multiplier: float, stats: Stats, options: BookCleaningOptions) -> Iterator[ReplayEvent]:
     seq = 0
+    cleaner = BookEventCleaner(options=options, stats=stats)
     for row in iter_rows(path):
         try:
-            book = normalize_book(row, symbol, multiplier)
-            if not book:
+            stats.raw_book_rows += 1
+            raw_book = normalize_book(row, symbol, multiplier, options)
+            if not raw_book:
                 continue
-            seq += 1
-            stats.books += 1
-            yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
+            for book in cleaner.push(raw_book):
+                seq += 1
+                stats.books += 1
+                yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
         except Exception:
             stats.malformed_rows += 1
+    for book in cleaner.flush():
+        seq += 1
+        stats.books += 1
+        yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
 
 
 def merge_sorted(a_iter: Iterator[ReplayEvent], b_iter: Iterator[ReplayEvent]) -> Iterator[ReplayEvent]:
@@ -426,16 +569,45 @@ def normalize_trade(row: Mapping[str, Any], symbol: str, multiplier: float) -> d
     return {"price": price, "size": raw_size * multiplier, "side": side, "ts": ts, "recv_ts": ts, "raw_size": raw_size}
 
 
-def normalize_book(row: Mapping[str, Any], symbol: str, multiplier: float) -> dict[str, Any] | None:
+def normalize_book(row: Mapping[str, Any], symbol: str, multiplier: float, options: BookCleaningOptions) -> dict[str, Any] | None:
     inst = get_any(row, "instId", "inst_id", "symbol", "instrument")
     if inst and str(inst) != symbol:
         return None
     ts = normalize_ts(get_any(row, "ts", "timestamp", "time", "created_time", "0"))
     bids = parse_levels(get_any(row, "bids", "bid", "bid_levels", "1"), multiplier)
     asks = parse_levels(get_any(row, "asks", "ask", "ask_levels", "2"), multiplier)
+
+    # Some historical exports store one level per CSV row instead of nested bids/asks arrays.
+    if not bids and not asks:
+        side = str(get_any(row, "side", "book_side", "3") or "").lower()
+        price = to_float(get_any(row, "px", "price", "p", "4"))
+        raw_size = to_float(get_any(row, "sz", "size", "qty", "quantity", "amount", "5"))
+        if price > 0 and side in {"bid", "bids", "buy"}:
+            bids = [[price, raw_size * multiplier]]
+        elif price > 0 and side in {"ask", "asks", "sell"}:
+            asks = [[price, raw_size * multiplier]]
+
     if ts <= 0 or (not bids and not asks):
         return None
-    return {"bids": bids, "asks": asks, "ts": ts, "recv_ts": ts}
+
+    action = str(get_any(row, "action", "type", "event_type", "op") or "").lower()
+    if options.event_mode != "auto":
+        mode = options.event_mode
+    elif action in {"snapshot", "full", "partial"}:
+        mode = "snapshot"
+    elif action in {"update", "delta", "incremental"}:
+        mode = "delta"
+    else:
+        mode = "snapshot" if len(bids) + len(asks) >= options.snapshot_infer_min_levels else "delta"
+
+    if mode == "snapshot":
+        bids = normalize_levels_for_replay(bids, side="bids", depth_limit=options.depth_limit)
+        asks = normalize_levels_for_replay(asks, side="asks", depth_limit=options.depth_limit)
+    else:
+        bids = normalize_levels_for_replay(bids, side="bids", depth_limit=0)
+        asks = normalize_levels_for_replay(asks, side="asks", depth_limit=0)
+
+    return {"bids": bids, "asks": asks, "ts": ts, "recv_ts": ts, "_mode": mode}
 
 
 def parse_levels(value: Any, multiplier: float) -> list[list[float]]:
@@ -458,6 +630,57 @@ def parse_levels(value: Any, multiplier: float) -> list[list[float]]:
             if price > 0:
                 levels.append([price, qty * multiplier])
     return levels
+
+
+def merge_level_updates(base_levels: Sequence[Sequence[float]], incoming_levels: Sequence[Sequence[float]], side: str, depth_limit: int) -> list[list[float]]:
+    state: dict[float, float] = {}
+    apply_level_updates_to_state(state, base_levels)
+    apply_level_updates_to_state(state, incoming_levels, keep_zero=True)
+    return sort_levels_from_state(state, side=side, depth_limit=depth_limit, keep_zero=True)
+
+
+def apply_level_updates_to_state(state: dict[float, float], levels: Sequence[Sequence[float]], keep_zero: bool = False) -> None:
+    for item in levels:
+        if len(item) < 2:
+            continue
+        price = float(item[0])
+        size = float(item[1])
+        if size == 0 and not keep_zero:
+            state.pop(price, None)
+        else:
+            state[price] = size
+
+
+def normalize_levels_for_replay(levels: Sequence[Sequence[float]], side: str, depth_limit: int) -> list[list[float]]:
+    state = {float(price): float(size) for price, size in levels if float(price) > 0}
+    return sort_levels_from_state(state, side=side, depth_limit=depth_limit, keep_zero=True)
+
+
+def levels_to_state(levels: Sequence[Sequence[float]], side: str, depth_limit: int) -> dict[float, float]:
+    normalized = normalize_levels_for_replay(levels, side=side, depth_limit=depth_limit)
+    return {float(price): float(size) for price, size in normalized if float(size) > 0}
+
+
+def sort_levels_from_state(state: Mapping[float, float], side: str, depth_limit: int, keep_zero: bool = False) -> list[list[float]]:
+    reverse = side == "bids"
+    items = [(float(price), float(size)) for price, size in state.items() if keep_zero or float(size) > 0]
+    items.sort(key=lambda x: x[0], reverse=reverse)
+    if depth_limit and depth_limit > 0:
+        items = items[:depth_limit]
+    return [[price, size] for price, size in items]
+
+
+def diff_states(old: Mapping[float, float], new: Mapping[float, float], side: str) -> tuple[list[list[float]], int]:
+    delta: list[list[float]] = []
+    delete_count = 0
+    for price, size in new.items():
+        if old.get(price) != size:
+            delta.append([float(price), float(size)])
+    for price in old.keys() - new.keys():
+        delta.append([float(price), 0.0])
+        delete_count += 1
+    delta.sort(key=lambda x: x[0], reverse=(side == "bids"))
+    return delta, delete_count
 
 
 def get_any(row: Mapping[str, Any], *names: str) -> Any:
