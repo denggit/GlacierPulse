@@ -3,17 +3,16 @@
 """Download OKX official historical data files to local storage.
 
 OKX historical data download pages can change their concrete file URL layout.
-This tool therefore supports two stable workflows:
+This tool therefore supports three workflows:
 
-1) URL template mode
-   Copy one official download URL from OKX, replace the date with {date}, and run:
+1) Direct URL mode
+   Paste one or more official OKX download URLs directly into the command:
 
    python tools/download_okx_historical_data.py \
-     --kind trades \
+     --kind books \
      --symbol ETH-USDT-SWAP \
-     --start-date 2025-05-01 \
-     --end-date 2025-05-31 \
-     --url-template 'https://.../ETH-USDT-SWAP/.../{date}....zip'
+     --url 'https://.../one-okx-file.zip' \
+     --url 'https://.../another-okx-file.zip'
 
 2) Manifest mode
    Prepare a text file with one official URL per line:
@@ -22,6 +21,16 @@ This tool therefore supports two stable workflows:
      --kind books \
      --symbol ETH-USDT-SWAP \
      --manifest data/okx/manifests/eth_books_urls.txt
+
+3) URL template mode
+   Use this only when official URLs follow a stable date pattern:
+
+   python tools/download_okx_historical_data.py \
+     --kind trades \
+     --symbol ETH-USDT-SWAP \
+     --start-date 2025-05-01 \
+     --end-date 2025-05-31 \
+     --url-template 'https://.../ETH-USDT-SWAP/.../{date}....zip'
 
 Downloaded files are saved under:
     data/okx/raw/<kind>/<symbol>/
@@ -68,6 +77,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--start-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template.")
     p.add_argument("--end-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template.")
     p.add_argument("--url-template", help="Official OKX URL template. Supports {date}, {yyyymmdd}, {symbol}, {kind}.")
+    p.add_argument("--url", action="append", default=[], help="One official OKX download URL. Can be repeated multiple times.")
     p.add_argument("--manifest", type=Path, help="Text/JSONL manifest containing official OKX download URLs.")
     p.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT, help="Default: data/okx/raw")
     p.add_argument("--overwrite", action="store_true", help="Re-download existing files.")
@@ -82,7 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     tasks = list(build_tasks(args))
     if not tasks:
-        raise SystemExit("No download tasks generated. Provide --url-template with date range or --manifest.")
+        raise SystemExit("No download tasks generated. Provide --url, --manifest, or --url-template with date range.")
 
     manifest_out = args.out_root / args.kind / args.symbol / "download_manifest.jsonl"
     manifest_out.parent.mkdir(parents=True, exist_ok=True)
@@ -111,6 +121,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def build_tasks(args: argparse.Namespace) -> Iterable[DownloadTask]:
     out_dir = args.out_root / args.kind / args.symbol
+
+    for idx, url in enumerate(args.url or [], start=1):
+        clean_url = str(url).strip()
+        if clean_url:
+            yield DownloadTask(
+                url=clean_url,
+                output_path=out_dir / filename_from_url(clean_url, fallback=f"{args.symbol}_{args.kind}_url_{idx:06d}.dat"),
+            )
+
+    if args.manifest:
+        for idx, url in enumerate(read_manifest_urls(args.manifest), start=1):
+            yield DownloadTask(url=url, output_path=out_dir / filename_from_url(url, fallback=f"{args.symbol}_{args.kind}_manifest_{idx:06d}.dat"))
+
     if args.url_template:
         if not args.start_date or not args.end_date:
             raise SystemExit("--start-date and --end-date are required with --url-template")
@@ -122,10 +145,6 @@ def build_tasks(args: argparse.Namespace) -> Iterable[DownloadTask]:
                 kind=args.kind,
             )
             yield DownloadTask(url=url, output_path=out_dir / filename_from_url(url, fallback=f"{args.symbol}_{args.kind}_{d.isoformat()}.dat"), date_tag=d.isoformat())
-        return
-    if args.manifest:
-        for idx, url in enumerate(read_manifest_urls(args.manifest), start=1):
-            yield DownloadTask(url=url, output_path=out_dir / filename_from_url(url, fallback=f"{args.symbol}_{args.kind}_{idx:06d}.dat"))
 
 
 def download_one(task: DownloadTask, overwrite: bool, timeout: int, retries: int) -> dict[str, object]:
