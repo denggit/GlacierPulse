@@ -14,6 +14,7 @@ from src.research.a1_edge.schema import parse_bool, parse_float
 
 
 DEFAULT_WINDOWS_SEC = (900, 3600, 14400)
+A3_PREVIEW_BREAKOUT_WINDOW_SEC = 3600
 WINDOW_LABELS = {
     900: "15m",
     3600: "1h",
@@ -139,7 +140,7 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
     )
     if not bars or anchor_ts <= 0 or direction not in {"BUY", "SELL"} or zone_low <= 0 or zone_high <= 0:
         return default
-    if anchor_ts > float(bars[-1]["timestamp"]):
+    if anchor_ts < float(bars[0]["timestamp"]) or anchor_ts > float(bars[-1]["timestamp"]):
         return default
 
     threshold_u = max(zone_width * 0.5, 1.0)
@@ -154,8 +155,12 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
 
     breakout_price = zone_high + threshold_u if direction == "BUY" else zone_low - threshold_u
     future = bars[start_idx:]
+    future_window = [
+        bar for bar in future
+        if float(bar["timestamp"]) <= anchor_ts + A3_PREVIEW_BREAKOUT_WINDOW_SEC
+    ]
     breakout_ts = 0.0
-    for bar in future:
+    for bar in future_window:
         if direction == "BUY" and float(bar["high"]) >= breakout_price:
             breakout_ts = float(bar["timestamp"])
             break

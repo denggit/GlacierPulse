@@ -68,8 +68,7 @@ class ZoneA2StateClassifier:
             and book_depth_state == "BOOK_DEPTH_VALID"
             and context_alignment != "COUNTER_TREND"
         )
-        explicit_validated_candidate = parse_bool(result.get("a2_validated_candidate_flag"))
-        validated_candidate = eligible and (explicit_validated_candidate or computed_validated_candidate)
+        validated_candidate = computed_validated_candidate
 
         event_ts = parse_float(result.get("reaction_event_ts"))
         state_ts = self._state_ts(result)
@@ -380,10 +379,10 @@ class ZoneA2StateClassifier:
     ) -> str:
         if not eligible:
             return "NON_A2"
-        if clean_hold and not sweep:
-            return "CLEAN_HOLD_NO_SWEEP"
         if failed_reclaim:
             return "FAILED_RECLAIM"
+        if clean_hold and not sweep:
+            return "CLEAN_HOLD_NO_SWEEP"
         if sweep and not reclaim:
             return "SWEEP_NO_RECLAIM"
         if sweep and reclaim and not retest:
@@ -403,6 +402,8 @@ class ZoneA2StateClassifier:
         range_15m = parse_float(row.get("mfe_15m_u")) + abs(parse_float(row.get("mae_15m_u")))
         range_1h = parse_float(row.get("mfe_1h_u")) + abs(parse_float(row.get("mae_1h_u")))
         range_4h = parse_float(row.get("mfe_4h_u")) + abs(parse_float(row.get("mae_4h_u")))
+        is_complete_15m = parse_bool(row.get("is_complete_15m"))
+        _is_complete_1h = parse_bool(row.get("is_complete_1h"))
         zone_width = max(
             parse_float(row.get("zone_width")),
             parse_float(row.get("zone_upper")) - parse_float(row.get("zone_lower")),
@@ -416,6 +417,9 @@ class ZoneA2StateClassifier:
         if not eligible:
             state = "NON_A2"
             reason = "not_a2_pre_pool"
+        elif not is_complete_15m:
+            state = "INSUFFICIENT_FUTURE_DATA"
+            reason = "incomplete_15m_forward_window"
         elif failed_reclaim or book_depth_state == "BOOK_DEPTH_MISSING" or mae_15m_ratio >= 3.0:
             state = "FAILED_EXPANSION"
             reason = "failed_reclaim_or_book_missing_or_mae_expansion"

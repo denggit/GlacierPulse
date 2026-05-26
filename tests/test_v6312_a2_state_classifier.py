@@ -139,7 +139,7 @@ def test_a2_observe_priority_high_and_watch():
     high = _classify(
         {
             "a2_pre_pool_eligible": True,
-            "a2_validated_candidate_flag": True,
+            "has_clean_hold": True,
             "a2_context_alignment": "ALIGNED",
             "a2_book_depth_state": "BOOK_DEPTH_VALID",
         }
@@ -147,7 +147,7 @@ def test_a2_observe_priority_high_and_watch():
     watch = _classify(
         {
             "a2_pre_pool_eligible": True,
-            "a2_validated_candidate_flag": True,
+            "has_clean_hold": True,
             "a2_context_alignment": "MIXED_OR_UNKNOWN",
             "a2_book_depth_state": "BOOK_DEPTH_VALID",
         }
@@ -155,6 +155,21 @@ def test_a2_observe_priority_high_and_watch():
 
     assert high["a2_observe_priority"] == "A2_HIGH"
     assert watch["a2_observe_priority"] == "A2_WATCH"
+
+
+def test_explicit_validated_candidate_input_does_not_override_current_rules():
+    row = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "a2_validated_candidate_flag": True,
+            "has_clean_hold": False,
+            "a2_book_depth_state": "BOOK_DEPTH_UNKNOWN",
+            "a2_context_alignment": "ALIGNED",
+        }
+    )
+
+    assert row["a2_validated_candidate_flag"] is False
+    assert row["a2_observe_priority"] not in {"A2_HIGH", "A2_WATCH"}
 
 
 def test_a2_observe_priority_block_reason_precedence_and_low():
@@ -245,11 +260,19 @@ def test_a2_sweep_reclaim_quality():
         }
     )
     failed = _classify({"a2_pre_pool_eligible": True, "reaction_type": "A1_REACTION_FAILED_RECLAIM"})
+    clean_and_failed = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "has_clean_hold": True,
+            "has_failed_reclaim": True,
+        }
+    )
 
     assert clean_no_sweep["a2_sweep_reclaim_quality"] == "CLEAN_HOLD_NO_SWEEP"
     assert sweep_no_reclaim["a2_sweep_reclaim_quality"] == "SWEEP_NO_RECLAIM"
     assert sweep_reclaim_retest["a2_sweep_reclaim_quality"] == "SWEEP_RECLAIM_RETEST"
     assert failed["a2_sweep_reclaim_quality"] == "FAILED_RECLAIM"
+    assert clean_and_failed["a2_sweep_reclaim_quality"] == "FAILED_RECLAIM"
 
 
 def test_a2_ready_for_a3_watch():
@@ -313,6 +336,7 @@ def test_no_future_gate_fields_do_not_change_with_forward_metrics():
         "zone_lower": 99,
         "zone_upper": 101,
         "zone_width": 2,
+        "is_complete_15m": True,
     }
     quiet = _classify({**base, "mfe_15m_u": 1, "mae_15m_u": -1})
     volatile = _classify({**base, "mfe_15m_u": 20, "mae_15m_u": -10})
@@ -321,3 +345,36 @@ def test_no_future_gate_fields_do_not_change_with_forward_metrics():
     assert quiet["a2_risk_tier"] == volatile["a2_risk_tier"]
     assert quiet["a2_ready_for_a3_watch_flag"] == volatile["a2_ready_for_a3_watch_flag"]
     assert quiet["a2_compression_state"] != volatile["a2_compression_state"]
+
+
+def test_compression_requires_complete_15m_forward_window():
+    incomplete = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "has_clean_hold": True,
+            "a2_book_depth_state": "BOOK_DEPTH_VALID",
+            "zone_lower": 99,
+            "zone_upper": 101,
+            "zone_width": 2,
+            "mfe_15m_u": 0,
+            "mae_15m_u": 0,
+            "is_complete_15m": False,
+        }
+    )
+    complete = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "has_clean_hold": True,
+            "a2_book_depth_state": "BOOK_DEPTH_VALID",
+            "zone_lower": 99,
+            "zone_upper": 101,
+            "zone_width": 2,
+            "mfe_15m_u": 1,
+            "mae_15m_u": -1,
+            "is_complete_15m": True,
+        }
+    )
+
+    assert incomplete["a2_compression_state"] == "INSUFFICIENT_FUTURE_DATA"
+    assert incomplete["a2_compression_reason"] == "incomplete_15m_forward_window"
+    assert complete["a2_compression_state"] == "COMPRESSING"
