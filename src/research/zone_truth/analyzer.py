@@ -96,6 +96,14 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a2_context_alignment.csv", self.group_rows(rows, "a2_context_alignment"), ["a2_context_alignment"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_strong_a1_tier.csv", self.group_rows(rows, "strong_a1_tier"), ["strong_a1_tier"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a2_validated_candidate.csv", self.group_rows(rows, "a2_validated_candidate_flag"), ["a2_validated_candidate_flag"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_observe_priority.csv", self.group_rows(rows, "a2_observe_priority"), ["a2_observe_priority"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_risk_tier.csv", self.group_rows(rows, "a2_risk_tier"), ["a2_risk_tier"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_block_reason.csv", self.group_rows(rows, "a2_block_reason"), ["a2_block_reason"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_sweep_reclaim_quality.csv", self.group_rows(rows, "a2_sweep_reclaim_quality"), ["a2_sweep_reclaim_quality"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_compression_state.csv", self.group_rows(rows, "a2_compression_state"), ["a2_compression_state"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_ready_for_a3_watch.csv", self.group_rows(rows, "a2_ready_for_a3_watch_flag"), ["a2_ready_for_a3_watch_flag"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_watch_priority.csv", self.group_rows(rows, "a3_watch_priority"), ["a3_watch_priority"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_breakout_after_a2.csv", self.group_rows(rows, "a3_preview_breakout_after_a2_flag"), ["a3_preview_breakout_after_a2_flag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -123,6 +131,17 @@ class ZoneTruthAnalyzer:
         a2_book_depth_state_distribution = dict(Counter(str(row.get("a2_book_depth_state") or "UNKNOWN") for row in rows))
         a2_context_alignment_distribution = dict(Counter(str(row.get("a2_context_alignment") or "MIXED_OR_UNKNOWN") for row in rows))
         strong_a1_tier_distribution = dict(Counter(str(row.get("strong_a1_tier") or "UNKNOWN") for row in rows))
+        a2_observe_priority_distribution = dict(Counter(str(row.get("a2_observe_priority") or "UNKNOWN") for row in rows))
+        a2_risk_tier_distribution = dict(Counter(str(row.get("a2_risk_tier") or "UNKNOWN") for row in rows))
+        a2_block_reason_distribution = dict(Counter(str(row.get("a2_block_reason") if row.get("a2_block_reason") not in (None, "") else "NONE") for row in rows))
+        a2_sweep_reclaim_quality_distribution = dict(Counter(str(row.get("a2_sweep_reclaim_quality") or "UNKNOWN") for row in rows))
+        a2_compression_state_distribution = dict(Counter(str(row.get("a2_compression_state") or "UNKNOWN") for row in rows))
+        a3_watch_priority_distribution = dict(Counter(str(row.get("a3_watch_priority") or "NONE") for row in rows))
+        reaction_rows = [row for row in rows if self._is_reaction_row(row)]
+        reaction_rows_without_reaction_event_ts_count = sum(1 for row in reaction_rows if parse_float(row.get("reaction_event_ts")) <= 0)
+        reaction_event_ts_invalid_count_on_reaction_rows = sum(
+            1 for row in reaction_rows if not parse_bool(row.get("reaction_event_ts_valid"), default=True)
+        )
         forward_summary = {
             "15m": self._forward_summary(rows, "15m"),
             "1h": self._forward_summary(rows, "1h"),
@@ -143,12 +162,24 @@ class ZoneTruthAnalyzer:
             "a2_book_depth_state_distribution": a2_book_depth_state_distribution,
             "a2_context_alignment_distribution": a2_context_alignment_distribution,
             "strong_a1_tier_distribution": strong_a1_tier_distribution,
+            "a2_observe_priority_distribution": a2_observe_priority_distribution,
+            "a2_risk_tier_distribution": a2_risk_tier_distribution,
+            "a2_block_reason_distribution": a2_block_reason_distribution,
+            "a2_sweep_reclaim_quality_distribution": a2_sweep_reclaim_quality_distribution,
+            "a2_compression_state_distribution": a2_compression_state_distribution,
+            "a3_watch_priority_distribution": a3_watch_priority_distribution,
             "a2_validated_candidate_count": sum(1 for row in rows if parse_bool(row.get("a2_validated_candidate_flag"))),
             "a2_clean_hold_count": sum(1 for row in rows if parse_bool(row.get("a2_clean_hold_flag"))),
             "a2_failed_reclaim_count": sum(1 for row in rows if parse_bool(row.get("a2_failed_reclaim_flag"))),
+            "a2_ready_for_a3_watch_count": sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag"))),
+            "a3_preview_breakout_after_a2_count": sum(1 for row in rows if parse_bool(row.get("a3_preview_breakout_after_a2_flag"))),
             "a2_book_depth_missing_count": sum(1 for row in rows if str(row.get("a2_book_depth_state")) == "BOOK_DEPTH_MISSING"),
             "reaction_events_outside_kline_range_count": sum(1 for row in rows if parse_bool(row.get("reaction_event_ts_outside_kline_range"))),
-            "reaction_event_ts_invalid_count": sum(1 for row in rows if not parse_bool(row.get("reaction_event_ts_valid"), default=True)),
+            "reaction_rows_count": len(reaction_rows),
+            "non_reaction_rows_count": total - len(reaction_rows),
+            "reaction_rows_without_reaction_event_ts_count": reaction_rows_without_reaction_event_ts_count,
+            "reaction_event_ts_invalid_count_on_reaction_rows": reaction_event_ts_invalid_count_on_reaction_rows,
+            "reaction_event_ts_invalid_count": reaction_event_ts_invalid_count_on_reaction_rows,
             "forward_metrics": forward_summary,
             "clean_hold_count": self._reaction_contains(rows, "CLEAN_HOLD"),
             "failed_reclaim_count": self._reaction_contains(rows, "FAILED_RECLAIM"),
@@ -254,9 +285,22 @@ class ZoneTruthAnalyzer:
         return sum(1 for row in rows if token in str(row.get("reaction_type") or row.get("a1_reaction_type") or ""))
 
     @staticmethod
+    def _is_reaction_row(row: Mapping[str, Any]) -> bool:
+        def is_known_reaction_type(value: Any) -> bool:
+            text = str(value or "").strip().upper()
+            return bool(text and text not in {"UNKNOWN", "SYNTHETIC"})
+
+        return (
+            parse_float(row.get("reaction_count")) > 0
+            or is_known_reaction_type(row.get("reaction_type"))
+            or is_known_reaction_type(row.get("final_reaction_type"))
+            or is_known_reaction_type(row.get("a1_reaction_type"))
+        )
+
+    @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
-            "# V6.3.11.7 Zone Truth Enhanced Trend Context",
+            "# V6.3.12.2 Zone Truth A2 Diagnostics and A3 Watch Preview",
             "",
             f"- total_zones: {summary.get('total_zones')}",
             f"- exact_matched_zones: {summary.get('exact_matched_zones')}",
@@ -293,11 +337,35 @@ class ZoneTruthAnalyzer:
         lines.append("- strong_a1_tier distribution:")
         for key, value in dict(summary.get("strong_a1_tier_distribution") or {}).items():
             lines.append(f"  - {key}: {value}")
+        lines.append("- a2_observe_priority distribution:")
+        for key, value in dict(summary.get("a2_observe_priority_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a2_risk_tier distribution:")
+        for key, value in dict(summary.get("a2_risk_tier_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a2_block_reason distribution:")
+        for key, value in dict(summary.get("a2_block_reason_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a2_sweep_reclaim_quality distribution:")
+        for key, value in dict(summary.get("a2_sweep_reclaim_quality_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a2_compression_state distribution:")
+        for key, value in dict(summary.get("a2_compression_state_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
+        lines.append("- a3_watch_priority distribution:")
+        for key, value in dict(summary.get("a3_watch_priority_distribution") or {}).items():
+            lines.append(f"  - {key}: {value}")
         lines.append(f"- a2_validated_candidate_count: {summary.get('a2_validated_candidate_count')}")
         lines.append(f"- a2_clean_hold_count: {summary.get('a2_clean_hold_count')}")
         lines.append(f"- a2_failed_reclaim_count: {summary.get('a2_failed_reclaim_count')}")
+        lines.append(f"- a2_ready_for_a3_watch_count: {summary.get('a2_ready_for_a3_watch_count')}")
+        lines.append(f"- a3_preview_breakout_after_a2_count: {summary.get('a3_preview_breakout_after_a2_count')}")
         lines.append(f"- a2_book_depth_missing_count: {summary.get('a2_book_depth_missing_count')}")
         lines.append(f"- reaction_events_outside_kline_range_count: {summary.get('reaction_events_outside_kline_range_count')}")
+        lines.append(f"- reaction_rows_count: {summary.get('reaction_rows_count')}")
+        lines.append(f"- non_reaction_rows_count: {summary.get('non_reaction_rows_count')}")
+        lines.append(f"- reaction_rows_without_reaction_event_ts_count: {summary.get('reaction_rows_without_reaction_event_ts_count')}")
+        lines.append(f"- reaction_event_ts_invalid_count_on_reaction_rows: {summary.get('reaction_event_ts_invalid_count_on_reaction_rows')}")
         lines.append(f"- reaction_event_ts_invalid_count: {summary.get('reaction_event_ts_invalid_count')}")
         lines.extend(["", "## Forward Metrics", ""])
         lines.append(

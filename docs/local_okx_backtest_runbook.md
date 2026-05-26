@@ -44,8 +44,8 @@ For `ETH-USDT-SWAP`, run:
 python tools/download_okx_historical_data.py \
   --kind trades \
   --symbol ETH-USDT-SWAP \
-  --start-date 2025-05-01 \
-  --end-date 2026-05-01 \
+  --start-date 2026-04-01 \
+  --end-date 2026-05-25 \
   --url-template 'https://www.okx.com/cdn/okex/traderecords/trades/daily/{yyyymmdd}/{symbol}-trades-{date}.zip'
 ```
 
@@ -63,8 +63,8 @@ For OKX historical L2 order book data, use export-link mode. The command shape i
 python tools/download_okx_historical_data.py \
   --kind books \
   --symbol ETH-USDT-SWAP \
-  --start-date 2025-05-01 \
-  --end-date 2026-05-01
+  --start-date 2026-04-01 \
+  --end-date 2026-05-25
 ```
 
 For 5000-depth books:

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from src.research.a1_edge.schema import parse_bool, parse_float, parse_int, parse_timestamp
 
 
-SCHEMA_VERSION = "v6.3.12.zone_truth.1"
+SCHEMA_VERSION = "v6.3.12.zone_truth.2"
 MATCH_EXACT = "exact"
 MATCH_FUZZY = "fuzzy"
 MATCH_UNMATCHED = "unmatched"
@@ -248,6 +248,31 @@ class ZoneTruthEvent:
     a2_retest_flag: bool = False
     a2_validated_candidate_flag: bool = False
     a2_validation_score: float = 0.0
+    a2_observe_priority: str = ""
+    a2_priority_reason: str = ""
+    a2_block_reason: str = ""
+    a2_risk_tier: str = ""
+    a2_risk_reason: str = ""
+    a2_reaction_latency_sec: float = 0.0
+    a2_time_to_clean_hold_sec: float = 0.0
+    a2_time_to_failed_reclaim_sec: float = 0.0
+    a2_hold_duration_sec: float = 0.0
+    a2_zone_age_sec: float = 0.0
+    a2_sweep_reclaim_quality: str = ""
+    a2_reclaim_success_flag: bool = False
+    a2_retest_success_flag: bool = False
+    a2_post_zone_range_15m_u: float = 0.0
+    a2_post_zone_range_1h_u: float = 0.0
+    a2_post_zone_range_4h_u: float = 0.0
+    a2_compression_ratio_15m: float = 0.0
+    a2_compression_ratio_1h: float = 0.0
+    a2_compression_state: str = ""
+    a2_compression_reason: str = ""
+    a2_ready_for_a3_watch_flag: bool = False
+    a2_ready_for_a3_reason: str = ""
+    a3_watch_priority: str = ""
+    a3_preview_breakout_after_a2_flag: bool = False
+    a3_preview_breakout_after_a2_latency_sec: float = 0.0
     strong_a1_raw_flag: bool = False
     strong_a1_tier: str = ""
     strong_a1_reason: str = ""
@@ -265,6 +290,13 @@ FORWARD_FIELDS = [
     "mfe_15m_u", "mae_15m_u", "end_15m_u", "is_complete_15m",
     "mfe_1h_u", "mae_1h_u", "end_1h_u", "is_complete_1h",
     "mfe_4h_u", "mae_4h_u", "end_4h_u", "is_complete_4h",
+    "a3_preview_breakout_raw_flag",
+    "a3_preview_breakout_raw_latency_sec",
+    "a3_preview_breakout_direction",
+    "a3_preview_breakout_threshold_u",
+    "a3_preview_breakout_price",
+    "a3_preview_max_extension_15m_u",
+    "a3_preview_max_extension_1h_u",
 ]
 MARKET_CONTEXT_FIELDS = [
     "market_context_anchor_ts",

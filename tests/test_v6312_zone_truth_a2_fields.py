@@ -69,6 +69,13 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "a2_state",
         "a2_book_depth_state",
         "a2_context_alignment",
+        "a2_observe_priority",
+        "a2_risk_tier",
+        "a2_sweep_reclaim_quality",
+        "a2_compression_state",
+        "a2_ready_for_a3_watch_flag",
+        "a3_watch_priority",
+        "a3_preview_breakout_after_a2_flag",
         "strong_a1_tier",
         "a2_validated_candidate_flag",
         "reaction_event_ts_valid",
@@ -79,8 +86,17 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     assert rows[0]["a2_book_depth_state"] == "BOOK_DEPTH_VALID"
     assert rows[0]["strong_a1_tier"] == "STRONG_A1_RAW"
     assert rows[0]["a2_validated_candidate_flag"] == "True"
+    assert rows[0]["a2_observe_priority"] == "A2_WATCH"
+    assert rows[0]["a2_risk_tier"] == "MEDIUM_RISK"
+    assert rows[0]["a2_sweep_reclaim_quality"] == "CLEAN_HOLD_NO_SWEEP"
+    assert rows[0]["a2_ready_for_a3_watch_flag"] == "True"
+    assert rows[0]["a3_watch_priority"] == "LOW"
     assert summary["a2_clean_hold_count"] == 1
     assert summary["reaction_event_ts_invalid_count"] == 0
+    assert "a2_observe_priority_distribution" in summary
+    assert summary["a2_ready_for_a3_watch_count"] == 1
+    assert summary["reaction_rows_count"] == 1
+    assert summary["non_reaction_rows_count"] == 0
 
     for name in (
         "zone_truth_by_a2_state.csv",
@@ -88,6 +104,14 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "zone_truth_by_a2_context_alignment.csv",
         "zone_truth_by_strong_a1_tier.csv",
         "zone_truth_by_a2_validated_candidate.csv",
+        "zone_truth_by_a2_observe_priority.csv",
+        "zone_truth_by_a2_risk_tier.csv",
+        "zone_truth_by_a2_block_reason.csv",
+        "zone_truth_by_a2_sweep_reclaim_quality.csv",
+        "zone_truth_by_a2_compression_state.csv",
+        "zone_truth_by_a2_ready_for_a3_watch.csv",
+        "zone_truth_by_a3_watch_priority.csv",
+        "zone_truth_by_a3_preview_breakout_after_a2.csv",
     ):
         assert (out / name).exists()
 
@@ -103,3 +127,32 @@ def test_zone_truth_marks_reaction_event_outside_kline_range(tmp_path):
     assert row["is_complete_15m"] == "False"
     assert row["mfe_15m_u"] == "0.0"
     assert summary["reaction_events_outside_kline_range_count"] == 1
+
+
+def test_reaction_event_ts_invalid_count_only_uses_reaction_rows():
+    rows = [
+        {
+            "reaction_count": 0,
+            "reaction_type": "UNKNOWN",
+            "final_reaction_type": "UNKNOWN",
+            "a1_reaction_type": "UNKNOWN",
+            "reaction_event_ts": 0,
+            "reaction_event_ts_valid": False,
+        },
+        {
+            "reaction_count": 1,
+            "reaction_type": "CLEAN_HOLD",
+            "final_reaction_type": "CLEAN_HOLD",
+            "a1_reaction_type": "CLEAN_HOLD",
+            "reaction_event_ts": 0,
+            "reaction_event_ts_valid": False,
+        },
+    ]
+
+    summary = ZoneTruthAnalyzer().summary(rows)
+
+    assert summary["reaction_rows_count"] == 1
+    assert summary["non_reaction_rows_count"] == 1
+    assert summary["reaction_rows_without_reaction_event_ts_count"] == 1
+    assert summary["reaction_event_ts_invalid_count_on_reaction_rows"] == 1
+    assert summary["reaction_event_ts_invalid_count"] == 1

@@ -57,6 +57,7 @@ class ZoneForwardMetricsCalculator:
             result[f"mae_{label}_u"] = metric["mae_u"]
             result[f"end_{label}_u"] = metric["end_u"]
             result[f"is_complete_{label}"] = metric["is_complete"]
+        result.update(compute_a3_preview_breakout(result, bars))
         return result
 
 
@@ -112,6 +113,83 @@ def infer_bar_interval_sec(bars: list[dict[str, float]], default: float = 60.0) 
         if float(bars[i]["timestamp"]) > float(bars[i - 1]["timestamp"])
     ]
     return float(median(diffs)) if diffs else float(default)
+
+
+def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
+    """Offline A3 watch preview only; not a runtime signal."""
+    default = {
+        "a3_preview_breakout_raw_flag": False,
+        "a3_preview_breakout_raw_latency_sec": 0.0,
+        "a3_preview_breakout_direction": "UNKNOWN",
+        "a3_preview_breakout_threshold_u": 0.0,
+        "a3_preview_breakout_price": 0.0,
+        "a3_preview_max_extension_15m_u": 0.0,
+        "a3_preview_max_extension_1h_u": 0.0,
+    }
+    anchor_ts, _anchor_source = _resolve_event_ts(zone)
+    direction = str(zone.get("direction") or "").upper()
+    zone_low = parse_float(zone.get("zone_lower"))
+    zone_high = parse_float(zone.get("zone_upper"))
+    if zone_low > zone_high:
+        zone_low, zone_high = zone_high, zone_low
+    zone_width = max(
+        parse_float(zone.get("zone_width")),
+        zone_high - zone_low,
+        1.0,
+    )
+    if not bars or anchor_ts <= 0 or direction not in {"BUY", "SELL"} or zone_low <= 0 or zone_high <= 0:
+        return default
+    if anchor_ts > float(bars[-1]["timestamp"]):
+        return default
+
+    threshold_u = max(zone_width * 0.5, 1.0)
+    timestamps = [float(bar["timestamp"]) for bar in bars]
+    start_idx = bisect_right(timestamps, anchor_ts)
+    if start_idx >= len(bars):
+        return {
+            **default,
+            "a3_preview_breakout_direction": direction,
+            "a3_preview_breakout_threshold_u": round(threshold_u, 8),
+        }
+
+    breakout_price = zone_high + threshold_u if direction == "BUY" else zone_low - threshold_u
+    future = bars[start_idx:]
+    breakout_ts = 0.0
+    for bar in future:
+        if direction == "BUY" and float(bar["high"]) >= breakout_price:
+            breakout_ts = float(bar["timestamp"])
+            break
+        if direction == "SELL" and float(bar["low"]) <= breakout_price:
+            breakout_ts = float(bar["timestamp"])
+            break
+
+    return {
+        "a3_preview_breakout_raw_flag": breakout_ts > 0,
+        "a3_preview_breakout_raw_latency_sec": round(max(0.0, breakout_ts - anchor_ts), 6) if breakout_ts > 0 else 0.0,
+        "a3_preview_breakout_direction": direction,
+        "a3_preview_breakout_threshold_u": round(threshold_u, 8),
+        "a3_preview_breakout_price": round(breakout_price, 8),
+        "a3_preview_max_extension_15m_u": _max_zone_extension(zone_low, zone_high, direction, future, anchor_ts, 900),
+        "a3_preview_max_extension_1h_u": _max_zone_extension(zone_low, zone_high, direction, future, anchor_ts, 3600),
+    }
+
+
+def _max_zone_extension(
+    zone_low: float,
+    zone_high: float,
+    direction: str,
+    future: list[dict[str, float]],
+    anchor_ts: float,
+    window_sec: int,
+) -> float:
+    window = [bar for bar in future if float(bar["timestamp"]) <= anchor_ts + float(window_sec)]
+    if not window:
+        return 0.0
+    if direction == "BUY":
+        return round(max(0.0, max(float(bar["high"]) for bar in window) - zone_high), 8)
+    if direction == "SELL":
+        return round(max(0.0, zone_low - min(float(bar["low"]) for bar in window)), 8)
+    return 0.0
 
 
 def _resolve_event_ts(zone: Mapping[str, Any]) -> tuple[float, str]:
