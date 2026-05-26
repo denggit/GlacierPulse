@@ -403,7 +403,6 @@ class ZoneA2StateClassifier:
         range_1h = parse_float(row.get("mfe_1h_u")) + abs(parse_float(row.get("mae_1h_u")))
         range_4h = parse_float(row.get("mfe_4h_u")) + abs(parse_float(row.get("mae_4h_u")))
         is_complete_15m = parse_bool(row.get("is_complete_15m"))
-        _is_complete_1h = parse_bool(row.get("is_complete_1h"))
         zone_width = max(
             parse_float(row.get("zone_width")),
             parse_float(row.get("zone_upper")) - parse_float(row.get("zone_lower")),
