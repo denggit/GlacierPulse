@@ -43,6 +43,7 @@ import argparse
 import email.utils
 import hashlib
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -70,6 +71,8 @@ OKX_BOOK_MODULE_400 = "4"
 OKX_BOOK_MODULE_5000 = "5"
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 OKX_TOO_MANY_REQUESTS_CODE = "50011"
+ISO_DATE_RE = re.compile(r"(?<!\d)(20\d{2})-(\d{2})-(\d{2})(?!\d)")
+COMPACT_DATE_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
 
 
 @dataclass
@@ -83,8 +86,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Download OKX official historical data files for local backtests.")
     p.add_argument("--kind", required=True, choices=sorted(VALID_KINDS), help="Data kind: trades/books/books_l2.")
     p.add_argument("--symbol", default="ETH-USDT-SWAP", help="OKX instrument id.")
-    p.add_argument("--start-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template and books export mode.")
-    p.add_argument("--end-date", help="Inclusive date, YYYY-MM-DD. Required for --url-template and books export mode.")
+    p.add_argument("--start-date", help="Start date, YYYY-MM-DD. Required for --url-template and books export mode.")
+    p.add_argument("--end-date", help="End date, YYYY-MM-DD. Required for --url-template and books export mode.")
     p.add_argument("--url-template", help="Official OKX URL template. Supports {date}, {yyyymmdd}, {symbol}, {kind}.")
     p.add_argument("--url", action="append", default=[], help="One official OKX download URL. Can be repeated multiple times.")
     p.add_argument("--manifest", type=Path, help="Text/JSONL manifest containing official OKX download URLs.")
@@ -194,10 +197,10 @@ def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterabl
     missing_ranges: list[str] = []
     for chunk_start, chunk_end in date_chunks(start, end, chunk_days=chunk_days):
         begin_ms = date_start_ms(chunk_start)
-        end_ms = date_end_exclusive_ms(chunk_end)
+        end_ms = date_start_ms(chunk_end)
         date_tag = f"{chunk_start.isoformat()}_{chunk_end.isoformat()}"
         logger.info(
-            "[OKX-BOOKS-EXPORT-LINKS] symbol=%s inst_type=%s selector=%s module=%s range=%s begin=%s end_exclusive=%s",
+            "[OKX-BOOKS-EXPORT-LINKS] symbol=%s inst_type=%s selector=%s module=%s range=%s begin=%s end=%s",
             args.symbol,
             inst_type,
             inst_selector,
@@ -217,7 +220,15 @@ def build_books_export_tasks(args: argparse.Namespace, out_dir: Path) -> Iterabl
             retries=int(args.export_retries),
             backoff_sec=float(args.export_backoff_sec),
         )
-        items = extract_download_items(response)
+        raw_items = extract_download_items(response)
+        items = filter_download_items_by_date(raw_items, start=chunk_start, end=chunk_end)
+        if len(items) < len(raw_items):
+            logger.info(
+                "[OKX-BOOKS-EXPORT-FILTERED] range=%s kept=%d dropped=%d",
+                date_tag,
+                len(items),
+                len(raw_items) - len(items),
+            )
         if not items:
             missing_ranges.append(date_tag)
             logger.warning("[OKX-BOOKS-EXPORT-EMPTY] range=%s response_keys=%s", date_tag, sorted(response.keys()))
@@ -417,6 +428,30 @@ def extract_download_items(payload: Mapping[str, Any]) -> list[dict[str, str]]:
     return items
 
 
+def filter_download_items_by_date(items: Sequence[Mapping[str, str]], start: date, end: date) -> list[dict[str, str]]:
+    filtered: list[dict[str, str]] = []
+    for item in items:
+        item_date = infer_download_item_date(item)
+        if item_date is None:
+            logger.warning("[OKX-BOOKS-EXPORT-DATE-UNKNOWN] url=%s file_name=%s", item.get("url", ""), item.get("file_name", ""))
+            filtered.append({"url": str(item.get("url", "")), "file_name": str(item.get("file_name", ""))})
+            continue
+        if start <= item_date <= end:
+            filtered.append({"url": str(item.get("url", "")), "file_name": str(item.get("file_name", ""))})
+    return filtered
+
+
+def infer_download_item_date(item: Mapping[str, str]) -> date | None:
+    text = " ".join([str(item.get("file_name", "")), str(item.get("url", ""))])
+    for pattern in (ISO_DATE_RE, COMPACT_DATE_RE):
+        for match in pattern.finditer(text):
+            try:
+                return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            except ValueError:
+                continue
+    return None
+
+
 def download_one(task: DownloadTask, overwrite: bool, timeout: int, retries: int) -> dict[str, object]:
     task.output_path.parent.mkdir(parents=True, exist_ok=True)
     base = {
@@ -502,12 +537,6 @@ def date_chunks(start: date, end: date, chunk_days: int) -> Iterable[tuple[date,
 
 def date_start_ms(d: date) -> int:
     dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-    return int(dt.timestamp() * 1000)
-
-
-def date_end_exclusive_ms(d: date) -> int:
-    """Return the exclusive UTC boundary immediately after date d."""
-    dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc) + timedelta(days=1)
     return int(dt.timestamp() * 1000)
 
 
