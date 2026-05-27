@@ -358,7 +358,7 @@ def compute_a2_fee_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
 def compute_a2_pre_ignition_metrics(row: Mapping[str, Any], bars:list[dict[str,float]])->dict[str,Any]:
     start=next((parse_float(row.get(n)) for n in ("reaction_event_ts","a2_state_ts","frozen_ts","best_pie_ts") if parse_float(row.get(n))>0),0.0)
     if start<=0 or not bars: return {"a2_pre_ignition_bar_count":0,"a2_pre_ignition_window_sec":0.0,"a2_pre_ignition_range_u":0.0,"a2_pre_ignition_range_ratio":0.0,"a2_pre_ignition_zone_stay_ratio":0.0,"a2_pre_ignition_compression_state":"INSUFFICIENT_BARS"}
-    end=parse_float(row.get("a3_preview_entry_ts")) or min(start+3600,float(bars[-1]["timestamp"]))
+    end=min(start+3600,float(bars[-1]["timestamp"]))
     window=[b for b in bars if start<=float(b["timestamp"])<=end]
     cnt=len(window); risk=max(parse_float(row.get("a2_risk_u")),1.0)
     if cnt==0: return {"a2_pre_ignition_bar_count":0,"a2_pre_ignition_window_sec":max(0,end-start),"a2_pre_ignition_range_u":0.0,"a2_pre_ignition_range_ratio":0.0,"a2_pre_ignition_zone_stay_ratio":0.0,"a2_pre_ignition_compression_state":"INSUFFICIENT_BARS"}

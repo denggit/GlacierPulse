@@ -17,6 +17,25 @@ from .market_context import ZoneMarketContextCalculator
 from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
 
 
+FEE_AWARE_GROUP_METRIC_FIELDS = [
+    "a2_net_mfe_15m_r_avg",
+    "a2_net_mfe_1h_r_avg",
+    "a2_net_mae_15m_r_avg",
+    "a2_net_mae_1h_r_avg",
+    "a2_net_hit_1r_15m_rate",
+    "a2_net_hit_1r_1h_rate",
+    "a3_preview_net_mfe_15m_r_avg",
+    "a3_preview_net_mfe_1h_r_avg",
+    "a3_preview_net_mae_15m_r_avg",
+    "a3_preview_net_mae_1h_r_avg",
+    "a3_preview_realized_r_proxy_15m_avg",
+    "a3_preview_realized_r_proxy_1h_avg",
+    "a3_preview_fee_positive_1h_rate",
+    "a3_preview_target_1r_first_1h_rate",
+    "a3_preview_stop_1r_first_1h_rate",
+    "a3_preview_ambiguous_both_hit_1h_rate",
+]
+
 GROUP_METRIC_FIELDS = [
     "count",
     "truth_score_avg",
@@ -38,7 +57,7 @@ GROUP_METRIC_FIELDS = [
     "complete_15m_count",
     "complete_1h_count",
     "complete_4h_count",
-]
+] + FEE_AWARE_GROUP_METRIC_FIELDS
 
 
 class ZoneTruthAnalyzer:
@@ -283,12 +302,35 @@ class ZoneTruthAnalyzer:
             "complete_15m_count": sum(1 for row in rows if parse_bool(row.get("is_complete_15m"))),
             "complete_1h_count": sum(1 for row in rows if parse_bool(row.get("is_complete_1h"))),
             "complete_4h_count": sum(1 for row in rows if parse_bool(row.get("is_complete_4h"))),
+            "a2_net_mfe_15m_r_avg": self._avg(rows, "a2_net_mfe_15m_r"),
+            "a2_net_mfe_1h_r_avg": self._avg(rows, "a2_net_mfe_1h_r"),
+            "a2_net_mae_15m_r_avg": self._avg(rows, "a2_net_mae_15m_r"),
+            "a2_net_mae_1h_r_avg": self._avg(rows, "a2_net_mae_1h_r"),
+            "a2_net_hit_1r_15m_rate": self._rate(rows, lambda row: parse_bool(row.get("a2_net_hit_1r_15m"))),
+            "a2_net_hit_1r_1h_rate": self._rate(rows, lambda row: parse_bool(row.get("a2_net_hit_1r_1h"))),
+            "a3_preview_net_mfe_15m_r_avg": self._avg(rows, "a3_preview_net_mfe_15m_r"),
+            "a3_preview_net_mfe_1h_r_avg": self._avg(rows, "a3_preview_net_mfe_1h_r"),
+            "a3_preview_net_mae_15m_r_avg": self._avg(rows, "a3_preview_net_mae_15m_r"),
+            "a3_preview_net_mae_1h_r_avg": self._avg(rows, "a3_preview_net_mae_1h_r"),
+            "a3_preview_realized_r_proxy_15m_avg": self._avg(rows, "a3_preview_realized_r_proxy_15m"),
+            "a3_preview_realized_r_proxy_1h_avg": self._avg(rows, "a3_preview_realized_r_proxy_1h"),
+            "a3_preview_fee_positive_1h_rate": self._rate(rows, lambda row: parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
+            "a3_preview_target_1r_first_1h_rate": self._rate(rows, lambda row: str(row.get("a3_preview_realized_outcome_1h")) == "TARGET_1R_FIRST"),
+            "a3_preview_stop_1r_first_1h_rate": self._rate(rows, lambda row: str(row.get("a3_preview_realized_outcome_1h")) == "STOP_1R_FIRST"),
+            "a3_preview_ambiguous_both_hit_1h_rate": self._rate(rows, lambda row: str(row.get("a3_preview_realized_outcome_1h")) == "AMBIGUOUS_BOTH_HIT"),
         }
 
     @staticmethod
     def _avg(rows: list[Mapping[str, Any]], field: str) -> float:
         values = [parse_float(row.get(field)) for row in rows if row.get(field) not in (None, "")]
         return round(sum(values) / len(values), 6) if values else 0.0
+
+    @staticmethod
+    def _rate(rows: list[Mapping[str, Any]], predicate) -> float:
+        total = len(rows)
+        if total <= 0:
+            return 0.0
+        return round(sum(1 for row in rows if predicate(row)) / total, 6)
 
     @staticmethod
     def _complete_avg(rows: list[Mapping[str, Any]], field: str, complete_field: str) -> float:

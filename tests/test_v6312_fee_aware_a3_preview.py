@@ -44,3 +44,20 @@ def test_pre_ignition_states():
     bars = [{"timestamp": t, "high": 101, "low": 99, "close": 100} for t in [0, 60]]
     out = compute_a2_pre_ignition_metrics({"reaction_event_ts": 0, "a2_risk_u": 2}, bars)
     assert out["a2_pre_ignition_compression_state"] == "INSUFFICIENT_BARS"
+
+
+def test_sell_net_mfe_mae():
+    zone = {"direction": "SELL", "reaction_event_ts": 1000.0, "zone_lower": 99, "zone_upper": 101, "zone_width": 2}
+    bars = [
+        {"timestamp": 1000, "open": 100, "high": 100.5, "low": 99.5, "close": 100},
+        {"timestamp": 1060, "open": 100, "high": 101.0, "low": 94.0, "close": 97},
+    ]
+    out = compute_a3_preview_breakout(zone, bars)
+    fee_share = out["a3_preview_fee_share_r"]
+    assert out["a3_preview_net_mfe_15m_r"] == round((4/2)-fee_share, 8)
+    assert out["a3_preview_net_mae_15m_r"] == round((-3/2)-fee_share, 8)
+
+def test_pre_ignition_window_not_truncated_by_entry_ts():
+    bars = [{"timestamp": t, "high": 101, "low": 99, "close": 100} for t in range(0, 3660, 60)]
+    out = compute_a2_pre_ignition_metrics({"reaction_event_ts": 60, "a2_risk_u": 2, "a3_preview_entry_ts": 120}, bars)
+    assert out["a2_pre_ignition_window_sec"] >= 3540

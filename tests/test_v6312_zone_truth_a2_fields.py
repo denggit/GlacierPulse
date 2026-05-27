@@ -123,6 +123,12 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     ):
         assert (out / name).exists()
 
+    with (out / "zone_truth_by_a3_preview_ignition_quality.csv").open("r", encoding="utf-8", newline="") as f:
+        header = next(csv.reader(f))
+    assert "a3_preview_realized_r_proxy_1h_avg" in header
+    assert "a3_preview_fee_positive_1h_rate" in header
+    assert "a3_preview_target_1r_first_1h_rate" in header
+
 
 def test_zone_truth_marks_reaction_event_outside_kline_range(tmp_path):
     out = tmp_path / "zone_truth"
