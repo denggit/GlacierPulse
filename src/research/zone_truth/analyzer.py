@@ -104,6 +104,13 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a2_ready_for_a3_watch.csv", self.group_rows(rows, "a2_ready_for_a3_watch_flag"), ["a2_ready_for_a3_watch_flag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_watch_priority.csv", self.group_rows(rows, "a3_watch_priority"), ["a3_watch_priority"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_preview_breakout_after_a2.csv", self.group_rows(rows, "a3_preview_breakout_after_a2_flag"), ["a3_preview_breakout_after_a2_flag"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_latency_bucket.csv", self.group_rows(rows, "a3_preview_latency_bucket"), ["a3_preview_latency_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_ignition_quality.csv", self.group_rows(rows, "a3_preview_ignition_quality"), ["a3_preview_ignition_quality"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_pre_ignition_compression_state.csv", self.group_rows(rows, "a2_pre_ignition_compression_state"), ["a2_pre_ignition_compression_state"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_realized_outcome_15m.csv", self.group_rows(rows, "a3_preview_realized_outcome_15m"), ["a3_preview_realized_outcome_15m"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_realized_outcome_1h.csv", self.group_rows(rows, "a3_preview_realized_outcome_1h"), ["a3_preview_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_net_mfe_1h_bucket.csv", self.group_rows(rows, "a3_preview_net_mfe_1h_bucket"), ["a3_preview_net_mfe_1h_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_preview_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_preview_realized_r_proxy_1h_bucket"), ["a3_preview_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -137,6 +144,11 @@ class ZoneTruthAnalyzer:
         a2_sweep_reclaim_quality_distribution = dict(Counter(str(row.get("a2_sweep_reclaim_quality") or "UNKNOWN") for row in rows))
         a2_compression_state_distribution = dict(Counter(str(row.get("a2_compression_state") or "UNKNOWN") for row in rows))
         a3_watch_priority_distribution = dict(Counter(str(row.get("a3_watch_priority") or "NONE") for row in rows))
+        a3_preview_latency_bucket_distribution = dict(Counter(str(row.get("a3_preview_latency_bucket") or "NO_IGNITION") for row in rows))
+        a3_preview_ignition_quality_distribution = dict(Counter(str(row.get("a3_preview_ignition_quality") or "NO_IGNITION") for row in rows))
+        a2_pre_ignition_compression_state_distribution = dict(Counter(str(row.get("a2_pre_ignition_compression_state") or "INSUFFICIENT_BARS") for row in rows))
+        a3_preview_realized_outcome_15m_distribution = dict(Counter(str(row.get("a3_preview_realized_outcome_15m") or "NO_BREAKOUT") for row in rows))
+        a3_preview_realized_outcome_1h_distribution = dict(Counter(str(row.get("a3_preview_realized_outcome_1h") or "NO_BREAKOUT") for row in rows))
         reaction_rows = [row for row in rows if self._is_reaction_row(row)]
         reaction_rows_without_reaction_event_ts_count = sum(1 for row in reaction_rows if parse_float(row.get("reaction_event_ts")) <= 0)
         reaction_event_ts_invalid_count_on_reaction_rows = sum(
@@ -168,6 +180,19 @@ class ZoneTruthAnalyzer:
             "a2_sweep_reclaim_quality_distribution": a2_sweep_reclaim_quality_distribution,
             "a2_compression_state_distribution": a2_compression_state_distribution,
             "a3_watch_priority_distribution": a3_watch_priority_distribution,
+            "a3_preview_latency_bucket_distribution": a3_preview_latency_bucket_distribution,
+            "a3_preview_ignition_quality_distribution": a3_preview_ignition_quality_distribution,
+            "a2_pre_ignition_compression_state_distribution": a2_pre_ignition_compression_state_distribution,
+            "a3_preview_realized_outcome_15m_distribution": a3_preview_realized_outcome_15m_distribution,
+            "a3_preview_realized_outcome_1h_distribution": a3_preview_realized_outcome_1h_distribution,
+            "a3_preview_strong_ignition_count": sum(1 for row in rows if str(row.get("a3_preview_ignition_quality")) == "STRONG_IGNITION"),
+            "a3_preview_medium_ignition_count": sum(1 for row in rows if str(row.get("a3_preview_ignition_quality")) == "MEDIUM_IGNITION"),
+            "a3_preview_fee_aware_positive_1h_count": sum(1 for row in rows if parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
+            "a3_preview_fee_aware_positive_1h_rate": round(sum(1 for row in rows if parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0) / total, 6) if total else 0.0,
+            "a3_watch_high_fee_aware_positive_1h_count": sum(1 for row in rows if str(row.get("a3_watch_priority")) == "HIGH" and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
+            "a3_watch_high_fee_aware_positive_1h_rate": round(sum(1 for row in rows if str(row.get("a3_watch_priority")) == "HIGH" and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0) / max(1, sum(1 for row in rows if str(row.get("a3_watch_priority")) == "HIGH")), 6),
+            "a2_ready_a3_breakout_fee_positive_1h_count": sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) and parse_bool(row.get("a3_preview_breakout_after_a2_flag")) and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
+            "a2_ready_a3_breakout_fee_positive_1h_rate": round(sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) and parse_bool(row.get("a3_preview_breakout_after_a2_flag")) and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0) / max(1, sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) and parse_bool(row.get("a3_preview_breakout_after_a2_flag")))), 6),
             "a2_validated_candidate_count": sum(1 for row in rows if parse_bool(row.get("a2_validated_candidate_flag"))),
             "a2_clean_hold_count": sum(1 for row in rows if parse_bool(row.get("a2_clean_hold_flag"))),
             "a2_failed_reclaim_count": sum(1 for row in rows if parse_bool(row.get("a2_failed_reclaim_flag"))),

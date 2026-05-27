@@ -80,6 +80,7 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "a2_validated_candidate_flag",
         "reaction_event_ts_valid",
         "reaction_event_ts_outside_kline_range",
+        "a2_fee_reference_price",
     }
     assert expected_fields.issubset(rows[0])
     assert rows[0]["a2_state"] == "A2_CLEAN_HOLD"
@@ -112,6 +113,13 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "zone_truth_by_a2_ready_for_a3_watch.csv",
         "zone_truth_by_a3_watch_priority.csv",
         "zone_truth_by_a3_preview_breakout_after_a2.csv",
+        "zone_truth_by_a3_preview_realized_r_proxy_1h_bucket.csv",
+        "zone_truth_by_a3_preview_net_mfe_1h_bucket.csv",
+        "zone_truth_by_a3_preview_realized_outcome_1h.csv",
+        "zone_truth_by_a3_preview_realized_outcome_15m.csv",
+        "zone_truth_by_a2_pre_ignition_compression_state.csv",
+        "zone_truth_by_a3_preview_ignition_quality.csv",
+        "zone_truth_by_a3_preview_latency_bucket.csv",
     ):
         assert (out / name).exists()
 
