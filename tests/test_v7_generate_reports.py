@@ -4,6 +4,7 @@
 import json
 import subprocess
 import zipfile
+import csv
 from pathlib import Path
 
 import tools.generate_research_reports as generator
@@ -74,6 +75,9 @@ def test_generate_reports_writes_v7_csvs_and_summary(tmp_path):
     assert (out / "zone_truth_by_a1_evidence_type.csv").exists()
     assert (out / "summary.json").exists()
     assert summary["v7_enabled"] is True
+    assert "V7.0.0 Zone Truth 3A Full Research Loop Shadow" in (out / "zone_truth_summary.md").read_text(encoding="utf-8")
+    with (out / "zone_truth_3a_simulated_trades.csv").open(encoding="utf-8", newline="") as handle:
+        assert "stop_basis_reason" in next(csv.reader(handle))
 
 
 def test_generate_research_reports_zip_includes_v7_files(tmp_path, monkeypatch):

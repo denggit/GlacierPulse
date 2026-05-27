@@ -45,6 +45,45 @@ def test_structural_proxy_uses_first_iceberg_not_later_sweep():
     assert stop["stop_price"] == 98.5
 
 
+def test_zone_boundary_v2_does_not_use_aggregate_zone_stop_without_event_basis():
+    row = {
+        "direction": "BUY",
+        "zone_v2_structural_stop_price": 90,
+        "first_iceberg_pie_min_trade_price": 99,
+    }
+    stop = resolve_stop(row, {"entry_price": 100}, "ZONE_BOUNDARY_V2")
+    assert stop["stop_price"] == 98.5
+    assert stop["stop_basis_reason"] == "ZONE_BOUNDARY_V2_FALLBACK_STRUCTURAL_PROXY_NO_FUTURE_BASIS"
+
+
+def test_zone_boundary_v2_uses_event_level_no_future_stop_when_available():
+    row = {
+        "direction": "BUY",
+        "zone_v2_structural_stop_price": 90,
+        "first_event_zone_v2_structural_stop_price": 97,
+        "first_iceberg_pie_min_trade_price": 99,
+    }
+    stop = resolve_stop(row, {"entry_price": 100}, "ZONE_BOUNDARY_V2")
+    assert stop["stop_price"] == 97
+    assert stop["stop_basis_reason"] == "ZONE_BOUNDARY_V2_EVENT_LEVEL"
+
+
+def test_simulated_trade_outputs_stop_basis_reason():
+    rows = [
+        {
+            "zone_id": "z1",
+            "direction": "BUY",
+            "a3_preview_breakout_raw_flag": True,
+            "a3_preview_entry_ts": 1000,
+            "a3_preview_entry_price": 100,
+            "zone_v2_structural_stop_price": 90,
+            "first_iceberg_pie_min_trade_price": 99,
+        }
+    ]
+    trades = simulate_3a_proxy_trades(rows, [{"timestamp": 1000, "high": 102, "low": 99.5, "close": 101, "open": 100}], entry_models=["BREAKOUT"], stop_models=["ZONE_BOUNDARY_V2"], target_r_list=[1.0])
+    assert trades[0]["stop_basis_reason"] == "ZONE_BOUNDARY_V2_FALLBACK_STRUCTURAL_PROXY_NO_FUTURE_BASIS"
+
+
 def test_target_r_minimum_excludes_half_r():
     rows = [{"zone_id": "z1", "direction": "BUY", "a3_preview_breakout_raw_flag": True, "a3_preview_entry_ts": 1000, "a3_preview_entry_price": 100, "zone_lower": 99, "zone_upper": 100}]
     trades = simulate_3a_proxy_trades(rows, [{"timestamp": 1000, "high": 102, "low": 99.5, "close": 101, "open": 100}], entry_models=["BREAKOUT"], stop_models=["V1_ZONE_WIDTH"], target_r_list=[0.5, 0.75, 1.0])

@@ -59,10 +59,7 @@ def test_failed_wall_flag_when_price_breaks_far():
     assert out["failed_wall_flag"] is True
 
 
-def test_cluster_and_ladder_absorption_flags(monkeypatch):
-    import config.research_evaluator as cfg
-
-    monkeypatch.setattr(cfg, "A1_CLUSTER_MAX_PRICE_EFFICIENCY", 1.0)
+def test_cluster_and_ladder_absorption_flags():
     pies = [
         {"event_key": "p1", "direction": "BUY", "settle_ts": 1000, "result": "ICEBERG", "active_notional": 400_000, "min_trade_price": 100.0, "max_trade_price": 100.0},
         {"event_key": "p2", "direction": "BUY", "settle_ts": 1004, "result": "ICEBERG", "active_notional": 400_000, "min_trade_price": 100.5, "max_trade_price": 100.5},

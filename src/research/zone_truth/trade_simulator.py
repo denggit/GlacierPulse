@@ -43,7 +43,15 @@ def simulate_3a_proxy_trades(
             for stop_model in stop_models:
                 stop = resolve_stop(row, entry, stop_model)
                 if not stop["available"]:
-                    trades.append(_unavailable(row, entry_model, stop_model, stop.get("reason", "INVALID_STOP")))
+                    trades.append(
+                        _unavailable(
+                            row,
+                            entry_model,
+                            stop_model,
+                            stop.get("reason", "INVALID_STOP"),
+                            stop.get("stop_basis_reason", ""),
+                        )
+                    )
                     continue
                 for target_r in targets:
                     trades.append(
@@ -57,6 +65,7 @@ def simulate_3a_proxy_trades(
                             entry_price=entry["entry_price"],
                             stop_price=stop["stop_price"],
                             risk_u=stop["risk_u"],
+                            stop_basis_reason=stop.get("stop_basis_reason", ""),
                             window_sec=window_sec,
                             fee_pct=fee,
                         )
@@ -111,15 +120,35 @@ def resolve_stop(row: Mapping[str, Any], entry: Mapping[str, Any], stop_model: s
             1.0,
         )
         stop = entry_price - risk if direction == "BUY" else entry_price + risk
-        return {"available": True, "stop_price": stop, "risk_u": risk}
+        return {"available": True, "stop_price": stop, "risk_u": risk, "stop_basis_reason": "V1_ZONE_WIDTH"}
     if model == "STRUCTURAL_PROXY":
         stop = _structural_proxy_stop(row, direction)
-        return _validate_stop(entry_price, stop, direction, "STRUCTURAL_PROXY_UNAVAILABLE")
+        return _validate_stop(entry_price, stop, direction, "STRUCTURAL_PROXY_UNAVAILABLE", "STRUCTURAL_PROXY")
     if model == "ZONE_BOUNDARY_V2":
-        stop = parse_float(row.get("zone_v2_structural_stop_price"))
-        if stop <= 0:
-            stop = _structural_proxy_stop(row, direction)
-        return _validate_stop(entry_price, stop, direction, "ZONE_BOUNDARY_V2_UNAVAILABLE")
+        for field in (
+            "first_event_zone_v2_structural_stop_price",
+            "first_iceberg_event_zone_v2_structural_stop_price",
+        ):
+            stop = parse_float(row.get(field))
+            if stop <= 0:
+                continue
+            event_stop = _validate_stop(
+                entry_price,
+                stop,
+                direction,
+                "ZONE_BOUNDARY_V2_EVENT_LEVEL_INVALID",
+                "ZONE_BOUNDARY_V2_EVENT_LEVEL",
+            )
+            if event_stop["available"]:
+                return event_stop
+        stop = _structural_proxy_stop(row, direction)
+        return _validate_stop(
+            entry_price,
+            stop,
+            direction,
+            "ZONE_BOUNDARY_V2_FALLBACK_STRUCTURAL_PROXY_UNAVAILABLE",
+            "ZONE_BOUNDARY_V2_FALLBACK_STRUCTURAL_PROXY_NO_FUTURE_BASIS",
+        )
     return {"available": False, "reason": "UNKNOWN_STOP_MODEL"}
 
 
@@ -134,6 +163,7 @@ def simulate_single_trade(
     entry_price: float,
     stop_price: float,
     risk_u: float,
+    stop_basis_reason: str = "",
     window_sec: int = 3600,
     fee_pct: float = 0.001,
 ) -> dict[str, Any]:
@@ -155,6 +185,7 @@ def simulate_single_trade(
         "entry_ts": round(entry_ts, 8),
         "entry_price": round(entry_price, 8),
         "stop_price": round(stop_price, 8),
+        "stop_basis_reason": stop_basis_reason or str(stop_model),
         "target_price": round(target_price, 8),
         "risk_u": round(risk_u, 8),
         "fee_share_r": round(fee_share, 8),
@@ -272,13 +303,13 @@ def _structural_proxy_stop(row: Mapping[str, Any], direction: str) -> float:
     return high + buffer_u if high > 0 else 0.0
 
 
-def _validate_stop(entry: float, stop: float, direction: str, reason: str) -> dict[str, Any]:
+def _validate_stop(entry: float, stop: float, direction: str, reason: str, stop_basis_reason: str = "") -> dict[str, Any]:
     if stop <= 0:
-        return {"available": False, "reason": reason}
+        return {"available": False, "reason": reason, "stop_basis_reason": stop_basis_reason}
     risk = entry - stop if direction == "BUY" else stop - entry
     if risk <= 0:
-        return {"available": False, "reason": "INVALID_STOP"}
-    return {"available": True, "stop_price": stop, "risk_u": risk}
+        return {"available": False, "reason": "INVALID_STOP", "stop_basis_reason": stop_basis_reason}
+    return {"available": True, "stop_price": stop, "risk_u": risk, "stop_basis_reason": stop_basis_reason}
 
 
 def _row_identity(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -304,7 +335,13 @@ def _market_context(row: Mapping[str, Any]) -> str:
     return "UNKNOWN"
 
 
-def _unavailable(row: Mapping[str, Any], entry_model: str, stop_model: str, reason: str) -> dict[str, Any]:
+def _unavailable(
+    row: Mapping[str, Any],
+    entry_model: str,
+    stop_model: str,
+    reason: str,
+    stop_basis_reason: str = "",
+) -> dict[str, Any]:
     return {
         **_row_identity(row),
         "entry_model": entry_model,
@@ -313,6 +350,7 @@ def _unavailable(row: Mapping[str, Any], entry_model: str, stop_model: str, reas
         "entry_ts": 0.0,
         "entry_price": 0.0,
         "stop_price": 0.0,
+        "stop_basis_reason": stop_basis_reason,
         "target_price": 0.0,
         "risk_u": 0.0,
         "fee_share_r": 0.0,

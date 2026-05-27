@@ -186,7 +186,7 @@ def compute_cluster_absorption(pies: list[Mapping[str, Any]]) -> dict[str, Any]:
             flag = (
                 len(group) >= int(getattr(cfg, "A1_CLUSTER_MIN_EVENT_COUNT", 2))
                 and active >= float(getattr(cfg, "A1_CLUSTER_MIN_ACTIVE_NOTIONAL_USDT", 1000000.0))
-                and eff <= float(getattr(cfg, "A1_CLUSTER_MAX_PRICE_EFFICIENCY", 0.0008))
+                and eff <= float(getattr(cfg, "A1_CLUSTER_MAX_PRICE_EFFICIENCY", 1.0))
             )
             if flag or active > best["active"]:
                 best = {"window": int(window), "active": active, "count": len(group), "eff": eff, "flag": flag}

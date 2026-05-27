@@ -63,7 +63,7 @@ V7_SIMULATED_TRADE_FIELDS = [
     "a1_primary_evidence_type", "a1_evidence_types", "a1_strength_tier", "a1_best_horizon",
     "a2_accumulation_path_v2", "a3_aggression_type_v2", "market_context_bucket",
     "entry_model", "stop_model", "target_r", "entry_ts", "entry_price", "stop_price", "target_price",
-    "risk_u", "fee_share_r", "realized_r_1h", "realized_outcome_1h", "target_first_flag",
+    "stop_basis_reason", "risk_u", "fee_share_r", "realized_r_1h", "realized_outcome_1h", "target_first_flag",
     "stop_first_flag", "ambiguous_flag", "complete_flag", "mfe_r_1h", "mae_r_1h",
 ]
 
@@ -478,7 +478,7 @@ class ZoneTruthAnalyzer:
     @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
-            "# V6.3.12.2 Zone Truth A2 Diagnostics and A3 Watch Preview",
+            "# V7.0.0 Zone Truth 3A Full Research Loop Shadow",
             "",
             f"- total_zones: {summary.get('total_zones')}",
             f"- exact_matched_zones: {summary.get('exact_matched_zones')}",
@@ -568,6 +568,9 @@ class ZoneTruthAnalyzer:
         lines.append(f"- v7_top_combo_count: {summary.get('v7_top_combo_count')}")
         lines.append(f"- v7_positive_combo_count: {summary.get('v7_positive_combo_count')}")
         lines.append(f"- v7_bad_combo_count: {summary.get('v7_bad_combo_count')}")
+        ZoneTruthAnalyzer._append_combo_preview(lines, "Top Realized R", summary.get("top_3a_combos_by_realized_r"))
+        ZoneTruthAnalyzer._append_combo_preview(lines, "Top Profit Factor", summary.get("top_3a_combos_by_profit_factor"))
+        ZoneTruthAnalyzer._append_combo_preview(lines, "Bad Combos To Delete", summary.get("bad_3a_combos_to_delete"))
         lines.extend(["", "## Forward Metrics", ""])
         lines.append(
             "Zone forward metrics start from `forward_anchor_ts`; `forward_anchor_source` and "
@@ -601,3 +604,27 @@ class ZoneTruthAnalyzer:
             ]
         )
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _append_combo_preview(lines: list[str], title: str, rows: Any) -> None:
+        fields = [
+            "a1_primary_evidence_type",
+            "a2_accumulation_path_v2",
+            "a3_aggression_type_v2",
+            "entry_model",
+            "stop_model",
+            "target_r",
+            "count",
+            "avg_realized_r",
+            "profit_factor_proxy",
+            "fee_positive_rate",
+        ]
+        lines.extend(["", f"### {title}", ""])
+        rows = list(rows or [])[:5]
+        if not rows:
+            lines.append("- none")
+            return
+        lines.append("| " + " | ".join(fields) + " |")
+        lines.append("| " + " | ".join(["---"] * len(fields)) + " |")
+        for row in rows:
+            lines.append("| " + " | ".join(str(row.get(field, "")) for field in fields) + " |")
