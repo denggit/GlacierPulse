@@ -52,6 +52,37 @@ def classify_a3_ignition_quality_after_a2(row: Mapping[str, Any], after_a2_flag:
         return "MEDIUM_IGNITION"
     return "WEAK_IGNITION"
 
+
+
+def _build_after_a2_fee_aware_fields(row: Mapping[str, Any], after_a2_flag: bool) -> dict[str, Any]:
+    if not after_a2_flag:
+        return {
+            "a3_after_a2_net_mfe_15m_r": 0.0,
+            "a3_after_a2_net_mae_15m_r": 0.0,
+            "a3_after_a2_net_mfe_1h_r": 0.0,
+            "a3_after_a2_net_mae_1h_r": 0.0,
+            "a3_after_a2_realized_r_proxy_15m": 0.0,
+            "a3_after_a2_realized_r_proxy_1h": 0.0,
+            "a3_after_a2_realized_outcome_15m": "NO_BREAKOUT",
+            "a3_after_a2_realized_outcome_1h": "NO_BREAKOUT",
+            "a3_after_a2_fee_positive_1h": False,
+            "a3_after_a2_net_mfe_1h_bucket": "NO_BREAKOUT",
+            "a3_after_a2_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+        }
+    realized_1h = parse_float(row.get("a3_preview_realized_r_proxy_1h"))
+    return {
+        "a3_after_a2_net_mfe_15m_r": parse_float(row.get("a3_preview_net_mfe_15m_r")),
+        "a3_after_a2_net_mae_15m_r": parse_float(row.get("a3_preview_net_mae_15m_r")),
+        "a3_after_a2_net_mfe_1h_r": parse_float(row.get("a3_preview_net_mfe_1h_r")),
+        "a3_after_a2_net_mae_1h_r": parse_float(row.get("a3_preview_net_mae_1h_r")),
+        "a3_after_a2_realized_r_proxy_15m": parse_float(row.get("a3_preview_realized_r_proxy_15m")),
+        "a3_after_a2_realized_r_proxy_1h": realized_1h,
+        "a3_after_a2_realized_outcome_15m": str(row.get("a3_preview_realized_outcome_15m") or "NO_BREAKOUT"),
+        "a3_after_a2_realized_outcome_1h": str(row.get("a3_preview_realized_outcome_1h") or "NO_BREAKOUT"),
+        "a3_after_a2_fee_positive_1h": realized_1h > 0,
+        "a3_after_a2_net_mfe_1h_bucket": str(row.get("a3_preview_net_mfe_1h_bucket") or "NO_BREAKOUT"),
+        "a3_after_a2_realized_r_proxy_1h_bucket": str(row.get("a3_preview_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
+    }
 class ZoneA2StateClassifier:
     """Research-only A2_PRE_POOL lifecycle classifier for zone_truth rows."""
 
@@ -203,6 +234,7 @@ class ZoneA2StateClassifier:
                 "a3_preview_breakout_after_a2_latency_sec": parse_float(result.get("a3_preview_breakout_raw_latency_sec")) if a3_breakout_after_a2 else 0.0,
                 "a3_preview_latency_bucket": classify_a3_latency_bucket(a3_breakout_after_a2, parse_float(result.get("a3_preview_breakout_raw_latency_sec"))),
                 "a3_preview_ignition_quality": classify_a3_ignition_quality_after_a2(result, a3_breakout_after_a2),
+                **_build_after_a2_fee_aware_fields(result, a3_breakout_after_a2),
                 "strong_a1_raw_flag": strong_flag,
                 "strong_a1_tier": strong_tier,
                 "strong_a1_reason": strong_reason,

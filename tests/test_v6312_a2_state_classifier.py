@@ -393,6 +393,9 @@ def test_a3_after_a2_gate_for_latency_and_ignition_quality():
     assert blocked["a3_preview_breakout_after_a2_flag"] is False
     assert blocked["a3_preview_latency_bucket"] == "NO_IGNITION"
     assert blocked["a3_preview_ignition_quality"] == "NO_IGNITION"
+    assert blocked["a3_after_a2_realized_r_proxy_1h"] == 0.0
+    assert blocked["a3_after_a2_realized_outcome_1h"] == "NO_BREAKOUT"
+    assert blocked["a3_after_a2_fee_positive_1h"] is False
 
     ready = _classify(
         {
@@ -407,8 +410,12 @@ def test_a3_after_a2_gate_for_latency_and_ignition_quality():
             "a3_preview_persistence_3m_flag": True,
             "a3_preview_no_quick_return_3m_flag": False,
             "a3_preview_ignition_quality": "WEAK_IGNITION",
+            "a3_preview_realized_r_proxy_1h": 0.7,
+            "a3_preview_realized_outcome_1h": "TARGET_1R_FIRST",
         }
     )
     assert ready["a3_preview_breakout_after_a2_flag"] is True
     assert ready["a3_preview_latency_bucket"] == "FAST_IGNITION"
     assert ready["a3_preview_ignition_quality"] != "NO_IGNITION"
+    assert ready["a3_after_a2_realized_r_proxy_1h"] == ready["a3_preview_realized_r_proxy_1h"]
+    assert ready["a3_after_a2_realized_outcome_1h"] == ready["a3_preview_realized_outcome_1h"]

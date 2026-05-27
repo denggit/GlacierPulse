@@ -320,6 +320,17 @@ class ZoneTruthEvent:
     a2_pre_ignition_compression_state: str = "INSUFFICIENT_BARS"
     a3_preview_net_mfe_1h_bucket: str = "NO_BREAKOUT"
     a3_preview_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
+    a3_after_a2_net_mfe_15m_r: float = 0.0
+    a3_after_a2_net_mae_15m_r: float = 0.0
+    a3_after_a2_net_mfe_1h_r: float = 0.0
+    a3_after_a2_net_mae_1h_r: float = 0.0
+    a3_after_a2_realized_r_proxy_15m: float = 0.0
+    a3_after_a2_realized_r_proxy_1h: float = 0.0
+    a3_after_a2_realized_outcome_15m: str = "NO_BREAKOUT"
+    a3_after_a2_realized_outcome_1h: str = "NO_BREAKOUT"
+    a3_after_a2_fee_positive_1h: bool = False
+    a3_after_a2_net_mfe_1h_bucket: str = "NO_BREAKOUT"
+    a3_after_a2_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
     a3_preview_breakout_after_a2_latency_sec: float = 0.0
     strong_a1_raw_flag: bool = False
     strong_a1_tier: str = ""

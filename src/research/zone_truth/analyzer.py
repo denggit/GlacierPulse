@@ -34,6 +34,12 @@ FEE_AWARE_GROUP_METRIC_FIELDS = [
     "a3_preview_target_1r_first_1h_rate",
     "a3_preview_stop_1r_first_1h_rate",
     "a3_preview_ambiguous_both_hit_1h_rate",
+    "a3_after_a2_net_mfe_1h_r_avg",
+    "a3_after_a2_realized_r_proxy_1h_avg",
+    "a3_after_a2_fee_positive_1h_rate",
+    "a3_after_a2_target_1r_first_1h_rate",
+    "a3_after_a2_stop_1r_first_1h_rate",
+    "a3_after_a2_ambiguous_both_hit_1h_rate",
 ]
 
 GROUP_METRIC_FIELDS = [
@@ -130,6 +136,9 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a3_preview_realized_outcome_1h.csv", self.group_rows(rows, "a3_preview_realized_outcome_1h"), ["a3_preview_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_preview_net_mfe_1h_bucket.csv", self.group_rows(rows, "a3_preview_net_mfe_1h_bucket"), ["a3_preview_net_mfe_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_preview_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_preview_realized_r_proxy_1h_bucket"), ["a3_preview_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_after_a2_realized_outcome_1h.csv", self.group_rows(rows, "a3_after_a2_realized_outcome_1h"), ["a3_after_a2_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_after_a2_net_mfe_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_net_mfe_1h_bucket"), ["a3_after_a2_net_mfe_1h_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_after_a2_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_realized_r_proxy_1h_bucket"), ["a3_after_a2_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -168,6 +177,7 @@ class ZoneTruthAnalyzer:
         a2_pre_ignition_compression_state_distribution = dict(Counter(str(row.get("a2_pre_ignition_compression_state") or "INSUFFICIENT_BARS") for row in rows))
         a3_preview_realized_outcome_15m_distribution = dict(Counter(str(row.get("a3_preview_realized_outcome_15m") or "NO_BREAKOUT") for row in rows))
         a3_preview_realized_outcome_1h_distribution = dict(Counter(str(row.get("a3_preview_realized_outcome_1h") or "NO_BREAKOUT") for row in rows))
+        a3_after_a2_realized_outcome_1h_distribution = dict(Counter(str(row.get("a3_after_a2_realized_outcome_1h") or "NO_BREAKOUT") for row in rows))
         reaction_rows = [row for row in rows if self._is_reaction_row(row)]
         reaction_rows_without_reaction_event_ts_count = sum(1 for row in reaction_rows if parse_float(row.get("reaction_event_ts")) <= 0)
         reaction_event_ts_invalid_count_on_reaction_rows = sum(
@@ -204,6 +214,7 @@ class ZoneTruthAnalyzer:
             "a2_pre_ignition_compression_state_distribution": a2_pre_ignition_compression_state_distribution,
             "a3_preview_realized_outcome_15m_distribution": a3_preview_realized_outcome_15m_distribution,
             "a3_preview_realized_outcome_1h_distribution": a3_preview_realized_outcome_1h_distribution,
+            "a3_after_a2_realized_outcome_1h_distribution": a3_after_a2_realized_outcome_1h_distribution,
             "a3_preview_strong_ignition_count": sum(1 for row in rows if str(row.get("a3_preview_ignition_quality")) == "STRONG_IGNITION"),
             "a3_preview_medium_ignition_count": sum(1 for row in rows if str(row.get("a3_preview_ignition_quality")) == "MEDIUM_IGNITION"),
             "a3_preview_fee_aware_positive_1h_count": sum(1 for row in rows if parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
@@ -212,6 +223,8 @@ class ZoneTruthAnalyzer:
             "a3_watch_high_fee_aware_positive_1h_rate": round(sum(1 for row in rows if str(row.get("a3_watch_priority")) == "HIGH" and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0) / max(1, sum(1 for row in rows if str(row.get("a3_watch_priority")) == "HIGH")), 6),
             "a2_ready_a3_breakout_fee_positive_1h_count": sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) and parse_bool(row.get("a3_preview_breakout_after_a2_flag")) and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
             "a2_ready_a3_breakout_fee_positive_1h_rate": round(sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) and parse_bool(row.get("a3_preview_breakout_after_a2_flag")) and parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0) / max(1, sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) and parse_bool(row.get("a3_preview_breakout_after_a2_flag")))), 6),
+            "a3_after_a2_fee_positive_1h_count": sum(1 for row in rows if parse_bool(row.get("a3_after_a2_fee_positive_1h"))),
+            "a3_after_a2_fee_positive_1h_rate": round(sum(1 for row in rows if parse_bool(row.get("a3_after_a2_fee_positive_1h")))/total, 6) if total else 0.0,
             "a2_validated_candidate_count": sum(1 for row in rows if parse_bool(row.get("a2_validated_candidate_flag"))),
             "a2_clean_hold_count": sum(1 for row in rows if parse_bool(row.get("a2_clean_hold_flag"))),
             "a2_failed_reclaim_count": sum(1 for row in rows if parse_bool(row.get("a2_failed_reclaim_flag"))),
@@ -318,6 +331,12 @@ class ZoneTruthAnalyzer:
             "a3_preview_target_1r_first_1h_rate": self._rate(rows, lambda row: str(row.get("a3_preview_realized_outcome_1h")) == "TARGET_1R_FIRST"),
             "a3_preview_stop_1r_first_1h_rate": self._rate(rows, lambda row: str(row.get("a3_preview_realized_outcome_1h")) == "STOP_1R_FIRST"),
             "a3_preview_ambiguous_both_hit_1h_rate": self._rate(rows, lambda row: str(row.get("a3_preview_realized_outcome_1h")) == "AMBIGUOUS_BOTH_HIT"),
+            "a3_after_a2_net_mfe_1h_r_avg": self._avg(rows, "a3_after_a2_net_mfe_1h_r"),
+            "a3_after_a2_realized_r_proxy_1h_avg": self._avg(rows, "a3_after_a2_realized_r_proxy_1h"),
+            "a3_after_a2_fee_positive_1h_rate": self._rate(rows, lambda row: parse_bool(row.get("a3_after_a2_fee_positive_1h"))),
+            "a3_after_a2_target_1r_first_1h_rate": self._rate(rows, lambda row: str(row.get("a3_after_a2_realized_outcome_1h")) == "TARGET_1R_FIRST"),
+            "a3_after_a2_stop_1r_first_1h_rate": self._rate(rows, lambda row: str(row.get("a3_after_a2_realized_outcome_1h")) == "STOP_1R_FIRST"),
+            "a3_after_a2_ambiguous_both_hit_1h_rate": self._rate(rows, lambda row: str(row.get("a3_after_a2_realized_outcome_1h")) == "AMBIGUOUS_BOTH_HIT"),
         }
 
     @staticmethod

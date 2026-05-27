@@ -120,6 +120,9 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "zone_truth_by_a2_pre_ignition_compression_state.csv",
         "zone_truth_by_a3_preview_ignition_quality.csv",
         "zone_truth_by_a3_preview_latency_bucket.csv",
+        "zone_truth_by_a3_after_a2_realized_outcome_1h.csv",
+        "zone_truth_by_a3_after_a2_net_mfe_1h_bucket.csv",
+        "zone_truth_by_a3_after_a2_realized_r_proxy_1h_bucket.csv",
     ):
         assert (out / name).exists()
 
@@ -128,6 +131,8 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     assert "a3_preview_realized_r_proxy_1h_avg" in header
     assert "a3_preview_fee_positive_1h_rate" in header
     assert "a3_preview_target_1r_first_1h_rate" in header
+    assert "a3_after_a2_realized_r_proxy_1h_avg" in header
+    assert "a3_after_a2_fee_positive_1h_rate" in header
 
 
 def test_zone_truth_marks_reaction_event_outside_kline_range(tmp_path):
