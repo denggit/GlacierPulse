@@ -35,6 +35,33 @@ def test_close_exit():
     assert out["realized_r_1h"] == 0.15
 
 
+def test_bar_close_entry_skips_entry_bar_first_hit():
+    bars = [
+        {"timestamp": 1000, "high": 110, "low": 90, "close": 100, "open": 100},
+        {"timestamp": 1060, "high": 100.8, "low": 99.2, "close": 100.5, "open": 100},
+    ]
+    out = simulate_single_trade(
+        {"zone_id": "z1", "direction": "BUY"},
+        bars,
+        entry_model="RECLAIM_CLOSE",
+        stop_model="V1_ZONE_WIDTH",
+        target_r=1.0,
+        entry_ts=1000,
+        entry_bar_ts=1000,
+        entry_price_source="BAR_CLOSE",
+        entry_price=100,
+        stop_price=99,
+        risk_u=1,
+    )
+    assert out["entry_bar_ts"] == 1000
+    assert out["entry_price_source"] == "BAR_CLOSE"
+    assert out["target_first_flag"] is False
+    assert out["stop_first_flag"] is False
+    assert out["ambiguous_flag"] is False
+    assert out["realized_outcome_1h"] == "CLOSE_EXIT"
+    assert out["realized_r_1h"] == 0.4
+
+
 def test_invalid_stop():
     stop = resolve_stop({"direction": "BUY"}, {"entry_price": 100}, "STRUCTURAL_PROXY")
     assert stop["available"] is False

@@ -62,7 +62,8 @@ V7_SIMULATED_TRADE_FIELDS = [
     "zone_id", "symbol", "direction",
     "a1_primary_evidence_type", "a1_evidence_types", "a1_strength_tier", "a1_best_horizon",
     "a2_accumulation_path_v2", "a3_aggression_type_v2", "market_context_bucket",
-    "entry_model", "stop_model", "target_r", "entry_ts", "entry_price", "stop_price", "target_price",
+    "entry_model", "stop_model", "target_r", "entry_ts", "entry_bar_ts", "entry_price_source",
+    "entry_price", "stop_price", "target_price",
     "stop_basis_reason", "risk_u", "fee_share_r", "realized_r_1h", "realized_outcome_1h", "target_first_flag",
     "stop_first_flag", "ambiguous_flag", "complete_flag", "mfe_r_1h", "mae_r_1h",
 ]

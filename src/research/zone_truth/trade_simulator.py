@@ -63,6 +63,8 @@ def simulate_3a_proxy_trades(
                             target_r=target_r,
                             entry_ts=entry["entry_ts"],
                             entry_price=entry["entry_price"],
+                            entry_bar_ts=entry.get("entry_bar_ts", 0.0),
+                            entry_price_source=entry.get("entry_price_source", ""),
                             stop_price=stop["stop_price"],
                             risk_u=stop["risk_u"],
                             stop_basis_reason=stop.get("stop_basis_reason", ""),
@@ -79,7 +81,13 @@ def resolve_entry(row: Mapping[str, Any], bars: list[dict[str, float]], entry_mo
         ts = parse_float(row.get("a3_preview_entry_ts"))
         price = parse_float(row.get("a3_preview_entry_price"))
         if parse_bool(row.get("a3_preview_breakout_raw_flag")) and ts > 0 and price > 0:
-            return {"available": True, "entry_ts": ts, "entry_price": price}
+            return {
+                "available": True,
+                "entry_ts": ts,
+                "entry_price": price,
+                "entry_bar_ts": 0.0,
+                "entry_price_source": "A3_PREVIEW_ENTRY",
+            }
         return {"available": False, "reason": "NO_BREAKOUT_ENTRY"}
     if model == "RECLAIM_CLOSE":
         ts = _first_ts(row, "sweep_reclaimed_ts", "a1_reaction_confirmed_ts", "reaction_event_ts")
@@ -163,6 +171,8 @@ def simulate_single_trade(
     entry_price: float,
     stop_price: float,
     risk_u: float,
+    entry_bar_ts: float = 0.0,
+    entry_price_source: str = "",
     stop_basis_reason: str = "",
     window_sec: int = 3600,
     fee_pct: float = 0.001,
@@ -175,7 +185,7 @@ def simulate_single_trade(
         target_price = entry_price + target_r * risk_u
     else:
         target_price = entry_price - target_r * risk_u
-    future = _future_bars(bars, entry_ts, window_sec)
+    future = _future_bars(bars, entry_ts, window_sec, entry_bar_ts=entry_bar_ts, entry_price_source=entry_price_source)
     realized, outcome, flags, mfe_r, mae_r, complete = _first_hit(direction, future, entry_price, stop_price, target_price, risk_u, target_r, fee_share, window_sec)
     return {
         **_row_identity(row),
@@ -183,6 +193,8 @@ def simulate_single_trade(
         "stop_model": stop_model,
         "target_r": round(target_r, 8),
         "entry_ts": round(entry_ts, 8),
+        "entry_bar_ts": round(entry_bar_ts, 8),
+        "entry_price_source": entry_price_source,
         "entry_price": round(entry_price, 8),
         "stop_price": round(stop_price, 8),
         "stop_basis_reason": stop_basis_reason or str(stop_model),
@@ -270,7 +282,13 @@ def _entry_from_bar_close(bars: list[dict[str, float]], ts: float, reason: str) 
     bar = _bar_at_or_after(bars, ts)
     if not bar:
         return {"available": False, "reason": "ENTRY_BAR_UNAVAILABLE"}
-    return {"available": True, "entry_ts": float(bar["timestamp"]), "entry_price": float(bar["close"])}
+    return {
+        "available": True,
+        "entry_ts": float(bar["timestamp"]),
+        "entry_price": float(bar["close"]),
+        "entry_bar_ts": float(bar["timestamp"]),
+        "entry_price_source": "BAR_CLOSE",
+    }
 
 
 def _bar_at_or_after(bars: list[dict[str, float]], ts: float) -> dict[str, float] | None:
@@ -279,10 +297,18 @@ def _bar_at_or_after(bars: list[dict[str, float]], ts: float) -> dict[str, float
     return bars[idx] if idx < len(bars) else None
 
 
-def _future_bars(bars: list[dict[str, float]], entry_ts: float, window_sec: int) -> list[dict[str, float]]:
+def _future_bars(
+    bars: list[dict[str, float]],
+    entry_ts: float,
+    window_sec: int,
+    entry_bar_ts: float = 0.0,
+    entry_price_source: str = "",
+) -> list[dict[str, float]]:
     timestamps = [float(b["timestamp"]) for b in bars]
-    start = bisect_left(timestamps, entry_ts)
-    end = bisect_right(timestamps, entry_ts + float(window_sec))
+    close_based_entry = str(entry_price_source or "").upper() == "BAR_CLOSE" and entry_bar_ts > 0
+    anchor_ts = entry_bar_ts if close_based_entry else entry_ts
+    start = bisect_right(timestamps, entry_bar_ts) if close_based_entry else bisect_left(timestamps, entry_ts)
+    end = bisect_right(timestamps, anchor_ts + float(window_sec))
     return bars[start:end]
 
 
@@ -348,6 +374,8 @@ def _unavailable(
         "stop_model": stop_model,
         "target_r": 0.0,
         "entry_ts": 0.0,
+        "entry_bar_ts": 0.0,
+        "entry_price_source": "",
         "entry_price": 0.0,
         "stop_price": 0.0,
         "stop_basis_reason": stop_basis_reason,
