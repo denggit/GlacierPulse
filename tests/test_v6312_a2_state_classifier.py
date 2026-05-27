@@ -378,3 +378,44 @@ def test_compression_requires_complete_15m_forward_window():
     assert incomplete["a2_compression_state"] == "INSUFFICIENT_FUTURE_DATA"
     assert incomplete["a2_compression_reason"] == "incomplete_15m_forward_window"
     assert complete["a2_compression_state"] == "COMPRESSING"
+
+
+def test_a3_after_a2_gate_for_latency_and_ignition_quality():
+    blocked = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "a2_book_depth_state": "BOOK_DEPTH_MISSING",
+            "a3_preview_breakout_raw_flag": True,
+            "a3_preview_breakout_raw_latency_sec": 60,
+            "a3_preview_ignition_quality": "STRONG_IGNITION",
+        }
+    )
+    assert blocked["a3_preview_breakout_after_a2_flag"] is False
+    assert blocked["a3_preview_latency_bucket"] == "NO_IGNITION"
+    assert blocked["a3_preview_ignition_quality"] == "NO_IGNITION"
+    assert blocked["a3_after_a2_realized_r_proxy_1h"] == 0.0
+    assert blocked["a3_after_a2_realized_outcome_1h"] == "NO_BREAKOUT"
+    assert blocked["a3_after_a2_fee_positive_1h"] is False
+
+    ready = _classify(
+        {
+            "a2_pre_pool_eligible": True,
+            "has_clean_hold": True,
+            "a2_book_depth_state": "BOOK_DEPTH_VALID",
+            "a2_context_alignment": "ALIGNED",
+            "a3_preview_breakout_raw_flag": True,
+            "a3_preview_breakout_raw_latency_sec": 60,
+            "a3_preview_net_mfe_15m_r": 0.8,
+            "a3_preview_net_mae_15m_r": -0.5,
+            "a3_preview_persistence_3m_flag": True,
+            "a3_preview_no_quick_return_3m_flag": False,
+            "a3_preview_ignition_quality": "WEAK_IGNITION",
+            "a3_preview_realized_r_proxy_1h": 0.7,
+            "a3_preview_realized_outcome_1h": "TARGET_1R_FIRST",
+        }
+    )
+    assert ready["a3_preview_breakout_after_a2_flag"] is True
+    assert ready["a3_preview_latency_bucket"] == "FAST_IGNITION"
+    assert ready["a3_preview_ignition_quality"] != "NO_IGNITION"
+    assert ready["a3_after_a2_realized_r_proxy_1h"] == ready["a3_preview_realized_r_proxy_1h"]
+    assert ready["a3_after_a2_realized_outcome_1h"] == ready["a3_preview_realized_outcome_1h"]

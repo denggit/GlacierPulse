@@ -8,6 +8,81 @@ from typing import Any, Iterable, Mapping
 from src.research.a1_edge.schema import parse_bool, parse_float
 
 
+
+
+def classify_a3_latency_bucket(after_a2_flag: bool, latency_sec: float) -> str:
+    if not after_a2_flag:
+        return "NO_IGNITION"
+    if latency_sec <= 60:
+        return "FAST_IGNITION"
+    if latency_sec <= 900:
+        return "NORMAL_IGNITION"
+    if latency_sec <= 3600:
+        return "LATE_IGNITION"
+    return "OUT_OF_WINDOW"
+
+
+def classify_a3_ignition_quality_after_a2(row: Mapping[str, Any], after_a2_flag: bool) -> str:
+    if not after_a2_flag:
+        return "NO_IGNITION"
+    raw = str(row.get("a3_preview_ignition_quality") or "").upper()
+    if raw in {"STRONG_IGNITION", "MEDIUM_IGNITION", "WEAK_IGNITION"}:
+        return raw
+
+    latency_bucket = classify_a3_latency_bucket(True, parse_float(row.get("a3_preview_breakout_raw_latency_sec")))
+    net_mfe_15m = parse_float(row.get("a3_preview_net_mfe_15m_r"))
+    net_mae_15m = parse_float(row.get("a3_preview_net_mae_15m_r"))
+    persistence_3m = parse_bool(row.get("a3_preview_persistence_3m_flag"))
+    no_quick_return_3m = parse_bool(row.get("a3_preview_no_quick_return_3m_flag"))
+
+    if (
+        net_mfe_15m >= 1.0
+        and net_mae_15m > -1.0
+        and persistence_3m
+        and no_quick_return_3m
+        and latency_bucket in {"FAST_IGNITION", "NORMAL_IGNITION"}
+    ):
+        return "STRONG_IGNITION"
+    if (
+        net_mfe_15m >= 0.5
+        and net_mae_15m > -1.5
+        and persistence_3m
+        and latency_bucket != "OUT_OF_WINDOW"
+    ):
+        return "MEDIUM_IGNITION"
+    return "WEAK_IGNITION"
+
+
+
+def _build_after_a2_fee_aware_fields(row: Mapping[str, Any], after_a2_flag: bool) -> dict[str, Any]:
+    if not after_a2_flag:
+        return {
+            "a3_after_a2_net_mfe_15m_r": 0.0,
+            "a3_after_a2_net_mae_15m_r": 0.0,
+            "a3_after_a2_net_mfe_1h_r": 0.0,
+            "a3_after_a2_net_mae_1h_r": 0.0,
+            "a3_after_a2_realized_r_proxy_15m": 0.0,
+            "a3_after_a2_realized_r_proxy_1h": 0.0,
+            "a3_after_a2_realized_outcome_15m": "NO_BREAKOUT",
+            "a3_after_a2_realized_outcome_1h": "NO_BREAKOUT",
+            "a3_after_a2_fee_positive_1h": False,
+            "a3_after_a2_net_mfe_1h_bucket": "NO_BREAKOUT",
+            "a3_after_a2_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+        }
+    realized_1h = parse_float(row.get("a3_preview_realized_r_proxy_1h"))
+    return {
+        "a3_after_a2_net_mfe_15m_r": parse_float(row.get("a3_preview_net_mfe_15m_r")),
+        "a3_after_a2_net_mae_15m_r": parse_float(row.get("a3_preview_net_mae_15m_r")),
+        "a3_after_a2_net_mfe_1h_r": parse_float(row.get("a3_preview_net_mfe_1h_r")),
+        "a3_after_a2_net_mae_1h_r": parse_float(row.get("a3_preview_net_mae_1h_r")),
+        "a3_after_a2_realized_r_proxy_15m": parse_float(row.get("a3_preview_realized_r_proxy_15m")),
+        "a3_after_a2_realized_r_proxy_1h": realized_1h,
+        "a3_after_a2_realized_outcome_15m": str(row.get("a3_preview_realized_outcome_15m") or "NO_BREAKOUT"),
+        "a3_after_a2_realized_outcome_1h": str(row.get("a3_preview_realized_outcome_1h") or "NO_BREAKOUT"),
+        "a3_after_a2_fee_positive_1h": realized_1h > 0,
+        "a3_after_a2_net_mfe_1h_bucket": str(row.get("a3_preview_net_mfe_1h_bucket") or "NO_BREAKOUT"),
+        "a3_after_a2_realized_r_proxy_1h_bucket": str(row.get("a3_preview_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
+    }
 class ZoneA2StateClassifier:
     """Research-only A2_PRE_POOL lifecycle classifier for zone_truth rows."""
 
@@ -156,9 +231,10 @@ class ZoneA2StateClassifier:
                 "a2_ready_for_a3_reason": ready_reason,
                 "a3_watch_priority": a3_watch_priority,
                 "a3_preview_breakout_after_a2_flag": a3_breakout_after_a2,
-                "a3_preview_breakout_after_a2_latency_sec": (
-                    parse_float(result.get("a3_preview_breakout_raw_latency_sec")) if a3_breakout_after_a2 else 0.0
-                ),
+                "a3_preview_breakout_after_a2_latency_sec": parse_float(result.get("a3_preview_breakout_raw_latency_sec")) if a3_breakout_after_a2 else 0.0,
+                "a3_preview_latency_bucket": classify_a3_latency_bucket(a3_breakout_after_a2, parse_float(result.get("a3_preview_breakout_raw_latency_sec"))),
+                "a3_preview_ignition_quality": classify_a3_ignition_quality_after_a2(result, a3_breakout_after_a2),
+                **_build_after_a2_fee_aware_fields(result, a3_breakout_after_a2),
                 "strong_a1_raw_flag": strong_flag,
                 "strong_a1_tier": strong_tier,
                 "strong_a1_reason": strong_reason,
