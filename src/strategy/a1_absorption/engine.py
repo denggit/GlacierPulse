@@ -39,6 +39,13 @@ from src.utils.log_noise import suppressed_log_counter
 from src.research.phase1_truth.models import SCHEMA_VERSION
 from src.research.phase1_truth.tracker import Phase1TruthTracker, session_snapshot
 from src.research.a1_dynamic_params.previewer import A1DynamicParamPreviewer
+from src.research.zone_truth.a1_evidence_v2 import classify_a1_evidence_event
+from src.research.zone_truth.zone_boundary_v2 import (
+    compute_zone_boundary_v2,
+    initialize_pending_event_profile,
+    record_trade_bucket,
+    update_pending_event_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +205,9 @@ class A1AbsorptionEngine:
             'last_trade_recv_ts': recv_ts,
             'status': 'ACCUMULATING',
         }
+        if bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+            initialize_pending_event_profile(event, local_book, trigger_price=price)
+            record_trade_bucket(event, price, active_notional)
         self._append_pending_event(event)
 
         if bool(getattr(cfg, "V62_LOG_PENDING_ICEBERG_ENABLED", True)):
@@ -248,6 +258,8 @@ class A1AbsorptionEngine:
             event["last_trade_recv_ts"] = recv_ts
             event["min_trade_price"] = min(float(event["min_trade_price"]), price)
             event["max_trade_price"] = max(float(event["max_trade_price"]), price)
+            if bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+                record_trade_bucket(event, price, active_notional)
 
             logger.debug(
                 "[PENDING-MERGE] id=%s direction=%s price=%.2f add=%.0fU total=%.0fU trades=%d",
@@ -292,6 +304,12 @@ class A1AbsorptionEngine:
 
         for event in self.pending_events:
             status = event.get("status")
+            if bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+                try:
+                    book_levels = self.ctx.bids if str(event.get("direction")) == "BUY" else self.ctx.asks
+                    update_pending_event_profile(event, book_levels)
+                except Exception:
+                    logger.debug("[ZONE-BOUNDARY-V2] pending_profile_update_failed", exc_info=True)
 
             if status == "ACCUMULATING":
                 if book_recv_ts >= float(event.get("accumulate_until_recv_ts", 0.0)):
@@ -873,7 +891,7 @@ class A1AbsorptionEngine:
         )
         active_volume = self._safe_float(signal.get("active_volume", event.get("active_notional", 0.0)), 0.0)
 
-        return {
+        base = {
             "event_id": str(event.get("event_id", "")),
             "ts": ts,
             "recv_ts": recv_ts,
@@ -893,6 +911,11 @@ class A1AbsorptionEngine:
             "behavior": str(signal.get("behavior") or ("CANCEL" if result == "CANCEL" else "")),
             "cancel_reason": cancel_reason,
         }
+        if bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+            base.update(compute_zone_boundary_v2(base | dict(event), direction=base["direction"]))
+        if bool(getattr(cfg, "A1_EVIDENCE_V2_ENABLED", True)):
+            base.update(classify_a1_evidence_event(base | dict(event)))
+        return base
 
     def _build_phase1_truth_candidate_snapshot(
         self,
@@ -930,7 +953,7 @@ class A1AbsorptionEngine:
         active_side_ratio = 1.0 if active_notional > 0 else 0.0
         detector = getattr(self, "iceberg_radar", None)
 
-        return {
+        base = {
             "schema_version": SCHEMA_VERSION,
             "record_type": "candidate_settled",
             "event_key": event_key,
@@ -986,6 +1009,11 @@ class A1AbsorptionEngine:
             "session_tag": session.get("session_tag"),
             "is_weekend": session.get("is_weekend"),
         }
+        if bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+            base.update(compute_zone_boundary_v2(base | dict(event), direction=direction, current_price=settle_price))
+        if bool(getattr(cfg, "A1_EVIDENCE_V2_ENABLED", True)):
+            base.update(classify_a1_evidence_event(base))
+        return base
 
     def _attach_phase1_candidate_zone_fields(
         self,
@@ -1016,6 +1044,31 @@ class A1AbsorptionEngine:
         snapshot["zone_last_seen_ts"] = snapshot["assigned_zone_last_seen_ts"]
         snapshot["zone_iceberg_count"] = snapshot["assigned_zone_iceberg_count"]
         snapshot["zone_state"] = snapshot["assigned_zone_state"]
+        for field_name in (
+            "observation_zone_lower",
+            "observation_zone_upper",
+            "absorption_core_lower",
+            "absorption_core_upper",
+            "absorption_core_width",
+            "sweep_extreme_low",
+            "sweep_extreme_high",
+            "defended_low",
+            "defended_high",
+            "zone_v2_structural_stop_price",
+            "zone_v2_structural_risk_u",
+            "zone_v2_boundary_reason",
+            "zone_v2_core_recovery_ratio_avg",
+            "zone_v2_core_recovery_ratio_min",
+            "zone_v2_core_end_vs_start_avg",
+            "zone_v2_over_reload_count",
+            "zone_v2_reload_level_count",
+            "zone_v2_layered_absorption_flag",
+            "zone_v2_book_coverage_low",
+            "zone_v2_book_coverage_high",
+            "zone_v2_book_coverage_sufficient_flag",
+        ):
+            if field_name in assigned_zone and field_name not in snapshot:
+                snapshot[field_name] = assigned_zone.get(field_name)
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:

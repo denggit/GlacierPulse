@@ -70,10 +70,59 @@ def _int_list_config(name: str, default: list[int]) -> list[int]:
     return result or list(default)
 
 
+def _float_list_config(name: str, default: list[float]) -> list[float]:
+    value = _raw_value(name, ",".join(str(v) for v in default))
+    if isinstance(value, (list, tuple)):
+        raw_parts = value
+    else:
+        raw_parts = str(value).split(",")
+    result: list[float] = []
+    for part in raw_parts:
+        try:
+            result.append(float(str(part).strip()))
+        except (TypeError, ValueError):
+            continue
+    return result or list(default)
+
+
 V62_LOG_PROFILE = _str_config(
     "V62_LOG_PROFILE",
     "PRODUCTION_SAFE",
 ).upper()
+
+
+# V7.0.0 shadow-only 3A research loop configuration.
+A1_EVIDENCE_V2_ENABLED = _bool_config("A1_EVIDENCE_V2_ENABLED", True)
+A1_EVIDENCE_V2_SHADOW_ONLY = _bool_config("A1_EVIDENCE_V2_SHADOW_ONLY", True)
+A1_VISIBLE_WALL_MIN_START_DEPTH_USDT = _float_config("A1_VISIBLE_WALL_MIN_START_DEPTH_USDT", 500000.0)
+A1_VISIBLE_WALL_MIN_ACTIVE_NOTIONAL_USDT = _float_config("A1_VISIBLE_WALL_MIN_ACTIVE_NOTIONAL_USDT", 300000.0)
+A1_VISIBLE_WALL_MAX_WITHDRAWAL_EXCESS_RATIO = _float_config("A1_VISIBLE_WALL_MAX_WITHDRAWAL_EXCESS_RATIO", 0.35)
+A1_VISIBLE_WALL_MIN_CONSUMPTION_RATIO = _float_config("A1_VISIBLE_WALL_MIN_CONSUMPTION_RATIO", 0.45)
+A1_VISIBLE_WALL_MAX_CONSUMPTION_RATIO = _float_config("A1_VISIBLE_WALL_MAX_CONSUMPTION_RATIO", 1.35)
+A1_VISIBLE_WALL_MIN_SURVIVAL_RATIO = _float_config("A1_VISIBLE_WALL_MIN_SURVIVAL_RATIO", 0.20)
+A1_CLUSTER_WINDOWS_SEC = _int_list_config("A1_CLUSTER_WINDOWS_SEC", [3, 10, 30, 120])
+A1_CLUSTER_MIN_ACTIVE_NOTIONAL_USDT = _float_config("A1_CLUSTER_MIN_ACTIVE_NOTIONAL_USDT", 1000000.0)
+A1_CLUSTER_MAX_PRICE_EFFICIENCY = _float_config("A1_CLUSTER_MAX_PRICE_EFFICIENCY", 0.0008)
+A1_CLUSTER_MIN_EVENT_COUNT = _int_config("A1_CLUSTER_MIN_EVENT_COUNT", 2)
+A1_LADDER_BUCKET_SIZE_U = _float_config("A1_LADDER_BUCKET_SIZE_U", 0.5)
+A1_LADDER_MIN_LEVEL_COUNT = _int_config("A1_LADDER_MIN_LEVEL_COUNT", 3)
+
+ZONE_BOUNDARY_V2_ENABLED = _bool_config("ZONE_BOUNDARY_V2_ENABLED", True)
+ZONE_BOUNDARY_V2_SHADOW_ONLY = _bool_config("ZONE_BOUNDARY_V2_SHADOW_ONLY", True)
+ZONE_BOUNDARY_V2_SCAN_RANGE_U = _float_config("ZONE_BOUNDARY_V2_SCAN_RANGE_U", 8.0)
+ZONE_BOUNDARY_V2_BUCKET_SIZE_U = _float_config("ZONE_BOUNDARY_V2_BUCKET_SIZE_U", 0.5)
+ZONE_BOUNDARY_V2_MIN_TRADE_NOTIONAL_PER_BUCKET = _float_config("ZONE_BOUNDARY_V2_MIN_TRADE_NOTIONAL_PER_BUCKET", 20000.0)
+ZONE_BOUNDARY_V2_MIN_RECOVERY_RATIO = _float_config("ZONE_BOUNDARY_V2_MIN_RECOVERY_RATIO", 0.70)
+ZONE_BOUNDARY_V2_MIN_END_VS_START = _float_config("ZONE_BOUNDARY_V2_MIN_END_VS_START", 0.90)
+ZONE_BOUNDARY_V2_OVER_RELOAD_RATIO = _float_config("ZONE_BOUNDARY_V2_OVER_RELOAD_RATIO", 1.05)
+ZONE_BOUNDARY_V2_STRUCTURAL_STOP_BUFFER_U = _float_config("ZONE_BOUNDARY_V2_STRUCTURAL_STOP_BUFFER_U", 0.5)
+ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS = _bool_config("ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS", False)
+
+V7_3A_SIMULATOR_ENABLED = _bool_config("V7_3A_SIMULATOR_ENABLED", True)
+V7_3A_ROUNDTRIP_FEE_PCT = _float_config("V7_3A_ROUNDTRIP_FEE_PCT", 0.001)
+V7_3A_TARGET_R_LIST = _float_list_config("V7_3A_TARGET_R_LIST", [1.0, 1.5, 2.0])
+V7_3A_MIN_SAMPLE = _int_config("V7_3A_MIN_SAMPLE", 10)
+V7_3A_TOP_COMBO_LIMIT = _int_config("V7_3A_TOP_COMBO_LIMIT", 100)
 
 
 def _log_default_for_profile(

@@ -197,6 +197,7 @@ class A1ZoneTracker:
             "last_quality": event.get("quality"),
             "_events": [dict(event)],
         }
+        self._attach_v7_zone_boundary(zone, event)
         self._recalculate_score(zone)
         self.zones.append(zone)
         return zone
@@ -246,6 +247,7 @@ class A1ZoneTracker:
         zone["last_result"] = result
         zone["last_quality"] = quality
         zone.setdefault("_events", []).append(dict(event))
+        self._attach_v7_zone_boundary(zone, event)
 
         self._recalculate_score(zone)
         self._update_state(
@@ -518,12 +520,88 @@ class A1ZoneTracker:
             "wait_ms": self._safe_float(event.get("wait_ms"), 0.0),
             "behavior": str(event.get("behavior") or ""),
             "cancel_reason": event.get("cancel_reason"),
+            **self._v7_event_fields(event),
         }
 
     def _capped_hidden_volume(self, event: Dict[str, Any]) -> float:
         hidden_volume = max(0.0, float(event.get("hidden_volume", 0.0)))
         active_volume = max(0.0, float(event.get("active_volume", 0.0)))
         return min(hidden_volume, active_volume * self.hidden_vs_active_score_cap)
+
+    @staticmethod
+    def _v7_event_fields(event: Dict[str, Any]) -> Dict[str, Any]:
+        names = (
+            "observation_zone_lower",
+            "observation_zone_upper",
+            "absorption_core_lower",
+            "absorption_core_upper",
+            "absorption_core_width",
+            "sweep_extreme_low",
+            "sweep_extreme_high",
+            "defended_low",
+            "defended_high",
+            "zone_v2_structural_stop_price",
+            "zone_v2_structural_risk_u",
+            "zone_v2_boundary_reason",
+            "zone_v2_core_recovery_ratio_avg",
+            "zone_v2_core_recovery_ratio_min",
+            "zone_v2_core_end_vs_start_avg",
+            "zone_v2_over_reload_count",
+            "zone_v2_reload_level_count",
+            "zone_v2_layered_absorption_flag",
+            "zone_v2_book_coverage_low",
+            "zone_v2_book_coverage_high",
+            "zone_v2_book_coverage_sufficient_flag",
+        )
+        return {name: event.get(name) for name in names if name in event}
+
+    def _attach_v7_zone_boundary(self, zone: Dict[str, Any], event: Dict[str, Any]) -> None:
+        fields = self._v7_event_fields(event)
+        if not fields:
+            return
+        direction = str(zone.get("direction") or "").upper()
+        core_low = self._safe_float(fields.get("absorption_core_lower"), 0.0)
+        core_high = self._safe_float(fields.get("absorption_core_upper"), 0.0)
+        sweep_low = self._safe_float(fields.get("sweep_extreme_low"), 0.0)
+        sweep_high = self._safe_float(fields.get("sweep_extreme_high"), 0.0)
+        for direct_field in (
+            "observation_zone_lower",
+            "observation_zone_upper",
+            "defended_low",
+            "defended_high",
+            "zone_v2_core_recovery_ratio_avg",
+            "zone_v2_core_recovery_ratio_min",
+            "zone_v2_core_end_vs_start_avg",
+            "zone_v2_book_coverage_low",
+            "zone_v2_book_coverage_high",
+        ):
+            if direct_field in fields and zone.get(direct_field) in (None, ""):
+                zone[direct_field] = fields.get(direct_field)
+        if core_low > 0:
+            zone["absorption_core_lower"] = min(self._safe_float(zone.get("absorption_core_lower"), core_low), core_low)
+        if core_high > 0:
+            zone["absorption_core_upper"] = max(self._safe_float(zone.get("absorption_core_upper"), core_high), core_high)
+        zone["absorption_core_width"] = max(
+            0.0,
+            self._safe_float(zone.get("absorption_core_upper"), 0.0) - self._safe_float(zone.get("absorption_core_lower"), 0.0),
+        )
+        if sweep_low > 0:
+            zone["sweep_extreme_low"] = min(self._safe_float(zone.get("sweep_extreme_low"), sweep_low), sweep_low)
+        if sweep_high > 0:
+            zone["sweep_extreme_high"] = max(self._safe_float(zone.get("sweep_extreme_high"), sweep_high), sweep_high)
+        zone["zone_v2_reload_level_count"] = max(
+            self._safe_int(zone.get("zone_v2_reload_level_count"), 0),
+            self._safe_int(fields.get("zone_v2_reload_level_count"), 0),
+        )
+        zone["zone_v2_over_reload_count"] = self._safe_int(zone.get("zone_v2_over_reload_count"), 0) + self._safe_int(fields.get("zone_v2_over_reload_count"), 0)
+        zone["zone_v2_layered_absorption_flag"] = bool(zone.get("zone_v2_layered_absorption_flag") or fields.get("zone_v2_layered_absorption_flag"))
+        zone["zone_v2_boundary_reason"] = fields.get("zone_v2_boundary_reason") or zone.get("zone_v2_boundary_reason") or ""
+        zone["zone_v2_book_coverage_sufficient_flag"] = bool(zone.get("zone_v2_book_coverage_sufficient_flag") or fields.get("zone_v2_book_coverage_sufficient_flag"))
+        buffer_u = float(getattr(cfg, "ZONE_BOUNDARY_V2_STRUCTURAL_STOP_BUFFER_U", 0.5))
+        if direction == "BUY" and self._safe_float(zone.get("sweep_extreme_low"), 0.0) > 0:
+            zone["zone_v2_structural_stop_price"] = self._safe_float(zone.get("sweep_extreme_low"), 0.0) - buffer_u
+        elif direction == "SELL" and self._safe_float(zone.get("sweep_extreme_high"), 0.0) > 0:
+            zone["zone_v2_structural_stop_price"] = self._safe_float(zone.get("sweep_extreme_high"), 0.0) + buffer_u
 
     @staticmethod
     def _interval_distance(a_lower: float, a_upper: float, b_lower: float, b_upper: float) -> float:
@@ -585,6 +663,27 @@ class A1ZoneTracker:
             "positive_score": zone.get("positive_score"),
             "negative_score": zone.get("negative_score"),
             "net_score": zone.get("net_score"),
+            "observation_zone_lower": zone.get("observation_zone_lower"),
+            "observation_zone_upper": zone.get("observation_zone_upper"),
+            "absorption_core_lower": zone.get("absorption_core_lower"),
+            "absorption_core_upper": zone.get("absorption_core_upper"),
+            "absorption_core_width": zone.get("absorption_core_width"),
+            "sweep_extreme_low": zone.get("sweep_extreme_low"),
+            "sweep_extreme_high": zone.get("sweep_extreme_high"),
+            "defended_low": zone.get("defended_low"),
+            "defended_high": zone.get("defended_high"),
+            "zone_v2_structural_stop_price": zone.get("zone_v2_structural_stop_price"),
+            "zone_v2_structural_risk_u": zone.get("zone_v2_structural_risk_u"),
+            "zone_v2_boundary_reason": zone.get("zone_v2_boundary_reason"),
+            "zone_v2_core_recovery_ratio_avg": zone.get("zone_v2_core_recovery_ratio_avg"),
+            "zone_v2_core_recovery_ratio_min": zone.get("zone_v2_core_recovery_ratio_min"),
+            "zone_v2_core_end_vs_start_avg": zone.get("zone_v2_core_end_vs_start_avg"),
+            "zone_v2_over_reload_count": zone.get("zone_v2_over_reload_count"),
+            "zone_v2_reload_level_count": zone.get("zone_v2_reload_level_count"),
+            "zone_v2_layered_absorption_flag": zone.get("zone_v2_layered_absorption_flag"),
+            "zone_v2_book_coverage_low": zone.get("zone_v2_book_coverage_low"),
+            "zone_v2_book_coverage_high": zone.get("zone_v2_book_coverage_high"),
+            "zone_v2_book_coverage_sufficient_flag": zone.get("zone_v2_book_coverage_sufficient_flag"),
         }
 
     def _prune_zones(self) -> None:

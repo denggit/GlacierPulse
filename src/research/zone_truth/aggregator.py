@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import statistics
 from collections import Counter, defaultdict
+from dataclasses import fields
 from typing import Any, Iterable, Mapping
 
 from src.research.a1_edge.schema import parse_bool, parse_float, parse_timestamp
 from src.research.phase1_truth.analyzer import normalize_record
 
+from .a1_evidence_v2 import attach_a1_evidence_v2
 from .models import (
     MATCH_EXACT,
     MATCH_FUZZY,
@@ -26,6 +28,7 @@ from .models import (
     truth_label,
     truth_score,
 )
+from .zone_boundary_v2 import aggregate_zone_boundary_v2
 
 
 EXACT_ZONE_ID_FIELDS = ("zone_id", "assigned_zone_id", "frozen_zone_id", "matched_zone_id")
@@ -274,6 +277,7 @@ class ZoneTruthAggregator:
         base.zone_match_method = str(entry.get("method") or MATCH_UNMATCHED)
         base.match_score = round(float(entry.get("score") or 0.0), 4)
         self._attach_pie_stats(base, pies)
+        self._attach_v7_shadow_fields(base, pies)
         if base.zone_source == SOURCE_SYNTHETIC:
             base.reaction_type = "SYNTHETIC"
             base.a1_reaction_type = "SYNTHETIC"
@@ -281,6 +285,16 @@ class ZoneTruthAggregator:
             base.final_reaction_type = "SYNTHETIC"
             base.reaction_types = "SYNTHETIC"
         return base
+
+    @staticmethod
+    def _attach_v7_shadow_fields(row: ZoneTruthEvent, pies: list[Mapping[str, Any]]) -> None:
+        data = row.to_dict()
+        data = attach_a1_evidence_v2(data, pies)
+        data = aggregate_zone_boundary_v2(data, pies)
+        valid_fields = {field.name for field in fields(ZoneTruthEvent)}
+        for key, value in data.items():
+            if key in valid_fields:
+                setattr(row, key, value)
 
     def _base_from_reaction(self, zone_id: str, reaction: ZoneReaction) -> ZoneTruthEvent:
         lower, upper = reaction.zone_lower, reaction.zone_upper

@@ -7,14 +7,19 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from src.research.a1_edge.io_utils import read_csv, read_jsonl, write_csv
+from config import research_evaluator as cfg
+from src.research.a1_edge.io_utils import normalize_klines, read_csv, read_jsonl, write_csv, write_json
 from src.research.a1_edge.schema import parse_bool, parse_float
 
+from .a2_accumulation_v2 import attach_a2_accumulation_path_v2
+from .a3_aggression_v2 import attach_a3_aggression_v2
 from .aggregator import ZoneTruthAggregator
 from .a2_state import ZoneA2StateClassifier
+from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, bad_combos, build_combo_matrix, combo_summary, group_stats, top_combos
 from .forward import ZoneForwardMetricsCalculator
 from .market_context import ZoneMarketContextCalculator
 from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
+from .trade_simulator import simulate_3a_proxy_trades
 
 
 FEE_AWARE_GROUP_METRIC_FIELDS = [
@@ -51,6 +56,15 @@ FEE_AWARE_GROUP_METRIC_FIELDS = [
     "a3_after_a2_structural_improved_rate",
     "a3_after_a2_structural_vs_v1_delta_r_1h_avg",
     "a3_after_a2_structural_fee_share_delta_r_avg",
+]
+
+V7_SIMULATED_TRADE_FIELDS = [
+    "zone_id", "symbol", "direction",
+    "a1_primary_evidence_type", "a1_evidence_types", "a1_strength_tier", "a1_best_horizon",
+    "a2_accumulation_path_v2", "a3_aggression_type_v2", "market_context_bucket",
+    "entry_model", "stop_model", "target_r", "entry_ts", "entry_price", "stop_price", "target_price",
+    "risk_u", "fee_share_r", "realized_r_1h", "realized_outcome_1h", "target_first_flag",
+    "stop_first_flag", "ambiguous_flag", "complete_flag", "mfe_r_1h", "mae_r_1h",
 ]
 
 GROUP_METRIC_FIELDS = [
@@ -120,6 +134,17 @@ class ZoneTruthAnalyzer:
         rows = ZoneForwardMetricsCalculator(self.windows_sec, kline_timezone=self.timezone).attach_forward_metrics(rows, kline_records)
         rows = ZoneMarketContextCalculator(kline_timezone=self.timezone).attach_market_context(rows, kline_records)
         rows = ZoneA2StateClassifier().attach_a2_state(rows)
+        rows = [attach_a2_accumulation_path_v2(row) for row in rows]
+        rows = [attach_a3_aggression_v2(row) for row in rows]
+        normalized_bars = normalize_klines(kline_records, kline_timezone=self.timezone)
+        simulated_trades = (
+            simulate_3a_proxy_trades(rows, normalized_bars)
+            if bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True))
+            else []
+        )
+        combo_matrix_rows = build_combo_matrix(simulated_trades)
+        top_combo_rows = top_combos(combo_matrix_rows)
+        bad_combo_rows = bad_combos(combo_matrix_rows)
         write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
@@ -156,6 +181,9 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a3_after_a2_structural_realized_outcome_1h.csv", self.group_rows(rows, "a3_after_a2_structural_realized_outcome_1h"), ["a3_after_a2_structural_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_structural_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_structural_realized_r_proxy_1h_bucket"), ["a3_after_a2_structural_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_structural_improved.csv", self.group_rows(rows, "a3_after_a2_structural_improved_flag"), ["a3_after_a2_structural_improved_flag"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a1_evidence_type.csv", self.group_rows(rows, "a1_primary_evidence_type"), ["a1_primary_evidence_type"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a2_accumulation_path_v2.csv", self.group_rows(rows, "a2_accumulation_path_v2"), ["a2_accumulation_path_v2"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_aggression_type_v2.csv", self.group_rows(rows, "a3_aggression_type_v2"), ["a3_aggression_type_v2"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -165,7 +193,16 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_volatility_regime_1h.csv", self.group_rows(rows, "volatility_regime_1h"), ["volatility_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_match_quality.csv", self.match_quality(rows, aggregator.unmatched_pie_count), ["match_quality"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_3a_simulated_trades.csv", simulated_trades, V7_SIMULATED_TRADE_FIELDS)
+        write_csv(out / "zone_truth_by_entry_model.csv", self.group_simulated_trades(simulated_trades, "entry_model"), ["entry_model"] + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_stop_model.csv", self.group_simulated_trades(simulated_trades, "stop_model"), ["stop_model"] + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_target_r.csv", self.group_simulated_trades(simulated_trades, "target_r"), ["target_r"] + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_3a_combo_matrix.csv", combo_matrix_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_3a_combo_top.csv", top_combo_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_3a_combo_bad.csv", bad_combo_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
         summary = self.summary(rows, aggregator.unmatched_pie_count)
+        summary.update(combo_summary(combo_matrix_rows, simulated_trades))
+        write_json(out / "summary.json", summary)
         self._write_summary_md(out / "zone_truth_summary.md", summary)
         return summary
 
@@ -314,6 +351,15 @@ class ZoneTruthAnalyzer:
         if unmatched_pie_count:
             result[-1]["count"] = int(result[-1].get("count") or 0) + unmatched_pie_count
         return result
+
+    def group_simulated_trades(self, trades: Iterable[Mapping[str, Any]], field: str) -> list[dict[str, Any]]:
+        groups: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
+        for trade in trades or []:
+            if parse_float(trade.get("target_r")) < 1.0:
+                continue
+            key = str(trade.get(field) if trade.get(field) not in (None, "") else "UNKNOWN")
+            groups[key].append(trade)
+        return [{field: key, **group_stats(groups[key])} for key in sorted(groups)]
 
     def top_cases(self, rows: list[Mapping[str, Any]], limit: int = 50) -> list[dict[str, Any]]:
         return sorted(
@@ -516,6 +562,12 @@ class ZoneTruthAnalyzer:
         lines.append(f"- a3_after_a2_structural_improved_rate: {summary.get('a3_after_a2_structural_improved_rate')}")
         lines.append(f"- a3_after_a2_structural_vs_v1_delta_r_1h_avg: {summary.get('a3_after_a2_structural_vs_v1_delta_r_1h_avg')}")
         lines.append(f"- a3_after_a2_structural_fee_share_delta_r_avg: {summary.get('a3_after_a2_structural_fee_share_delta_r_avg')}")
+        lines.extend(["", "## V7 3A Shadow Matrix", ""])
+        lines.append(f"- v7_enabled: {summary.get('v7_enabled')}")
+        lines.append(f"- v7_3a_simulated_trade_count: {summary.get('v7_3a_simulated_trade_count')}")
+        lines.append(f"- v7_top_combo_count: {summary.get('v7_top_combo_count')}")
+        lines.append(f"- v7_positive_combo_count: {summary.get('v7_positive_combo_count')}")
+        lines.append(f"- v7_bad_combo_count: {summary.get('v7_bad_combo_count')}")
         lines.extend(["", "## Forward Metrics", ""])
         lines.append(
             "Zone forward metrics start from `forward_anchor_ts`; `forward_anchor_source` and "
