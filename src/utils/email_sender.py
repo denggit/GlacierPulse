@@ -7,6 +7,8 @@ import asyncio
 import datetime
 import logging
 import smtplib
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
@@ -136,6 +138,63 @@ class EmailSender:
         """
 
         return await self.send_email_async(subject, content, 'html')
+
+    async def send_file_async(self, file_path: str, subject: Optional[str] = None,
+                              content: Optional[str] = None) -> bool:
+        """异步发送带附件的邮件。"""
+        try:
+            success = await asyncio.to_thread(
+                self._send_file_sync, file_path, subject, content
+            )
+            return success
+        except Exception as e:
+            self.logger.error(f"发送附件邮件失败: {e}")
+            return False
+
+    def _send_file_sync(self, file_path: str, subject: Optional[str],
+                        content: Optional[str]) -> bool:
+        """同步发送带附件的邮件（内部方法）。"""
+        try:
+            import os
+
+            if not os.path.isfile(file_path):
+                self.logger.error(f"附件文件不存在或不是文件: {file_path}")
+                return False
+
+            file_name = os.path.basename(file_path)
+            mail_subject = subject or f"文件附件 - {file_name}"
+            mail_content = content or "请查收附件。"
+
+            msg = MIMEMultipart()
+            msg['From'] = self.sender
+            msg['To'] = self.receiver
+            msg['Subject'] = mail_subject
+            msg.attach(MIMEText(mail_content, 'plain', 'utf-8'))
+
+            with open(file_path, 'rb') as attachment_file:
+                attachment = MIMEBase('application', 'octet-stream')
+                attachment.set_payload(attachment_file.read())
+
+            encoders.encode_base64(attachment)
+            attachment.add_header('Content-Disposition', f'attachment; filename="{file_name}"')
+            msg.attach(attachment)
+
+            smtp_server = 'smtp.qq.com'
+            smtp_port = 587
+
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(self.sender, self.password)
+                server.send_message(msg)
+
+            self.logger.info(f"附件邮件发送成功: {mail_subject}")
+            return True
+        except smtplib.SMTPException as e:
+            self.logger.error(f"SMTP 错误: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"发送附件邮件时发生未知错误: {e}")
+            return False
 
 
 # 提供便捷的全局函数
