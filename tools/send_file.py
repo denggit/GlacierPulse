@@ -26,7 +26,7 @@ from src.utils.email_sender import EmailSender  # noqa: E402
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser(description='发送指定文件到目标邮箱。')
-    parser.add_argument('--file_path', required=True, help='要发送的本地文件路径')
+    parser.add_argument('--file', required=True, help='要发送的本地文件路径')
     parser.add_argument('--email', required=True, help='目标邮箱地址')
     return parser.parse_args()
 
@@ -96,7 +96,7 @@ def main() -> int:
     try:
         args = parse_args()
         receiver_email = validate_email(args.email)
-        file_path = validate_file_path(args.file_path)
+        file_path = validate_file_path(args.file)
 
         success = asyncio.run(_send(file_path=file_path, receiver_email=receiver_email))
         if success:
