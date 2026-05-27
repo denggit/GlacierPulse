@@ -83,6 +83,43 @@ def _build_after_a2_fee_aware_fields(row: Mapping[str, Any], after_a2_flag: bool
         "a3_after_a2_net_mfe_1h_bucket": str(row.get("a3_preview_net_mfe_1h_bucket") or "NO_BREAKOUT"),
         "a3_after_a2_realized_r_proxy_1h_bucket": str(row.get("a3_preview_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
     }
+
+
+def _build_after_a2_structural_fields(row: Mapping[str, Any], after_a2_flag: bool) -> dict[str, Any]:
+    if not after_a2_flag:
+        return {
+            "a3_after_a2_structural_stop_price": 0.0,
+            "a3_after_a2_structural_risk_u": 0.0,
+            "a3_after_a2_structural_fee_share_r": 0.0,
+            "a3_after_a2_structural_realized_r_proxy_15m": 0.0,
+            "a3_after_a2_structural_realized_r_proxy_1h": 0.0,
+            "a3_after_a2_structural_realized_outcome_15m": "NO_BREAKOUT",
+            "a3_after_a2_structural_realized_outcome_1h": "NO_BREAKOUT",
+            "a3_after_a2_structural_fee_positive_1h": False,
+            "a3_after_a2_structural_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+            "a3_after_a2_structural_vs_v1_delta_r_1h": 0.0,
+            "a3_after_a2_structural_fee_share_delta_r": 0.0,
+            "a3_after_a2_structural_improved_flag": False,
+        }
+
+    structural_realized_1h = parse_float(row.get("a3_structural_realized_r_proxy_1h"))
+    v1_realized_1h = parse_float(row.get("a3_preview_realized_r_proxy_1h"))
+    structural_fee_share = parse_float(row.get("a3_structural_fee_share_r"))
+    preview_fee_share = parse_float(row.get("a3_preview_fee_share_r"))
+    return {
+        "a3_after_a2_structural_stop_price": parse_float(row.get("a3_structural_stop_price")),
+        "a3_after_a2_structural_risk_u": parse_float(row.get("a3_structural_risk_u")),
+        "a3_after_a2_structural_fee_share_r": structural_fee_share,
+        "a3_after_a2_structural_realized_r_proxy_15m": parse_float(row.get("a3_structural_realized_r_proxy_15m")),
+        "a3_after_a2_structural_realized_r_proxy_1h": structural_realized_1h,
+        "a3_after_a2_structural_realized_outcome_15m": str(row.get("a3_structural_realized_outcome_15m") or "NO_BREAKOUT"),
+        "a3_after_a2_structural_realized_outcome_1h": str(row.get("a3_structural_realized_outcome_1h") or "NO_BREAKOUT"),
+        "a3_after_a2_structural_fee_positive_1h": structural_realized_1h > 0,
+        "a3_after_a2_structural_realized_r_proxy_1h_bucket": str(row.get("a3_structural_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
+        "a3_after_a2_structural_vs_v1_delta_r_1h": round(structural_realized_1h - v1_realized_1h, 8),
+        "a3_after_a2_structural_fee_share_delta_r": round(structural_fee_share - preview_fee_share, 8),
+        "a3_after_a2_structural_improved_flag": structural_realized_1h > v1_realized_1h,
+    }
 class ZoneA2StateClassifier:
     """Research-only A2_PRE_POOL lifecycle classifier for zone_truth rows."""
 
@@ -235,6 +272,7 @@ class ZoneA2StateClassifier:
                 "a3_preview_latency_bucket": classify_a3_latency_bucket(a3_breakout_after_a2, parse_float(result.get("a3_preview_breakout_raw_latency_sec"))),
                 "a3_preview_ignition_quality": classify_a3_ignition_quality_after_a2(result, a3_breakout_after_a2),
                 **_build_after_a2_fee_aware_fields(result, a3_breakout_after_a2),
+                **_build_after_a2_structural_fields(result, a3_breakout_after_a2),
                 "strong_a1_raw_flag": strong_flag,
                 "strong_a1_tier": strong_tier,
                 "strong_a1_reason": strong_reason,

@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 from statistics import median
 from typing import Any, Iterable, Mapping
@@ -21,6 +21,7 @@ WINDOW_LABELS = {
     14400: "4h",
 }
 ROUNDTRIP_FEE_PCT = 0.001
+STRUCTURAL_STOP_BUFFER_U = 0.5
 
 
 class ZoneForwardMetricsCalculator:
@@ -61,6 +62,7 @@ class ZoneForwardMetricsCalculator:
             result[f"is_complete_{label}"] = metric["is_complete"]
 
         result.update(compute_a3_preview_breakout(result, bars))
+        result.update(compute_a3_structural_proxy_metrics(result, bars))
         result.update(compute_a2_fee_metrics(result))
         result.update(compute_a2_pre_ignition_metrics(result, bars))
         result["a3_preview_net_mfe_1h_bucket"] = bucket_a3_net_mfe_1h(result)
@@ -122,6 +124,25 @@ def infer_bar_interval_sec(bars: list[dict[str, float]], default: float = 60.0) 
     return float(median(diffs)) if diffs else float(default)
 
 
+def _bar_timestamps(bars: list[dict[str, float]]) -> list[float]:
+    return [float(bar["timestamp"]) for bar in bars]
+
+
+def _bars_between(
+    bars: list[dict[str, float]],
+    timestamps: list[float],
+    start_ts: float,
+    end_ts: float,
+    *,
+    include_start: bool = True,
+) -> list[dict[str, float]]:
+    if not bars or not timestamps:
+        return []
+    start_idx = bisect_left(timestamps, start_ts) if include_start else bisect_right(timestamps, start_ts)
+    end_idx = bisect_right(timestamps, end_ts)
+    return bars[start_idx:end_idx]
+
+
 
 def _risk_u(zone: Mapping[str, Any]) -> float:
     zone_low = parse_float(zone.get("zone_lower"))
@@ -164,6 +185,37 @@ def _first_hit(direction: str, bars: list[dict[str,float]], entry: float, risk_u
     close=float(bars[-1]["close"])
     close_r=(close-entry)/risk_u if direction=="BUY" else (entry-close)/risk_u
     return close_r-fee_share_r, "CLOSE_EXIT", False
+
+
+def _first_hit_with_stop(
+    direction: str,
+    bars: list[dict[str, float]],
+    entry: float,
+    risk_u: float,
+    stop: float,
+    fee_share_r: float,
+) -> tuple[float, str, bool]:
+    if not bars:
+        return -fee_share_r, "CLOSE_EXIT", False
+    target = entry + risk_u if direction == "BUY" else entry - risk_u
+    for bar in bars:
+        lo = float(bar["low"])
+        hi = float(bar["high"])
+        if direction == "BUY":
+            hit_stop = lo <= stop
+            hit_target = hi >= target
+        else:
+            hit_stop = hi >= stop
+            hit_target = lo <= target
+        if hit_stop and hit_target:
+            return -1.0 - fee_share_r, "AMBIGUOUS_BOTH_HIT", True
+        if hit_target:
+            return 1.0 - fee_share_r, "TARGET_1R_FIRST", True
+        if hit_stop:
+            return -1.0 - fee_share_r, "STOP_1R_FIRST", True
+    close = float(bars[-1]["close"])
+    close_r = (close - entry) / risk_u if direction == "BUY" else (entry - close) / risk_u
+    return close_r - fee_share_r, "CLOSE_EXIT", False
 
 
 def _volume_value(bar: Mapping[str, Any]) -> float:
@@ -215,7 +267,7 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
         return default
 
     threshold_u = max(zone_width * 0.5, 1.0)
-    timestamps = [float(bar["timestamp"]) for bar in bars]
+    timestamps = _bar_timestamps(bars)
     start_idx = bisect_right(timestamps, anchor_ts)
     if start_idx >= len(bars):
         return {
@@ -225,11 +277,9 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
         }
 
     breakout_price = zone_high + threshold_u if direction == "BUY" else zone_low - threshold_u
-    future = bars[start_idx:]
-    future_window = [
-        bar for bar in future
-        if float(bar["timestamp"]) <= anchor_ts + A3_PREVIEW_BREAKOUT_WINDOW_SEC
-    ]
+    window_end_idx = bisect_right(timestamps, anchor_ts + A3_PREVIEW_BREAKOUT_WINDOW_SEC)
+    future = bars[start_idx:window_end_idx]
+    future_window = future
     breakout_ts = 0.0
     for bar in future_window:
         if direction == "BUY" and float(bar["high"]) >= breakout_price:
@@ -257,9 +307,11 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
     risk_u = _risk_u(zone)
     fee_u = entry_price * ROUNDTRIP_FEE_PCT
     fee_share_r = fee_u / risk_u
-    post = [b for b in future if float(b["timestamp"]) >= entry_ts]
-    w15 = [b for b in post if float(b["timestamp"]) <= entry_ts + 900]
-    w1h = [b for b in post if float(b["timestamp"]) <= entry_ts + 3600]
+    bidx = bisect_left(timestamps, entry_ts)
+    post_end_idx = bisect_right(timestamps, entry_ts + 3600)
+    post = bars[bidx:post_end_idx]
+    w15 = _bars_between(bars, timestamps, entry_ts, entry_ts + 900)
+    w1h = post
     def mfe_mae(window):
         if not window: return (0.0,0.0)
         if direction=="BUY":
@@ -268,8 +320,7 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
     mfe15,mae15=mfe_mae(w15); mfe1h,mae1h=mfe_mae(w1h)
     r15,o15,h15=_first_hit(direction,w15,entry_price,risk_u,fee_share_r)
     r1h,o1h,h1h=_first_hit(direction,w1h,entry_price,risk_u,fee_share_r)
-    bidx = next((i for i,b in enumerate(bars) if float(b["timestamp"])==entry_ts), -1)
-    bbar = bars[bidx] if bidx>=0 else {}
+    bbar = bars[bidx] if bidx < len(bars) and float(bars[bidx]["timestamp"]) == entry_ts else {}
     prev20 = bars[max(0,bidx-20):bidx] if bidx>0 else []
     med20 = median([_volume_value(b) for b in prev20 if _volume_value(b)>0]) if len(prev20)>=20 else 0.0
     bvol = _volume_value(bbar)
@@ -286,6 +337,88 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
     elif net_mfe15>=0.5 and net_mae15>-1.5 and p3 and out["a3_preview_latency_bucket"]!="OUT_OF_WINDOW": iq="MEDIUM_IGNITION"
     else: iq="WEAK_IGNITION"
     out.update({"a3_preview_entry_ts":entry_ts,"a3_preview_entry_price":round(entry_price,8),"a3_preview_entry_time_utc":_local_time(entry_ts,'UTC'),"a3_preview_risk_u":round(risk_u,8),"a3_preview_fee_u":round(fee_u,8),"a3_preview_fee_share_r":round(fee_share_r,8),"a3_preview_net_mfe_15m_r":round(net_mfe15,8),"a3_preview_net_mae_15m_r":round(net_mae15,8),"a3_preview_net_mfe_1h_r":round(mfe1h/risk_u-fee_share_r,8),"a3_preview_net_mae_1h_r":round(mae1h/risk_u-fee_share_r,8),"a3_preview_first_hit_1r_15m":h15,"a3_preview_first_hit_1r_1h":h1h,"a3_preview_realized_r_proxy_15m":round(r15,8),"a3_preview_realized_r_proxy_1h":round(r1h,8),"a3_preview_realized_outcome_15m":o15,"a3_preview_realized_outcome_1h":o1h,"a3_preview_breakout_volume":round(bvol,8),"a3_preview_volume_median_20":round(med20,8),"a3_preview_volume_boost":round(vol_boost,8),"a3_preview_body_strength":round(body,8),"a3_preview_breakout_strength_r":round(breakout_strength,8),"a3_preview_persistence_3m_flag":bool(p3),"a3_preview_persistence_5m_flag":bool(p5),"a3_preview_no_quick_return_3m_flag":bool(q3),"a3_preview_no_quick_return_5m_flag":bool(q5),"a3_preview_ignition_quality":iq})
+    return {**default, **out}
+
+
+def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
+    default = {
+        "a3_structural_stop_price": 0.0,
+        "a3_structural_risk_u": 0.0,
+        "a3_structural_fee_u": 0.0,
+        "a3_structural_fee_share_r": 0.0,
+        "a3_structural_net_mfe_15m_r": 0.0,
+        "a3_structural_net_mae_15m_r": 0.0,
+        "a3_structural_net_mfe_1h_r": 0.0,
+        "a3_structural_net_mae_1h_r": 0.0,
+        "a3_structural_realized_r_proxy_15m": 0.0,
+        "a3_structural_realized_r_proxy_1h": 0.0,
+        "a3_structural_realized_outcome_15m": "NO_BREAKOUT",
+        "a3_structural_realized_outcome_1h": "NO_BREAKOUT",
+        "a3_structural_fee_positive_1h": False,
+        "a3_structural_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+    }
+    if not parse_bool(zone.get("a3_preview_breakout_raw_flag")):
+        return default
+    direction = str(zone.get("direction") or zone.get("a3_preview_breakout_direction") or "").upper()
+    entry_price = parse_float(zone.get("a3_preview_entry_price"))
+    entry_ts = parse_float(zone.get("a3_preview_entry_ts"))
+    if direction not in {"BUY", "SELL"} or entry_price <= 0 or entry_ts <= 0:
+        return default
+
+    zone_low = parse_float(zone.get("zone_lower"))
+    zone_high = parse_float(zone.get("zone_upper"))
+    reason = str(zone.get("structural_proxy_reason") or "")
+    if direction == "BUY":
+        sweep_low = parse_float(zone.get("iceberg_trade_sweep_low")) or parse_float(zone.get("trade_sweep_low")) or zone_low
+        structural_stop = sweep_low - STRUCTURAL_STOP_BUFFER_U if sweep_low > 0 else 0.0
+        structural_risk_u = entry_price - structural_stop
+    else:
+        sweep_high = parse_float(zone.get("iceberg_trade_sweep_high")) or parse_float(zone.get("trade_sweep_high")) or zone_high
+        structural_stop = sweep_high + STRUCTURAL_STOP_BUFFER_U if sweep_high > 0 else 0.0
+        structural_risk_u = structural_stop - entry_price
+
+    if structural_risk_u <= 0:
+        structural_risk_u = max(parse_float(zone.get("a3_preview_risk_u")), abs(zone_high - zone_low), 1.0)
+        structural_stop = entry_price - structural_risk_u if direction == "BUY" else entry_price + structural_risk_u
+        reason = _append_reason(reason, "FALLBACK_RISK")
+
+    fee_u = entry_price * ROUNDTRIP_FEE_PCT
+    fee_share_r = fee_u / structural_risk_u
+    timestamps = _bar_timestamps(bars)
+    w15 = _bars_between(bars, timestamps, entry_ts, entry_ts + 900)
+    w1h = _bars_between(bars, timestamps, entry_ts, entry_ts + 3600)
+
+    def mfe_mae(window: list[dict[str, float]]) -> tuple[float, float]:
+        if not window:
+            return (0.0, 0.0)
+        if direction == "BUY":
+            return max(float(bar["high"]) for bar in window) - entry_price, min(float(bar["low"]) for bar in window) - entry_price
+        return entry_price - min(float(bar["low"]) for bar in window), entry_price - max(float(bar["high"]) for bar in window)
+
+    mfe15, mae15 = mfe_mae(w15)
+    mfe1h, mae1h = mfe_mae(w1h)
+    r15, o15, _h15 = _first_hit_with_stop(direction, w15, entry_price, structural_risk_u, structural_stop, fee_share_r)
+    r1h, o1h, _h1h = _first_hit_with_stop(direction, w1h, entry_price, structural_risk_u, structural_stop, fee_share_r)
+    out = {
+        "a3_structural_stop_price": round(structural_stop, 8),
+        "a3_structural_risk_u": round(structural_risk_u, 8),
+        "a3_structural_fee_u": round(fee_u, 8),
+        "a3_structural_fee_share_r": round(fee_share_r, 8),
+        "a3_structural_net_mfe_15m_r": round(mfe15 / structural_risk_u - fee_share_r, 8),
+        "a3_structural_net_mae_15m_r": round(mae15 / structural_risk_u - fee_share_r, 8),
+        "a3_structural_net_mfe_1h_r": round(mfe1h / structural_risk_u - fee_share_r, 8),
+        "a3_structural_net_mae_1h_r": round(mae1h / structural_risk_u - fee_share_r, 8),
+        "a3_structural_realized_r_proxy_15m": round(r15, 8),
+        "a3_structural_realized_r_proxy_1h": round(r1h, 8),
+        "a3_structural_realized_outcome_15m": o15,
+        "a3_structural_realized_outcome_1h": o1h,
+        "a3_structural_fee_positive_1h": r1h > 0,
+    }
+    out["a3_structural_realized_r_proxy_1h_bucket"] = bucket_a3_structural_realized_r_1h(
+        {**zone, **out, "a3_preview_breakout_raw_flag": True}
+    )
+    if reason != str(zone.get("structural_proxy_reason") or ""):
+        out["structural_proxy_reason"] = reason
     return {**default, **out}
 
 
@@ -359,7 +492,8 @@ def compute_a2_pre_ignition_metrics(row: Mapping[str, Any], bars:list[dict[str,f
     start=next((parse_float(row.get(n)) for n in ("reaction_event_ts","a2_state_ts","frozen_ts","best_pie_ts") if parse_float(row.get(n))>0),0.0)
     if start<=0 or not bars: return {"a2_pre_ignition_bar_count":0,"a2_pre_ignition_window_sec":0.0,"a2_pre_ignition_range_u":0.0,"a2_pre_ignition_range_ratio":0.0,"a2_pre_ignition_zone_stay_ratio":0.0,"a2_pre_ignition_compression_state":"INSUFFICIENT_BARS"}
     end=min(start+3600,float(bars[-1]["timestamp"]))
-    window=[b for b in bars if start<=float(b["timestamp"])<=end]
+    timestamps = _bar_timestamps(bars)
+    window = _bars_between(bars, timestamps, start, end)
     cnt=len(window); risk=max(parse_float(row.get("a2_risk_u")),1.0)
     if cnt==0: return {"a2_pre_ignition_bar_count":0,"a2_pre_ignition_window_sec":max(0,end-start),"a2_pre_ignition_range_u":0.0,"a2_pre_ignition_range_ratio":0.0,"a2_pre_ignition_zone_stay_ratio":0.0,"a2_pre_ignition_compression_state":"INSUFFICIENT_BARS"}
     rng=max(float(b["high"]) for b in window)-min(float(b["low"]) for b in window); ratio=rng/risk
@@ -387,3 +521,23 @@ def bucket_a3_realized_r_1h(row):
     if v<0:return "REALIZED_-1R_TO_0"
     if v<1:return "REALIZED_0_TO_1R"
     return "REALIZED_GE_1R"
+
+
+def bucket_a3_structural_realized_r_1h(row):
+    if not parse_bool(row.get("a3_preview_breakout_raw_flag")):
+        return "NO_BREAKOUT"
+    v = parse_float(row.get("a3_structural_realized_r_proxy_1h"))
+    if v < -1:
+        return "STRUCT_REALIZED_LT_-1R"
+    if v < 0:
+        return "STRUCT_REALIZED_-1R_TO_0"
+    if v < 1:
+        return "STRUCT_REALIZED_0_TO_1R"
+    return "STRUCT_REALIZED_GE_1R"
+
+
+def _append_reason(reason: str, suffix: str) -> str:
+    parts = [part for part in str(reason or "").split("|") if part]
+    if suffix not in parts:
+        parts.append(suffix)
+    return "|".join(parts) if parts else suffix

@@ -395,6 +395,8 @@ class ZoneTruthAggregator:
             row.best_pie_event_key = str(best.get("event_key") or best.get("event_id") or "")
             row.best_pie_ts = parse_timestamp(first_present(best, "settle_ts", "trigger_ts"))
             row.best_pie_price = parse_float(first_present(best, "settle_price", "trigger_price"))
+            row.best_pie_min_trade_price = _pie_sweep_low(best) or row.best_pie_price
+            row.best_pie_max_trade_price = _pie_sweep_high(best) or row.best_pie_price
             row.best_pie_truth_score = truth_score(best)
             row.best_pie_truth_label = truth_label(best)
             row.best_pie_quality = str(best.get("quality") or "")
@@ -403,6 +405,8 @@ class ZoneTruthAggregator:
                 row.symbol = str(best.get("symbol") or "")
             if row.direction == "UNKNOWN":
                 row.direction = normalize_direction(best.get("direction"))
+
+        self._attach_sweep_proxy(row, pies)
 
         active = [parse_float(p.get("active_notional")) for p in pies]
         hidden = [parse_float(p.get("hidden_volume")) for p in pies]
@@ -427,6 +431,39 @@ class ZoneTruthAggregator:
         row.has_any_hard_cap = row.hard_cap_warning_count > 0
         row.a2_pre_pool_eligible = row.iceberg_pie_count >= 1
         row.a2_pre_pool_reason = "HAS_ICEBERG_PIE" if row.a2_pre_pool_eligible else "NO_ICEBERG_PIE"
+
+    @staticmethod
+    def _attach_sweep_proxy(row: ZoneTruthEvent, pies: list[Mapping[str, Any]]) -> None:
+        all_low, all_high = _sweep_bounds(pies)
+        iceberg_low, iceberg_high = _sweep_bounds(
+            [p for p in pies if str(p.get("result") or "").upper() == "ICEBERG"]
+        )
+        row.trade_sweep_low = all_low
+        row.trade_sweep_high = all_high
+        row.trade_sweep_width_u = round(max(0.0, all_high - all_low), 8) if all_low > 0 and all_high > 0 else 0.0
+        row.iceberg_trade_sweep_low = iceberg_low
+        row.iceberg_trade_sweep_high = iceberg_high
+        row.iceberg_trade_sweep_width_u = (
+            round(max(0.0, iceberg_high - iceberg_low), 8)
+            if iceberg_low > 0 and iceberg_high > 0
+            else 0.0
+        )
+
+        if iceberg_low > 0 and iceberg_high > 0:
+            row.structural_proxy_available = True
+            row.structural_proxy_reason = "ICEBERG_PIE_SWEEP"
+        elif all_low > 0 and all_high > 0:
+            row.structural_proxy_available = True
+            row.structural_proxy_reason = "ALL_PIE_SWEEP"
+        elif row.zone_lower > 0 and row.zone_upper > 0:
+            row.structural_proxy_available = True
+            row.structural_proxy_reason = "FALLBACK_ZONE_BOUNDARY"
+            row.trade_sweep_low = row.trade_sweep_low or row.zone_lower
+            row.trade_sweep_high = row.trade_sweep_high or row.zone_upper
+            row.trade_sweep_width_u = round(max(0.0, row.trade_sweep_high - row.trade_sweep_low), 8)
+        else:
+            row.structural_proxy_available = False
+            row.structural_proxy_reason = "UNAVAILABLE"
 
     @staticmethod
     def _best_pie(pies: list[Mapping[str, Any]]) -> Mapping[str, Any]:
@@ -468,3 +505,25 @@ def _pie_keys_for_result(pies: list[Mapping[str, Any]], result: str | None = Non
         seen.add(key)
         keys.append(key)
     return "|".join(keys)
+
+
+def _valid_price_values(pie: Mapping[str, Any], names: tuple[str, ...]) -> list[float]:
+    return [parse_float(pie.get(name)) for name in names if parse_float(pie.get(name)) > 0]
+
+
+def _pie_sweep_low(pie: Mapping[str, Any]) -> float:
+    values = _valid_price_values(pie, ("min_trade_price", "trigger_price", "settle_price"))
+    return min(values) if values else 0.0
+
+
+def _pie_sweep_high(pie: Mapping[str, Any]) -> float:
+    values = _valid_price_values(pie, ("max_trade_price", "trigger_price", "settle_price"))
+    return max(values) if values else 0.0
+
+
+def _sweep_bounds(pies: list[Mapping[str, Any]]) -> tuple[float, float]:
+    lows = [_pie_sweep_low(pie) for pie in pies]
+    highs = [_pie_sweep_high(pie) for pie in pies]
+    lows = [value for value in lows if value > 0]
+    highs = [value for value in highs if value > 0]
+    return (min(lows) if lows else 0.0, max(highs) if highs else 0.0)

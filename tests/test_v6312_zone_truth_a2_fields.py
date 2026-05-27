@@ -17,6 +17,8 @@ def _phase1():
             "result": "ICEBERG",
             "settle_ts": BASE_TS,
             "settle_price": 100.0,
+            "min_trade_price": 98.5,
+            "max_trade_price": 101.5,
             "zone_lower": 99.0,
             "zone_upper": 101.0,
             "active_notional": 1_500_000,
@@ -81,6 +83,13 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "reaction_event_ts_valid",
         "reaction_event_ts_outside_kline_range",
         "a2_fee_reference_price",
+        "trade_sweep_low",
+        "trade_sweep_high",
+        "iceberg_trade_sweep_low",
+        "iceberg_trade_sweep_high",
+        "a3_structural_stop_price",
+        "a3_structural_risk_u",
+        "a3_after_a2_structural_realized_r_proxy_1h",
     }
     assert expected_fields.issubset(rows[0])
     assert rows[0]["a2_state"] == "A2_CLEAN_HOLD"
@@ -98,6 +107,9 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     assert summary["a2_ready_for_a3_watch_count"] == 1
     assert summary["reaction_rows_count"] == 1
     assert summary["non_reaction_rows_count"] == 0
+    assert summary["structural_proxy_available_count"] == 1
+    assert summary["structural_proxy_reason_distribution"]["ICEBERG_PIE_SWEEP"] == 1
+    assert "a3_after_a2_structural_realized_r_proxy_1h_avg" in summary
 
     for name in (
         "zone_truth_by_a2_state.csv",
@@ -123,6 +135,12 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "zone_truth_by_a3_after_a2_realized_outcome_1h.csv",
         "zone_truth_by_a3_after_a2_net_mfe_1h_bucket.csv",
         "zone_truth_by_a3_after_a2_realized_r_proxy_1h_bucket.csv",
+        "zone_truth_by_structural_proxy_reason.csv",
+        "zone_truth_by_a3_structural_realized_outcome_1h.csv",
+        "zone_truth_by_a3_structural_realized_r_proxy_1h_bucket.csv",
+        "zone_truth_by_a3_after_a2_structural_realized_outcome_1h.csv",
+        "zone_truth_by_a3_after_a2_structural_realized_r_proxy_1h_bucket.csv",
+        "zone_truth_by_a3_after_a2_structural_improved.csv",
     ):
         assert (out / name).exists()
 
@@ -133,6 +151,8 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     assert "a3_preview_target_1r_first_1h_rate" in header
     assert "a3_after_a2_realized_r_proxy_1h_avg" in header
     assert "a3_after_a2_fee_positive_1h_rate" in header
+    assert "a3_structural_risk_u_avg" in header
+    assert "a3_after_a2_structural_realized_r_proxy_1h_avg" in header
 
 
 def test_zone_truth_marks_reaction_event_outside_kline_range(tmp_path):
