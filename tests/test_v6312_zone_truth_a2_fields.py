@@ -87,6 +87,12 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "trade_sweep_high",
         "iceberg_trade_sweep_low",
         "iceberg_trade_sweep_high",
+        "first_pie_ts",
+        "first_pie_min_trade_price",
+        "first_pie_max_trade_price",
+        "first_iceberg_pie_ts",
+        "first_iceberg_pie_min_trade_price",
+        "first_iceberg_pie_max_trade_price",
         "a3_structural_stop_price",
         "a3_structural_risk_u",
         "a3_after_a2_structural_realized_r_proxy_1h",
@@ -108,7 +114,7 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     assert summary["reaction_rows_count"] == 1
     assert summary["non_reaction_rows_count"] == 0
     assert summary["structural_proxy_available_count"] == 1
-    assert summary["structural_proxy_reason_distribution"]["ICEBERG_PIE_SWEEP"] == 1
+    assert summary["structural_proxy_reason_distribution"]["FIRST_ICEBERG_PIE_SWEEP"] == 1
     assert "a3_after_a2_structural_realized_r_proxy_1h_avg" in summary
 
     for name in (

@@ -406,6 +406,7 @@ class ZoneTruthAggregator:
             if row.direction == "UNKNOWN":
                 row.direction = normalize_direction(best.get("direction"))
 
+        self._attach_first_pie_sweep_basis(row, pies)
         self._attach_sweep_proxy(row, pies)
 
         active = [parse_float(p.get("active_notional")) for p in pies]
@@ -433,6 +434,24 @@ class ZoneTruthAggregator:
         row.a2_pre_pool_reason = "HAS_ICEBERG_PIE" if row.a2_pre_pool_eligible else "NO_ICEBERG_PIE"
 
     @staticmethod
+    def _attach_first_pie_sweep_basis(row: ZoneTruthEvent, pies: list[Mapping[str, Any]]) -> None:
+        sorted_pies = _sort_pies_by_time(pies)
+        first_pie = sorted_pies[0] if sorted_pies else {}
+        first_iceberg_pie = next(
+            (pie for pie in sorted_pies if str(pie.get("result") or "").upper() == "ICEBERG"),
+            {},
+        )
+
+        if first_pie:
+            row.first_pie_ts = _pie_time(first_pie)
+            row.first_pie_min_trade_price = _pie_sweep_low(first_pie)
+            row.first_pie_max_trade_price = _pie_sweep_high(first_pie)
+        if first_iceberg_pie:
+            row.first_iceberg_pie_ts = _pie_time(first_iceberg_pie)
+            row.first_iceberg_pie_min_trade_price = _pie_sweep_low(first_iceberg_pie)
+            row.first_iceberg_pie_max_trade_price = _pie_sweep_high(first_iceberg_pie)
+
+    @staticmethod
     def _attach_sweep_proxy(row: ZoneTruthEvent, pies: list[Mapping[str, Any]]) -> None:
         all_low, all_high = _sweep_bounds(pies)
         iceberg_low, iceberg_high = _sweep_bounds(
@@ -449,12 +468,12 @@ class ZoneTruthAggregator:
             else 0.0
         )
 
-        if iceberg_low > 0 and iceberg_high > 0:
+        if row.first_iceberg_pie_min_trade_price > 0 and row.first_iceberg_pie_max_trade_price > 0:
             row.structural_proxy_available = True
-            row.structural_proxy_reason = "ICEBERG_PIE_SWEEP"
-        elif all_low > 0 and all_high > 0:
+            row.structural_proxy_reason = "FIRST_ICEBERG_PIE_SWEEP"
+        elif row.first_pie_min_trade_price > 0 and row.first_pie_max_trade_price > 0:
             row.structural_proxy_available = True
-            row.structural_proxy_reason = "ALL_PIE_SWEEP"
+            row.structural_proxy_reason = "FIRST_PIE_SWEEP"
         elif row.zone_lower > 0 and row.zone_upper > 0:
             row.structural_proxy_available = True
             row.structural_proxy_reason = "FALLBACK_ZONE_BOUNDARY"
@@ -505,6 +524,16 @@ def _pie_keys_for_result(pies: list[Mapping[str, Any]], result: str | None = Non
         seen.add(key)
         keys.append(key)
     return "|".join(keys)
+
+
+def _pie_time(pie: Mapping[str, Any]) -> float:
+    return parse_timestamp(first_present(pie, "settle_ts", "trigger_ts"))
+
+
+def _sort_pies_by_time(pies: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    indexed = list(enumerate(pies or []))
+    indexed.sort(key=lambda item: (_pie_time(item[1]) if _pie_time(item[1]) > 0 else float("inf"), item[0]))
+    return [pie for _, pie in indexed]
 
 
 def _valid_price_values(pie: Mapping[str, Any], names: tuple[str, ...]) -> list[float]:

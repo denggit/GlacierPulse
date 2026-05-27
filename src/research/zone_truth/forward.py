@@ -367,13 +367,33 @@ def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict
 
     zone_low = parse_float(zone.get("zone_lower"))
     zone_high = parse_float(zone.get("zone_upper"))
-    reason = str(zone.get("structural_proxy_reason") or "")
+    reason = "UNAVAILABLE"
     if direction == "BUY":
-        sweep_low = parse_float(zone.get("iceberg_trade_sweep_low")) or parse_float(zone.get("trade_sweep_low")) or zone_low
+        first_iceberg_low = parse_float(zone.get("first_iceberg_pie_min_trade_price"))
+        first_pie_low = parse_float(zone.get("first_pie_min_trade_price"))
+        if first_iceberg_low > 0:
+            sweep_low = first_iceberg_low
+            reason = "FIRST_ICEBERG_PIE_SWEEP"
+        elif first_pie_low > 0:
+            sweep_low = first_pie_low
+            reason = "FIRST_PIE_SWEEP"
+        else:
+            sweep_low = zone_low
+            reason = "FALLBACK_ZONE_BOUNDARY" if sweep_low > 0 else "UNAVAILABLE"
         structural_stop = sweep_low - STRUCTURAL_STOP_BUFFER_U if sweep_low > 0 else 0.0
         structural_risk_u = entry_price - structural_stop
     else:
-        sweep_high = parse_float(zone.get("iceberg_trade_sweep_high")) or parse_float(zone.get("trade_sweep_high")) or zone_high
+        first_iceberg_high = parse_float(zone.get("first_iceberg_pie_max_trade_price"))
+        first_pie_high = parse_float(zone.get("first_pie_max_trade_price"))
+        if first_iceberg_high > 0:
+            sweep_high = first_iceberg_high
+            reason = "FIRST_ICEBERG_PIE_SWEEP"
+        elif first_pie_high > 0:
+            sweep_high = first_pie_high
+            reason = "FIRST_PIE_SWEEP"
+        else:
+            sweep_high = zone_high
+            reason = "FALLBACK_ZONE_BOUNDARY" if sweep_high > 0 else "UNAVAILABLE"
         structural_stop = sweep_high + STRUCTURAL_STOP_BUFFER_U if sweep_high > 0 else 0.0
         structural_risk_u = structural_stop - entry_price
 
@@ -417,8 +437,7 @@ def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict
     out["a3_structural_realized_r_proxy_1h_bucket"] = bucket_a3_structural_realized_r_1h(
         {**zone, **out, "a3_preview_breakout_raw_flag": True}
     )
-    if reason != str(zone.get("structural_proxy_reason") or ""):
-        out["structural_proxy_reason"] = reason
+    out["structural_proxy_reason"] = reason
     return {**default, **out}
 
 

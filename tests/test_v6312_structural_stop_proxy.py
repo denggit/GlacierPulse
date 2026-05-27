@@ -22,21 +22,21 @@ def _classify(row):
 
 
 def test_buy_structural_stop_uses_iceberg_sweep_low_with_buffer():
-    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "iceberg_trade_sweep_low": 2996.0})
+    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "first_iceberg_pie_min_trade_price": 2996.0})
 
     assert out["a3_structural_stop_price"] == 2995.5
     assert out["a3_structural_risk_u"] == 5.5
 
 
 def test_sell_structural_stop_uses_iceberg_sweep_high_with_buffer():
-    out = _structural({"direction": "SELL", "a3_preview_entry_price": 2999.0, "iceberg_trade_sweep_high": 3004.0})
+    out = _structural({"direction": "SELL", "a3_preview_entry_price": 2999.0, "first_iceberg_pie_max_trade_price": 3004.0})
 
     assert out["a3_structural_stop_price"] == 3004.5
     assert out["a3_structural_risk_u"] == 5.5
 
 
 def test_structural_fee_share_uses_roundtrip_fee_over_structural_risk():
-    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3000.0, "iceberg_trade_sweep_low": 2994.5})
+    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3000.0, "first_iceberg_pie_min_trade_price": 2994.5})
 
     assert out["a3_structural_fee_u"] == 3.0
     assert out["a3_structural_fee_share_r"] == 0.5
@@ -44,7 +44,7 @@ def test_structural_fee_share_uses_roundtrip_fee_over_structural_risk():
 
 def test_buy_structural_first_hit_target_first():
     bars = [{"timestamp": 1000.0, "open": 3001.0, "high": 3006.6, "low": 3000.0, "close": 3006.0}]
-    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "iceberg_trade_sweep_low": 2996.0}, bars)
+    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "first_iceberg_pie_min_trade_price": 2996.0}, bars)
 
     assert out["a3_structural_realized_outcome_1h"] == "TARGET_1R_FIRST"
     assert out["a3_structural_realized_r_proxy_1h"] == round(1.0 - out["a3_structural_fee_share_r"], 8)
@@ -52,7 +52,7 @@ def test_buy_structural_first_hit_target_first():
 
 def test_buy_structural_first_hit_stop_first():
     bars = [{"timestamp": 1000.0, "open": 3001.0, "high": 3002.0, "low": 2995.4, "close": 2996.0}]
-    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "iceberg_trade_sweep_low": 2996.0}, bars)
+    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "first_iceberg_pie_min_trade_price": 2996.0}, bars)
 
     assert out["a3_structural_realized_outcome_1h"] == "STOP_1R_FIRST"
     assert out["a3_structural_realized_r_proxy_1h"] == round(-1.0 - out["a3_structural_fee_share_r"], 8)
@@ -60,7 +60,7 @@ def test_buy_structural_first_hit_stop_first():
 
 def test_buy_structural_ambiguous_both_hit_is_conservative_stop():
     bars = [{"timestamp": 1000.0, "open": 3001.0, "high": 3006.6, "low": 2995.4, "close": 3000.0}]
-    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "iceberg_trade_sweep_low": 2996.0}, bars)
+    out = _structural({"direction": "BUY", "a3_preview_entry_price": 3001.0, "first_iceberg_pie_min_trade_price": 2996.0}, bars)
 
     assert out["a3_structural_realized_outcome_1h"] == "AMBIGUOUS_BOTH_HIT"
     assert out["a3_structural_realized_r_proxy_1h"] == round(-1.0 - out["a3_structural_fee_share_r"], 8)
@@ -133,12 +133,12 @@ def test_after_a2_structural_improved_flag_compares_against_v1():
     assert row["a3_after_a2_structural_fee_share_delta_r"] == -0.3
 
 
-def test_aggregator_sweep_prefers_iceberg_pies_over_all_pies():
+def test_buy_structural_stop_uses_first_iceberg_pie_not_later_aggregate_sweep():
     rows = ZoneTruthAggregator().aggregate(
         [
             {
                 "record_type": "candidate_finalized",
-                "event_key": "iceberg",
+                "event_key": "first-iceberg",
                 "zone_id": "zone-1",
                 "direction": "BUY",
                 "result": "ICEBERG",
@@ -146,9 +146,23 @@ def test_aggregator_sweep_prefers_iceberg_pies_over_all_pies():
                 "settle_price": 3000,
                 "zone_lower": 2990,
                 "zone_upper": 3010,
-                "min_trade_price": 2996,
+                "min_trade_price": 2998,
                 "max_trade_price": 3004,
                 "truth_score": {"truth_score_total": 80, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
+            },
+            {
+                "record_type": "candidate_finalized",
+                "event_key": "later-iceberg",
+                "zone_id": "zone-1",
+                "direction": "BUY",
+                "result": "ICEBERG",
+                "settle_ts": 1005,
+                "settle_price": 3000,
+                "zone_lower": 2990,
+                "zone_upper": 3010,
+                "min_trade_price": 2990,
+                "max_trade_price": 3006,
+                "truth_score": {"truth_score_total": 70, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
             },
             {
                 "record_type": "candidate_finalized",
@@ -170,7 +184,77 @@ def test_aggregator_sweep_prefers_iceberg_pies_over_all_pies():
     row = rows[0]
     assert row["trade_sweep_low"] == 2980
     assert row["trade_sweep_high"] == 3020
-    assert row["iceberg_trade_sweep_low"] == 2996
-    assert row["iceberg_trade_sweep_high"] == 3004
+    assert row["iceberg_trade_sweep_low"] == 2990
+    assert row["iceberg_trade_sweep_high"] == 3006
+    assert row["first_iceberg_pie_ts"] == 1000
+    assert row["first_iceberg_pie_min_trade_price"] == 2998
+    assert row["first_iceberg_pie_max_trade_price"] == 3004
     assert row["structural_proxy_available"] is True
-    assert row["structural_proxy_reason"] == "ICEBERG_PIE_SWEEP"
+    assert row["structural_proxy_reason"] == "FIRST_ICEBERG_PIE_SWEEP"
+
+    out = _structural(
+        {
+            **row,
+            "direction": "BUY",
+            "a3_preview_breakout_raw_flag": True,
+            "a3_preview_entry_ts": 1000.0,
+            "a3_preview_entry_price": 3001.0,
+        }
+    )
+    assert out["a3_structural_stop_price"] == 2997.5
+    assert out["a3_structural_risk_u"] == 3.5
+    assert out["structural_proxy_reason"] == "FIRST_ICEBERG_PIE_SWEEP"
+
+
+def test_sell_structural_stop_uses_first_iceberg_pie_not_later_aggregate_sweep():
+    rows = ZoneTruthAggregator().aggregate(
+        [
+            {
+                "record_type": "candidate_finalized",
+                "event_key": "first-iceberg",
+                "zone_id": "zone-1",
+                "direction": "SELL",
+                "result": "ICEBERG",
+                "settle_ts": 1000,
+                "settle_price": 3000,
+                "zone_lower": 2990,
+                "zone_upper": 3010,
+                "min_trade_price": 2996,
+                "max_trade_price": 3002,
+                "truth_score": {"truth_score_total": 80, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
+            },
+            {
+                "record_type": "candidate_finalized",
+                "event_key": "later-iceberg",
+                "zone_id": "zone-1",
+                "direction": "SELL",
+                "result": "ICEBERG",
+                "settle_ts": 1005,
+                "settle_price": 3000,
+                "zone_lower": 2990,
+                "zone_upper": 3010,
+                "min_trade_price": 2994,
+                "max_trade_price": 3010,
+                "truth_score": {"truth_score_total": 70, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
+            },
+        ],
+        [],
+    )
+
+    row = rows[0]
+    assert row["iceberg_trade_sweep_high"] == 3010
+    assert row["first_iceberg_pie_ts"] == 1000
+    assert row["first_iceberg_pie_max_trade_price"] == 3002
+
+    out = _structural(
+        {
+            **row,
+            "direction": "SELL",
+            "a3_preview_breakout_raw_flag": True,
+            "a3_preview_entry_ts": 1000.0,
+            "a3_preview_entry_price": 2999.0,
+        }
+    )
+    assert out["a3_structural_stop_price"] == 3002.5
+    assert out["a3_structural_risk_u"] == 3.5
+    assert out["structural_proxy_reason"] == "FIRST_ICEBERG_PIE_SWEEP"

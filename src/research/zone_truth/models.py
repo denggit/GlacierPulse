@@ -222,6 +222,12 @@ class ZoneTruthEvent:
     iceberg_trade_sweep_width_u: float = 0.0
     best_pie_min_trade_price: float = 0.0
     best_pie_max_trade_price: float = 0.0
+    first_pie_ts: float = 0.0
+    first_pie_min_trade_price: float = 0.0
+    first_pie_max_trade_price: float = 0.0
+    first_iceberg_pie_ts: float = 0.0
+    first_iceberg_pie_min_trade_price: float = 0.0
+    first_iceberg_pie_max_trade_price: float = 0.0
     sum_active_notional: float = 0.0
     max_active_notional: float = 0.0
     avg_active_notional: float = 0.0
