@@ -641,10 +641,12 @@ def simulate_backtest(
     closed_positions: list[tuple[float, float]] = []
     trades: list[dict[str, Any]] = []
     rejections: list[dict[str, Any]] = []
+    proposals: list[dict[str, Any]] = []
     equity_curve: list[dict[str, Any]] = [
         {"sequence": 0, "timestamp": "", "trade_id": "", "equity": round(equity, 8), "net_pnl": 0.0, "drawdown_pct": 0.0}
     ]
 
+    # Phase 1: static candidate validation and no-equity trade proposal generation.
     for row in candidates:
         direction = str(row.get("direction") or "").upper()
         c_ts = candidate_ts(row)
@@ -736,6 +738,89 @@ def simulate_backtest(
             )
             continue
 
+        exit_info = simulate_exit(
+            direction,
+            klines,
+            int(entry["idx"]),
+            entry_ts,
+            entry_price,
+            stop_price,
+            target_price,
+            entry_boll,
+            boll_bars,
+        )
+        proposals.append(
+            {
+                "row": row,
+                "direction": direction,
+                "candidate_ts": c_ts,
+                "candidate_price": c_price,
+                "signal_boll": signal_boll,
+                "touch": touch,
+                "distance": distance,
+                "entry": entry,
+                "entry_trigger": entry_trigger,
+                "entry_price": entry_price,
+                "entry_ts": entry_ts,
+                "stop_price": stop_price,
+                "risk_u": risk_u,
+                "stop_basis_price": stop_basis_price,
+                "stop_basis_type": stop_basis_type,
+                "entry_boll": entry_boll,
+                "target_price": target_price,
+                "target_r": target_r,
+                "exit_info": exit_info,
+                "exit_ts": parse_float(exit_info["exit_ts"]),
+            }
+        )
+
+    # Phase 2: execute accepted proposals by real entry time so sizing/equity/order are chronological.
+    proposals.sort(
+        key=lambda p: (
+            parse_float(p.get("entry_ts")),
+            parse_float(p.get("candidate_ts")),
+            candidate_event_key(p.get("row", {})),
+        )
+    )
+
+    for proposal in proposals:
+        row = proposal["row"]
+        direction = str(proposal["direction"])
+        c_ts = parse_float(proposal["candidate_ts"])
+        c_price = parse_float(proposal["candidate_price"])
+        signal_boll = proposal["signal_boll"]
+        touch = proposal["touch"]
+        distance = parse_float(proposal["distance"])
+        entry_trigger = parse_float(proposal["entry_trigger"])
+        entry_price = parse_float(proposal["entry_price"])
+        entry_ts = parse_float(proposal["entry_ts"])
+        exit_info = proposal["exit_info"]
+        exit_ts = parse_float(proposal["exit_ts"])
+        stop_price = parse_float(proposal["stop_price"])
+        risk_u = parse_float(proposal["risk_u"])
+        stop_basis_price = parse_float(proposal["stop_basis_price"])
+        stop_basis_type = str(proposal["stop_basis_type"])
+        entry_boll = proposal["entry_boll"]
+        target_r = parse_float(proposal["target_r"])
+
+        if params.one_position_at_a_time and any(intervals_overlap(entry_ts, exit_ts, start, end) for start, end in closed_positions):
+            rejections.append(
+                make_rejection(
+                    row,
+                    "POSITION_ALREADY_OPEN",
+                    candidate_price_value=c_price,
+                    boll=signal_boll,
+                    touch=touch,
+                    entry_trigger=entry_trigger,
+                    stop_price=stop_price,
+                    stop_basis_price=stop_basis_price,
+                    stop_basis_type=stop_basis_type,
+                    risk_u=risk_u,
+                    target_r=target_r,
+                )
+            )
+            continue
+
         size, size_reason = calculate_position_size(equity, entry_price, risk_u, params)
         if not size:
             rejections.append(
@@ -755,35 +840,6 @@ def simulate_backtest(
             )
             continue
 
-        if params.one_position_at_a_time and any(start <= entry_ts < end for start, end in closed_positions):
-            rejections.append(
-                make_rejection(
-                    row,
-                    "POSITION_ALREADY_OPEN",
-                    candidate_price_value=c_price,
-                    boll=signal_boll,
-                    touch=touch,
-                    entry_trigger=entry_trigger,
-                    stop_price=stop_price,
-                    stop_basis_price=stop_basis_price,
-                    stop_basis_type=stop_basis_type,
-                    risk_u=risk_u,
-                    target_r=target_r,
-                )
-            )
-            continue
-
-        exit_info = simulate_exit(
-            direction,
-            klines,
-            int(entry["idx"]),
-            entry_ts,
-            entry_price,
-            stop_price,
-            target_price,
-            entry_boll,
-            boll_bars,
-        )
         exit_price = parse_float(exit_info["exit_price"])
         contracts = parse_float(size["contracts"])
         if direction == "BUY":
@@ -804,7 +860,7 @@ def simulate_backtest(
             "direction": direction,
             "candidate_ts": round(c_ts, 8),
             "entry_ts": round(entry_ts, 8),
-            "exit_ts": round(parse_float(exit_info["exit_ts"]), 8),
+            "exit_ts": round(exit_ts, 8),
             "entry_price": round(entry_price, 8),
             "exit_price": round(exit_price, 8),
             "stop_price": round(stop_price, 8),
@@ -851,7 +907,7 @@ def simulate_backtest(
             "boll_proximity_ratio_used": params.boll_proximity_ratio,
         }
         trades.append(trade)
-        closed_positions.append((entry_ts, parse_float(exit_info["exit_ts"])))
+        closed_positions.append((entry_ts, exit_ts))
         high_water = max(high_water, equity)
         drawdown = (equity / high_water - 1.0) * 100.0 if high_water > 0 else 0.0
         equity_curve.append(
@@ -873,6 +929,10 @@ def simulate_backtest(
         "summary": summary,
         "boll_bars": boll_bars,
     }
+
+
+def intervals_overlap(a_start: float, a_end: float, b_start: float, b_end: float) -> bool:
+    return a_start < b_end and b_start < a_end
 
 
 def build_summary(

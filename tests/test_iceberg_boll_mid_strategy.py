@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import tools.backtest_iceberg_boll_mid_strategy as strategy
 from tools.backtest_iceberg_boll_mid_strategy import (
     BacktestParams,
     boll_touch_info,
@@ -282,11 +283,90 @@ def test_one_position_rejects_by_entry_overlap_not_candidate_time():
         zone_upper=92.4,
     )
     result = simulate_backtest([candidate_a, candidate_b], klines, _params(min_target_r=1.0))
-    assert [row["candidate_event_key"] for row in result["trades"]] == ["candidate-a", "candidate-b"]
+    assert [row["candidate_event_key"] for row in result["trades"]] == ["candidate-b", "candidate-a"]
     assert not [row for row in result["rejections"] if row["reason"] == "POSITION_ALREADY_OPEN"]
-    assert result["trades"][0]["entry_ts"] == START + 55 * 60
-    assert result["trades"][1]["entry_ts"] == START + 47 * 60
-    assert result["trades"][1]["exit_ts"] == START + 48 * 60
+    assert result["trades"][0]["entry_ts"] == START + 47 * 60
+    assert result["trades"][0]["exit_ts"] == START + 48 * 60
+    assert result["trades"][1]["entry_ts"] == START + 55 * 60
+
+
+def test_one_position_rejects_full_interval_overlap(monkeypatch):
+    klines = _minute_bars(
+        [100.0] * 30 + [94.0] * 15 + [93.0] * 45,
+        after={
+            47: {"high": 93.0, "low": 91.0, "close": 92.5},
+            55: {"high": 94.0, "low": 93.0, "close": 94.0},
+        },
+    )
+    candidate_a = _candidate(
+        "BUY",
+        event_key="candidate-a",
+        settle_ts=START + 45 * 60,
+        settle_price=92.3,
+        zone_lower=92.2,
+        zone_upper=94.0,
+    )
+    candidate_b = _candidate(
+        "BUY",
+        event_key="candidate-b",
+        settle_ts=START + 46 * 60,
+        settle_price=92.3,
+        zone_lower=92.2,
+        zone_upper=92.4,
+    )
+
+    def fake_exit(direction, klines, entry_idx, entry_ts, entry_price, stop_price, initial_target, entry_boll, boll_bars):
+        exit_ts = START + (70 if entry_ts == START + 55 * 60 else 60) * 60
+        return {
+            "exit_ts": exit_ts,
+            "exit_price": initial_target,
+            "exit_reason": "BOLL_MID_TARGET",
+            "exit_boll_mid": initial_target,
+            "target_price_at_exit": initial_target,
+        }
+
+    monkeypatch.setattr(strategy, "simulate_exit", fake_exit)
+    result = simulate_backtest([candidate_a, candidate_b], klines, _params(min_target_r=1.0))
+
+    assert [row["candidate_event_key"] for row in result["trades"]] == ["candidate-b"]
+    rejection = next(row for row in result["rejections"] if row["reason"] == "POSITION_ALREADY_OPEN")
+    assert rejection["candidate_event_key"] == "candidate-a"
+    assert rejection["entry_trigger"] == 94.0
+    assert rejection["stop_basis_price"] == 92.2
+
+
+def test_position_sizing_uses_equity_after_entry_time_ordered_prior_trade():
+    klines = _minute_bars(
+        [100.0] * 30 + [94.0] * 15 + [93.0] * 30,
+        after={
+            48: {"high": 93.0, "low": 90.6, "close": 91.0},
+            55: {"high": 94.0, "low": 93.0, "close": 94.0},
+            56: {"high": 98.1, "low": 93.5, "close": 98.0},
+        },
+    )
+    candidate_a = _candidate(
+        "BUY",
+        event_key="candidate-a",
+        settle_ts=START + 45 * 60,
+        settle_price=92.3,
+        zone_lower=92.2,
+        zone_upper=94.0,
+    )
+    candidate_b = _candidate(
+        "BUY",
+        event_key="candidate-b",
+        settle_ts=START + 46 * 60,
+        settle_price=92.3,
+        zone_lower=92.2,
+        zone_upper=92.4,
+    )
+    result = simulate_backtest([candidate_a, candidate_b], klines, _params(min_target_r=1.0))
+
+    first, second = result["trades"]
+    assert first["candidate_event_key"] == "candidate-b"
+    assert first["net_pnl"] < 0
+    assert second["candidate_event_key"] == "candidate-a"
+    assert second["equity_before"] == pytest.approx(first["equity_after"])
 
 
 def test_truth_score_does_not_participate_in_entry():
