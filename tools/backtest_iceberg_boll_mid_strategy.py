@@ -9,7 +9,7 @@ import json
 import math
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -125,6 +125,138 @@ EXIT_REASONS = [
     "END_OF_DATA_CLOSE",
 ]
 
+MARTINGALE_POSITION_FIELDS = [
+    "scenario_id",
+    "position_id",
+    "side",
+    "direction",
+    "open_ts",
+    "close_ts",
+    "exit_reason",
+    "leg_count",
+    "avg_cost",
+    "exit_price",
+    "total_eth_qty",
+    "total_notional",
+    "used_margin_total",
+    "total_entry_fee",
+    "exit_fee",
+    "gross_pnl",
+    "net_pnl",
+    "equity_before",
+    "equity_after",
+    "max_unrealized_drawdown_pct",
+    "max_adverse_price",
+    "max_favorable_price",
+    "holding_minutes",
+    "tp_price_at_exit",
+    "liquidation_price_at_exit",
+    "stop_price_at_exit",
+]
+
+MARTINGALE_LEG_FIELDS = [
+    "scenario_id",
+    "position_id",
+    "leg_id",
+    "side",
+    "direction",
+    "entry_ts",
+    "entry_price",
+    "signal_price",
+    "contracts",
+    "eth_qty",
+    "notional",
+    "margin_used",
+    "entry_fee",
+    "wallet_equity_before",
+    "wallet_equity_after_fee",
+    "avg_cost_after",
+    "leg_count_after",
+    "boll_lower_at_signal",
+    "boll_mid_at_signal",
+    "boll_upper_at_signal",
+    "last_entry_price_before",
+    "drop_from_last_entry_pct",
+    "freeze_rule_used",
+]
+
+MARTINGALE_REJECTION_FIELDS = [
+    "scenario_id",
+    "candidate_event_key",
+    "candidate_ts",
+    "active_side",
+    "candidate_direction",
+    "reason",
+    "signal_price",
+    "boll_lower",
+    "boll_mid",
+    "boll_upper",
+    "last_entry_ts",
+    "last_entry_price",
+    "drop_from_last_entry_pct",
+    "freeze_until",
+    "leg_count",
+    "available_margin",
+    "required_margin",
+    "details",
+]
+
+MARTINGALE_EQUITY_FIELDS = [
+    "sequence",
+    "timestamp",
+    "event",
+    "scenario_id",
+    "position_id",
+    "equity",
+    "net_pnl",
+    "drawdown_pct",
+]
+
+MARTINGALE_SUMMARY_FIELDS = [
+    "scenario_id",
+    "margin_pct",
+    "drop_pct",
+    "initial_equity",
+    "final_equity",
+    "net_profit",
+    "total_return_pct",
+    "max_drawdown_pct",
+    "total_positions",
+    "win_rate",
+    "profit_factor",
+    "total_legs",
+    "avg_legs_per_position",
+    "max_legs",
+    "positions_ge_5_legs",
+    "positions_ge_10_legs",
+    "positions_gt_12_legs",
+    "positions_reaching_12_legs",
+    "positions_reaching_stop_threshold",
+    "liquidation_count",
+    "liquidation_rate",
+    "martingale_stop_count",
+    "take_profit_count",
+    "avg_position_net_pnl",
+    "median_position_net_pnl",
+    "avg_holding_minutes",
+    "total_fees",
+    "total_entry_fees",
+    "total_exit_fees",
+    "rejection_count_by_reason",
+    "positions_per_day",
+    "legs_per_day",
+    "long_positions",
+    "long_win_rate",
+    "long_net_pnl",
+    "long_avg_legs",
+    "long_liquidation_count",
+    "short_positions",
+    "short_win_rate",
+    "short_net_pnl",
+    "short_avg_legs",
+    "short_liquidation_count",
+]
+
 
 @dataclass(frozen=True)
 class BacktestParams:
@@ -157,6 +289,92 @@ class BacktestParams:
         if text.endswith("h"):
             return int(float(text[:-1]) * 3600)
         return int(float(text))
+
+
+@dataclass(frozen=True)
+class MartingaleParams:
+    scenario_id: str = "scenario_margin_3pct_drop_03pct"
+    initial_equity: float = 100.0
+    margin_pct: float = 0.03
+    drop_pct: float = 0.003
+    freeze_min: int = 30
+    leverage: float = 50.0
+    max_leg_before_stop: int = 12
+    stop_drawdown_pct: float = 0.02
+    take_profit_pct: float = 0.005
+    fee_rate_per_side: float = 0.0005
+    contract_size_eth: float = 0.1
+    contract_step: float = 0.01
+    min_contracts: float = 0.01
+    liquidation_check: bool = True
+    maintenance_margin_rate: float = 0.005
+    liquidation_fee_buffer_pct: float = 0.001
+    signal_price_model: str = "min_of_all"
+    entry_price_model: str = "signal_price"
+    boll_timeframe: str = "15m"
+    boll_period: int = 20
+    boll_std: float = 2.0
+    timezone: str = "Asia/Shanghai"
+    start_date: str | None = None
+    end_date: str | None = None
+
+    @property
+    def timeframe_sec(self) -> int:
+        text = str(self.boll_timeframe).strip().lower()
+        if text.endswith("m"):
+            return int(float(text[:-1]) * 60)
+        if text.endswith("h"):
+            return int(float(text[:-1]) * 3600)
+        return int(float(text))
+
+
+@dataclass
+class MartingalePosition:
+    scenario_id: str
+    position_id: str
+    side: str
+    direction: str
+    open_ts: float
+    equity_before: float
+    legs: list[dict[str, Any]] = field(default_factory=list)
+    max_unrealized_drawdown_pct: float = 0.0
+    max_adverse_price: float = 0.0
+    max_favorable_price: float = 0.0
+
+    @property
+    def last_entry_ts(self) -> float:
+        return parse_float(self.legs[-1].get("entry_ts")) if self.legs else 0.0
+
+    @property
+    def last_entry_price(self) -> float:
+        return parse_float(self.legs[-1].get("entry_price")) if self.legs else 0.0
+
+    @property
+    def total_eth_qty(self) -> float:
+        return sum(parse_float(leg.get("eth_qty")) for leg in self.legs)
+
+    @property
+    def total_notional(self) -> float:
+        return sum(parse_float(leg.get("notional")) for leg in self.legs)
+
+    @property
+    def used_margin_total(self) -> float:
+        return sum(parse_float(leg.get("margin_used")) for leg in self.legs)
+
+    @property
+    def total_entry_fee(self) -> float:
+        return sum(parse_float(leg.get("entry_fee")) for leg in self.legs)
+
+    @property
+    def avg_cost(self) -> float:
+        qty = self.total_eth_qty
+        if qty <= 0:
+            return 0.0
+        return sum(parse_float(leg.get("entry_price")) * parse_float(leg.get("eth_qty")) for leg in self.legs) / qty
+
+    @property
+    def leg_count(self) -> int:
+        return len(self.legs)
 
 
 def load_finalized_iceberg_candidates(path: Path | str) -> list[dict[str, Any]]:
@@ -461,6 +679,165 @@ def floor_to_step(value: float, step: float) -> float:
         return value
     decimals = max(0, len(f"{step:.12f}".rstrip("0").split(".")[-1]))
     return round(math.floor((value + 1e-12) / step) * step, decimals)
+
+
+def parse_float_list(text: str) -> list[float]:
+    return [parse_float(part) for part in str(text or "").split(",") if str(part).strip()]
+
+
+def martingale_scenario_id(margin_pct: float, drop_pct: float) -> str:
+    margin_text = f"{margin_pct * 100:g}".replace(".", "")
+    drop_text = f"{drop_pct * 100:g}".replace(".", "")
+    return f"scenario_margin_{margin_text}pct_drop_{drop_text.zfill(2)}pct"
+
+
+def side_from_direction(direction: str) -> str:
+    direction = str(direction or "").upper()
+    if direction == "BUY":
+        return "LONG"
+    if direction == "SELL":
+        return "SHORT"
+    return "NONE"
+
+
+def martingale_signal_price(row: Mapping[str, Any], direction: str, model: str = "min_of_all") -> float:
+    direction = str(direction or "").upper()
+    model = str(model or "min_of_all").strip().lower()
+    if direction == "BUY":
+        fields_by_model = {
+            "first_iceberg_min": ["first_iceberg_pie_min_trade_price"],
+            "min_trade": ["min_trade_price"],
+            "settle": ["settle_price"],
+            "zone_lower": ["zone_lower"],
+            "min_of_all": [
+                "first_iceberg_pie_min_trade_price",
+                "first_pie_min_trade_price",
+                "min_trade_price",
+                "settle_price",
+                "trigger_price",
+                "zone_lower",
+            ],
+        }
+        fields = fields_by_model.get(model, fields_by_model["min_of_all"])
+        values = [parse_float(row.get(field)) for field in fields]
+        valid = [value for value in values if value > 0]
+        return min(valid) if valid else 0.0
+    if direction == "SELL":
+        fields_by_model = {
+            "first_iceberg_min": ["first_iceberg_pie_max_trade_price"],
+            "min_trade": ["max_trade_price"],
+            "settle": ["settle_price"],
+            "zone_lower": ["zone_upper"],
+            "min_of_all": [
+                "first_iceberg_pie_max_trade_price",
+                "first_pie_max_trade_price",
+                "max_trade_price",
+                "settle_price",
+                "trigger_price",
+                "zone_upper",
+            ],
+        }
+        fields = fields_by_model.get(model, fields_by_model["min_of_all"])
+        values = [parse_float(row.get(field)) for field in fields]
+        valid = [value for value in values if value > 0]
+        return max(valid) if valid else 0.0
+    return 0.0
+
+
+def martingale_entry_price(
+    row: Mapping[str, Any],
+    signal_price: float,
+    current_bar: Mapping[str, float],
+    params: MartingaleParams,
+    next_bar: Mapping[str, float] | None = None,
+) -> float:
+    model = str(params.entry_price_model or "signal_price").strip().lower()
+    if model == "settle_price":
+        return parse_float(row.get("settle_price"), signal_price)
+    if model == "next_1m_open":
+        return parse_float((next_bar or current_bar).get("open"), signal_price)
+    return signal_price
+
+
+def martingale_rejection(
+    row: Mapping[str, Any],
+    reason: str,
+    params: MartingaleParams,
+    *,
+    active_position: MartingalePosition | None = None,
+    signal_price: float = 0.0,
+    boll: Mapping[str, float] | None = None,
+    available_margin: float | str = "",
+    required_margin: float | str = "",
+    drop_from_last_entry_pct: float | str = "",
+    details: str = "",
+) -> dict[str, Any]:
+    boll = boll or {}
+    freeze_until = ""
+    last_entry_ts = ""
+    last_entry_price = ""
+    leg_count = 0
+    active_side = "NONE"
+    if active_position is not None:
+        active_side = active_position.side
+        last_entry_ts = round(active_position.last_entry_ts, 8)
+        last_entry_price = round(active_position.last_entry_price, 8)
+        freeze_until = round(active_position.last_entry_ts + params.freeze_min * 60.0, 8)
+        leg_count = active_position.leg_count
+    return {
+        "scenario_id": params.scenario_id,
+        "candidate_event_key": candidate_event_key(row),
+        "candidate_ts": round(candidate_ts(row), 8),
+        "active_side": active_side,
+        "candidate_direction": str(row.get("direction") or "").upper(),
+        "reason": reason,
+        "signal_price": round(signal_price, 8) if signal_price else "",
+        "boll_lower": round(parse_float(boll.get("lower")), 8) if boll else "",
+        "boll_mid": round(parse_float(boll.get("middle")), 8) if boll else "",
+        "boll_upper": round(parse_float(boll.get("upper")), 8) if boll else "",
+        "last_entry_ts": last_entry_ts,
+        "last_entry_price": last_entry_price,
+        "drop_from_last_entry_pct": round(parse_float(drop_from_last_entry_pct), 8) if drop_from_last_entry_pct != "" else "",
+        "freeze_until": freeze_until,
+        "leg_count": leg_count,
+        "available_margin": round(parse_float(available_margin), 8) if available_margin != "" else "",
+        "required_margin": round(parse_float(required_margin), 8) if required_margin != "" else "",
+        "details": details,
+    }
+
+
+def martingale_position_size(
+    wallet_equity: float,
+    used_margin_total: float,
+    entry_price: float,
+    params: MartingaleParams,
+) -> tuple[dict[str, float] | None, str | None]:
+    if wallet_equity <= 0 or entry_price <= 0:
+        return None, "DATA_UNAVAILABLE"
+    margin_budget = wallet_equity * params.margin_pct
+    notional = margin_budget * params.leverage
+    eth_qty = notional / entry_price
+    contracts = floor_to_step(eth_qty / params.contract_size_eth, params.contract_step)
+    if contracts < params.min_contracts:
+        return None, "SIZE_BELOW_MIN_CONTRACTS"
+    actual_eth_qty = contracts * params.contract_size_eth
+    actual_notional = actual_eth_qty * entry_price
+    actual_margin = actual_notional / params.leverage
+    available_margin = wallet_equity - used_margin_total
+    if actual_margin > available_margin + 1e-12:
+        return None, "INSUFFICIENT_AVAILABLE_MARGIN"
+    entry_fee = actual_notional * params.fee_rate_per_side
+    return (
+        {
+            "contracts": contracts,
+            "eth_qty": actual_eth_qty,
+            "notional": actual_notional,
+            "margin_used": actual_margin,
+            "entry_fee": entry_fee,
+            "available_margin": available_margin,
+        },
+        None,
+    )
 
 
 def compute_fee_aware_r_metrics(
@@ -1057,6 +1434,404 @@ def simulate_backtest(
     }
 
 
+def martingale_effective_margin_rate(position: MartingalePosition) -> float:
+    total_notional = position.total_notional
+    return position.used_margin_total / total_notional if total_notional > 0 else 0.0
+
+
+def martingale_liquidation_price(position: MartingalePosition, params: MartingaleParams) -> float:
+    avg_cost = position.avg_cost
+    drawdown = max(
+        0.0,
+        martingale_effective_margin_rate(position) - params.maintenance_margin_rate - params.liquidation_fee_buffer_pct,
+    )
+    if position.side == "SHORT":
+        return avg_cost * (1.0 + drawdown)
+    return avg_cost * (1.0 - drawdown)
+
+
+def martingale_stop_price(position: MartingalePosition, params: MartingaleParams) -> float:
+    if position.side == "SHORT":
+        return position.avg_cost * (1.0 + params.stop_drawdown_pct)
+    return position.avg_cost * (1.0 - params.stop_drawdown_pct)
+
+
+def martingale_tp_price(position: MartingalePosition, boll: Mapping[str, float] | None, params: MartingaleParams) -> float:
+    avg_cost = position.avg_cost
+    mid = parse_float((boll or {}).get("middle"))
+    if position.side == "SHORT":
+        fixed = avg_cost * (1.0 - params.take_profit_pct)
+        return min(fixed, mid) if mid > 0 else fixed
+    fixed = avg_cost * (1.0 + params.take_profit_pct)
+    return max(fixed, mid) if mid > 0 else fixed
+
+
+def update_martingale_extremes(position: MartingalePosition, bar: Mapping[str, float]) -> None:
+    avg_cost = position.avg_cost
+    if avg_cost <= 0:
+        return
+    high = parse_float(bar.get("high"))
+    low = parse_float(bar.get("low"))
+    if position.side == "SHORT":
+        adverse_price = high
+        favorable_price = low
+        drawdown_pct = (avg_cost - high) / avg_cost
+        if position.max_adverse_price <= 0 or adverse_price > position.max_adverse_price:
+            position.max_adverse_price = adverse_price
+        if position.max_favorable_price <= 0 or favorable_price < position.max_favorable_price:
+            position.max_favorable_price = favorable_price
+    else:
+        adverse_price = low
+        favorable_price = high
+        drawdown_pct = (low - avg_cost) / avg_cost
+        if position.max_adverse_price <= 0 or adverse_price < position.max_adverse_price:
+            position.max_adverse_price = adverse_price
+        if position.max_favorable_price <= 0 or favorable_price > position.max_favorable_price:
+            position.max_favorable_price = favorable_price
+    position.max_unrealized_drawdown_pct = min(position.max_unrealized_drawdown_pct, drawdown_pct * 100.0)
+
+
+def close_martingale_position(
+    position: MartingalePosition,
+    *,
+    close_ts: float,
+    exit_reason: str,
+    exit_price: float,
+    wallet_equity: float,
+    params: MartingaleParams,
+    tp_price: float = 0.0,
+    liquidation_price: float = 0.0,
+    stop_price: float = 0.0,
+) -> tuple[dict[str, Any], float]:
+    total_qty = position.total_eth_qty
+    avg_cost = position.avg_cost
+    if position.side == "SHORT":
+        gross_pnl = total_qty * (avg_cost - exit_price)
+    else:
+        gross_pnl = total_qty * (exit_price - avg_cost)
+    exit_fee = total_qty * exit_price * params.fee_rate_per_side
+    net_pnl = gross_pnl - position.total_entry_fee - exit_fee
+    equity_after = wallet_equity + gross_pnl - exit_fee
+    row = {
+        "scenario_id": params.scenario_id,
+        "position_id": position.position_id,
+        "side": position.side,
+        "direction": position.direction,
+        "open_ts": round(position.open_ts, 8),
+        "close_ts": round(close_ts, 8),
+        "exit_reason": exit_reason,
+        "leg_count": position.leg_count,
+        "avg_cost": round(avg_cost, 8),
+        "exit_price": round(exit_price, 8),
+        "total_eth_qty": round(total_qty, 8),
+        "total_notional": round(position.total_notional, 8),
+        "used_margin_total": round(position.used_margin_total, 8),
+        "total_entry_fee": round(position.total_entry_fee, 8),
+        "exit_fee": round(exit_fee, 8),
+        "gross_pnl": round(gross_pnl, 8),
+        "net_pnl": round(net_pnl, 8),
+        "equity_before": round(position.equity_before, 8),
+        "equity_after": round(equity_after, 8),
+        "max_unrealized_drawdown_pct": round(position.max_unrealized_drawdown_pct, 8),
+        "max_adverse_price": round(position.max_adverse_price, 8),
+        "max_favorable_price": round(position.max_favorable_price, 8),
+        "holding_minutes": round((close_ts - position.open_ts) / 60.0, 8),
+        "tp_price_at_exit": round(tp_price, 8) if tp_price else "",
+        "liquidation_price_at_exit": round(liquidation_price, 8) if liquidation_price else "",
+        "stop_price_at_exit": round(stop_price, 8) if stop_price else "",
+    }
+    return row, equity_after
+
+
+def check_martingale_exit(
+    position: MartingalePosition,
+    bar: Mapping[str, float],
+    latest_boll: Mapping[str, float] | None,
+    params: MartingaleParams,
+) -> tuple[str, float, float, float, float] | None:
+    update_martingale_extremes(position, bar)
+    high = parse_float(bar.get("high"))
+    low = parse_float(bar.get("low"))
+    liquidation_price = martingale_liquidation_price(position, params)
+    stop_price = martingale_stop_price(position, params)
+    tp_price = martingale_tp_price(position, latest_boll, params)
+
+    if params.liquidation_check:
+        if position.side == "SHORT" and high >= liquidation_price:
+            return "LIQUIDATION_PROXY", liquidation_price, tp_price, liquidation_price, stop_price
+        if position.side == "LONG" and low <= liquidation_price:
+            return "LIQUIDATION_PROXY", liquidation_price, tp_price, liquidation_price, stop_price
+
+    if position.leg_count > params.max_leg_before_stop:
+        if position.side == "SHORT" and high >= stop_price:
+            return "MARTINGALE_STOP", stop_price, tp_price, liquidation_price, stop_price
+        if position.side == "LONG" and low <= stop_price:
+            return "MARTINGALE_STOP", stop_price, tp_price, liquidation_price, stop_price
+
+    if position.side == "SHORT" and low <= tp_price:
+        return "TAKE_PROFIT", tp_price, tp_price, liquidation_price, stop_price
+    if position.side == "LONG" and high >= tp_price:
+        return "TAKE_PROFIT", tp_price, tp_price, liquidation_price, stop_price
+    return None
+
+
+def simulate_martingale_backtest(
+    candidates: list[Mapping[str, Any]],
+    klines: list[Mapping[str, float]],
+    params: MartingaleParams,
+) -> dict[str, Any]:
+    candidates = filter_by_date(candidates, params)  # type: ignore[arg-type]
+    candidates = sorted(candidates, key=lambda row: (candidate_ts(row), candidate_event_key(row)))
+    klines = sorted(klines, key=lambda row: parse_float(row.get("timestamp")))
+    boll_bars = build_bollinger_bars(klines, params)  # type: ignore[arg-type]
+    wallet_equity = params.initial_equity
+    high_water = wallet_equity
+    candidate_idx = 0
+    boll_idx = 0
+    latest_boll: dict[str, float] | None = None
+    active: MartingalePosition | None = None
+    closed_position_bar_ts: float | None = None
+    positions: list[dict[str, Any]] = []
+    legs: list[dict[str, Any]] = []
+    rejections: list[dict[str, Any]] = []
+    equity_curve: list[dict[str, Any]] = [
+        {
+            "sequence": 0,
+            "timestamp": "",
+            "event": "START",
+            "scenario_id": params.scenario_id,
+            "position_id": "",
+            "equity": round(wallet_equity, 8),
+            "net_pnl": 0.0,
+            "drawdown_pct": 0.0,
+        }
+    ]
+
+    def append_equity(ts: float, event: str, position_id: str, net_pnl: float = 0.0) -> None:
+        nonlocal high_water
+        high_water = max(high_water, wallet_equity)
+        drawdown = (wallet_equity / high_water - 1.0) * 100.0 if high_water > 0 else 0.0
+        equity_curve.append(
+            {
+                "sequence": len(equity_curve),
+                "timestamp": round(ts, 8),
+                "event": event,
+                "scenario_id": params.scenario_id,
+                "position_id": position_id,
+                "equity": round(wallet_equity, 8),
+                "net_pnl": round(net_pnl, 8),
+                "drawdown_pct": round(drawdown, 8),
+            }
+        )
+
+    for bar_idx, bar in enumerate(klines):
+        bar_ts = parse_float(bar.get("timestamp"))
+        while boll_idx < len(boll_bars) and parse_float(boll_bars[boll_idx].get("close_ts")) <= bar_ts:
+            latest_boll = dict(boll_bars[boll_idx])
+            boll_idx += 1
+
+        closed_position_bar_ts = None
+        if active is not None:
+            exit_info = check_martingale_exit(active, bar, latest_boll, params)
+            if exit_info is not None:
+                reason, exit_price, tp_price, liq_price, stop_price = exit_info
+                position_row, wallet_equity = close_martingale_position(
+                    active,
+                    close_ts=bar_ts,
+                    exit_reason=reason,
+                    exit_price=exit_price,
+                    wallet_equity=wallet_equity,
+                    params=params,
+                    tp_price=tp_price,
+                    liquidation_price=liq_price,
+                    stop_price=stop_price,
+                )
+                positions.append(position_row)
+                append_equity(bar_ts, reason, active.position_id, parse_float(position_row.get("net_pnl")))
+                active = None
+                closed_position_bar_ts = bar_ts
+
+        while candidate_idx < len(candidates) and candidate_ts(candidates[candidate_idx]) <= bar_ts:
+            row = candidates[candidate_idx]
+            candidate_idx += 1
+            direction = str(row.get("direction") or "").upper()
+            side = side_from_direction(direction)
+            c_ts = candidate_ts(row)
+            if side == "NONE":
+                rejections.append(martingale_rejection(row, "UNSUPPORTED_DIRECTION", params, active_position=active))
+                continue
+            if closed_position_bar_ts == bar_ts:
+                rejections.append(martingale_rejection(row, "POSITION_ALREADY_CLOSED_SAME_BAR", params, active_position=active))
+                continue
+            if active is not None and active.side != side:
+                rejections.append(martingale_rejection(row, "OPPOSITE_SIDE_POSITION_OPEN", params, active_position=active))
+                continue
+
+            signal_boll = last_closed_boll(boll_bars, c_ts)
+            signal_price = martingale_signal_price(row, direction, params.signal_price_model)
+            if not signal_boll:
+                rejections.append(martingale_rejection(row, "BOLL_UNAVAILABLE", params, active_position=active, signal_price=signal_price))
+                continue
+            if signal_price <= 0:
+                rejections.append(
+                    martingale_rejection(row, "DATA_UNAVAILABLE", params, active_position=active, signal_price=signal_price, boll=signal_boll)
+                )
+                continue
+            boll_lower = parse_float(signal_boll.get("lower"))
+            boll_upper = parse_float(signal_boll.get("upper"))
+            if direction == "BUY" and signal_price > boll_lower:
+                rejections.append(
+                    martingale_rejection(row, "NOT_BELOW_BOLL_LOWER", params, active_position=active, signal_price=signal_price, boll=signal_boll)
+                )
+                continue
+            if direction == "SELL" and signal_price < boll_upper:
+                rejections.append(
+                    martingale_rejection(row, "NOT_ABOVE_BOLL_UPPER", params, active_position=active, signal_price=signal_price, boll=signal_boll)
+                )
+                continue
+
+            freeze_rule_used = "NONE"
+            drop_from_last_entry_pct: float | str = ""
+            last_entry_price_before = ""
+            if active is not None:
+                last_price = active.last_entry_price
+                last_entry_price_before = round(last_price, 8)
+                freeze_until = active.last_entry_ts + params.freeze_min * 60.0
+                if direction == "BUY":
+                    drop_from_last_entry_pct = (signal_price / last_price - 1.0) if last_price > 0 else 0.0
+                    enough = last_price > 0 and signal_price <= last_price * (1.0 - params.drop_pct)
+                    not_enough_reason = "FROZEN_NOT_ENOUGH_DROP"
+                else:
+                    drop_from_last_entry_pct = (signal_price / last_price - 1.0) if last_price > 0 else 0.0
+                    enough = last_price > 0 and signal_price >= last_price * (1.0 + params.drop_pct)
+                    not_enough_reason = "FROZEN_NOT_ENOUGH_RISE"
+                if c_ts <= freeze_until:
+                    freeze_rule_used = "FROZEN_DROP_REQUIRED" if direction == "BUY" else "FROZEN_RISE_REQUIRED"
+                    if not enough:
+                        rejections.append(
+                            martingale_rejection(
+                                row,
+                                not_enough_reason,
+                                params,
+                                active_position=active,
+                                signal_price=signal_price,
+                                boll=signal_boll,
+                                drop_from_last_entry_pct=drop_from_last_entry_pct,
+                            )
+                        )
+                        continue
+                else:
+                    freeze_rule_used = "FREEZE_EXPIRED"
+
+            next_bar = klines[bar_idx + 1] if bar_idx + 1 < len(klines) else None
+            entry_price = martingale_entry_price(row, signal_price, bar, params, next_bar)
+            used_margin = active.used_margin_total if active is not None else 0.0
+            size, size_reason = martingale_position_size(wallet_equity, used_margin, entry_price, params)
+            required_margin = params.margin_pct * wallet_equity
+            available_margin = wallet_equity - used_margin
+            if not size:
+                rejections.append(
+                    martingale_rejection(
+                        row,
+                        str(size_reason),
+                        params,
+                        active_position=active,
+                        signal_price=signal_price,
+                        boll=signal_boll,
+                        available_margin=available_margin,
+                        required_margin=required_margin,
+                        drop_from_last_entry_pct=drop_from_last_entry_pct,
+                    )
+                )
+                continue
+
+            position_created = False
+            if active is None:
+                active = MartingalePosition(
+                    scenario_id=params.scenario_id,
+                    position_id=f"P{len(positions) + 1:05d}",
+                    side=side,
+                    direction=direction,
+                    open_ts=c_ts,
+                    equity_before=wallet_equity,
+                )
+                position_created = True
+
+            leg_id = active.leg_count + 1
+            wallet_before = wallet_equity
+            entry_fee = parse_float(size.get("entry_fee"))
+            wallet_equity -= entry_fee
+            leg = {
+                "scenario_id": params.scenario_id,
+                "position_id": active.position_id,
+                "leg_id": leg_id,
+                "side": active.side,
+                "direction": active.direction,
+                "entry_ts": round(c_ts, 8),
+                "entry_price": round(entry_price, 8),
+                "signal_price": round(signal_price, 8),
+                "contracts": round(parse_float(size.get("contracts")), 8),
+                "eth_qty": round(parse_float(size.get("eth_qty")), 8),
+                "notional": round(parse_float(size.get("notional")), 8),
+                "margin_used": round(parse_float(size.get("margin_used")), 8),
+                "entry_fee": round(entry_fee, 8),
+                "wallet_equity_before": round(wallet_before, 8),
+                "wallet_equity_after_fee": round(wallet_equity, 8),
+                "boll_lower_at_signal": round(parse_float(signal_boll.get("lower")), 8),
+                "boll_mid_at_signal": round(parse_float(signal_boll.get("middle")), 8),
+                "boll_upper_at_signal": round(parse_float(signal_boll.get("upper")), 8),
+                "last_entry_price_before": last_entry_price_before,
+                "drop_from_last_entry_pct": round(parse_float(drop_from_last_entry_pct), 8) if drop_from_last_entry_pct != "" else "",
+                "freeze_rule_used": "OPEN" if position_created else freeze_rule_used,
+            }
+            active.legs.append(leg)
+            leg["avg_cost_after"] = round(active.avg_cost, 8)
+            leg["leg_count_after"] = active.leg_count
+            if active.max_adverse_price <= 0:
+                active.max_adverse_price = entry_price
+            if active.max_favorable_price <= 0:
+                active.max_favorable_price = entry_price
+            legs.append(leg)
+            append_equity(c_ts, "ENTRY_FEE", active.position_id, -entry_fee)
+
+    if active is not None and klines:
+        last_bar = klines[-1]
+        close_ts = parse_float(last_bar.get("timestamp"))
+        exit_price = parse_float(last_bar.get("close"))
+        tp_price = martingale_tp_price(active, latest_boll, params)
+        liq_price = martingale_liquidation_price(active, params)
+        stop_price = martingale_stop_price(active, params)
+        position_row, wallet_equity = close_martingale_position(
+            active,
+            close_ts=close_ts,
+            exit_reason="END_OF_DATA_CLOSE",
+            exit_price=exit_price,
+            wallet_equity=wallet_equity,
+            params=params,
+            tp_price=tp_price,
+            liquidation_price=liq_price,
+            stop_price=stop_price,
+        )
+        positions.append(position_row)
+        append_equity(close_ts, "END_OF_DATA_CLOSE", active.position_id, parse_float(position_row.get("net_pnl")))
+        active = None
+
+    while candidate_idx < len(candidates):
+        row = candidates[candidate_idx]
+        candidate_idx += 1
+        rejections.append(martingale_rejection(row, "DATA_UNAVAILABLE", params, active_position=active))
+
+    summary = build_martingale_summary(positions, legs, rejections, candidates, equity_curve, params)
+    return {
+        "positions": positions,
+        "legs": legs,
+        "rejections": rejections,
+        "equity_curve": equity_curve,
+        "summary": summary,
+        "boll_bars": boll_bars,
+    }
+
+
 def intervals_overlap(a_start: float, a_end: float, b_start: float, b_end: float) -> bool:
     return a_start < b_end and b_start < a_end
 
@@ -1160,6 +1935,96 @@ def build_monthly_stats(trades: list[Mapping[str, Any]], params: BacktestParams)
     return out
 
 
+def martingale_side_summary(positions: list[Mapping[str, Any]], side: str) -> dict[str, Any]:
+    rows = [row for row in positions if row.get("side") == side]
+    wins = [row for row in rows if parse_float(row.get("net_pnl")) > 0]
+    return {
+        "positions": len(rows),
+        "win_rate": round(len(wins) / len(rows), 8) if rows else 0.0,
+        "net_pnl": round(sum(parse_float(row.get("net_pnl")) for row in rows), 8),
+        "avg_legs": round(sum(parse_float(row.get("leg_count")) for row in rows) / len(rows), 8) if rows else 0.0,
+        "liquidation_count": sum(1 for row in rows if row.get("exit_reason") == "LIQUIDATION_PROXY"),
+    }
+
+
+def build_martingale_summary(
+    positions: list[Mapping[str, Any]],
+    legs: list[Mapping[str, Any]],
+    rejections: list[Mapping[str, Any]],
+    candidates: list[Mapping[str, Any]],
+    equity_curve: list[Mapping[str, Any]],
+    params: MartingaleParams,
+) -> dict[str, Any]:
+    final_equity = parse_float(equity_curve[-1].get("equity"), params.initial_equity) if equity_curve else params.initial_equity
+    wins = [row for row in positions if parse_float(row.get("net_pnl")) > 0]
+    losses = [row for row in positions if parse_float(row.get("net_pnl")) < 0]
+    net_pnls = [parse_float(row.get("net_pnl")) for row in positions]
+    leg_counts = [int(parse_float(row.get("leg_count"))) for row in positions]
+    gross_wins = sum(parse_float(row.get("net_pnl")) for row in wins)
+    gross_losses = abs(sum(parse_float(row.get("net_pnl")) for row in losses))
+    rejection_count_by_reason: dict[str, int] = {}
+    for row in rejections:
+        reason = str(row.get("reason") or "UNKNOWN")
+        rejection_count_by_reason[reason] = rejection_count_by_reason.get(reason, 0) + 1
+    max_drawdown_pct = min([parse_float(row.get("drawdown_pct")) for row in equity_curve] or [0.0])
+    span_days = backtest_span_days(candidates, params)  # type: ignore[arg-type]
+    total_entry_fees = sum(parse_float(row.get("entry_fee")) for row in legs)
+    total_exit_fees = sum(parse_float(row.get("exit_fee")) for row in positions)
+    long_stats = martingale_side_summary(positions, "LONG")
+    short_stats = martingale_side_summary(positions, "SHORT")
+    liquidation_count = sum(1 for row in positions if row.get("exit_reason") == "LIQUIDATION_PROXY")
+    summary = {
+        "version": "V7.1.0.1",
+        "strategy_name": "ICEBERG Bollinger Lower/Upper Band Martingale Backtest",
+        "scenario_id": params.scenario_id,
+        "margin_pct": params.margin_pct,
+        "drop_pct": params.drop_pct,
+        "initial_equity": round(params.initial_equity, 8),
+        "final_equity": round(final_equity, 8),
+        "net_profit": round(final_equity - params.initial_equity, 8),
+        "total_return_pct": round((final_equity / params.initial_equity - 1.0) * 100.0, 8) if params.initial_equity else 0.0,
+        "max_drawdown_pct": round(max_drawdown_pct, 8),
+        "total_positions": len(positions),
+        "win_rate": round(len(wins) / len(positions), 8) if positions else 0.0,
+        "profit_factor": round(gross_wins / gross_losses, 8) if gross_losses > 0 else (None if gross_wins <= 0 else "INF"),
+        "total_legs": len(legs),
+        "avg_legs_per_position": round(len(legs) / len(positions), 8) if positions else 0.0,
+        "max_legs": max(leg_counts) if leg_counts else 0,
+        "positions_ge_5_legs": sum(1 for count in leg_counts if count >= 5),
+        "positions_ge_10_legs": sum(1 for count in leg_counts if count >= 10),
+        "positions_gt_12_legs": sum(1 for count in leg_counts if count > 12),
+        "positions_reaching_12_legs": sum(1 for count in leg_counts if count >= 12),
+        "positions_reaching_stop_threshold": sum(
+            1 for row in positions if parse_float(row.get("max_unrealized_drawdown_pct")) <= -params.stop_drawdown_pct * 100.0
+        ),
+        "liquidation_count": liquidation_count,
+        "liquidation_rate": round(liquidation_count / len(positions), 8) if positions else 0.0,
+        "martingale_stop_count": sum(1 for row in positions if row.get("exit_reason") == "MARTINGALE_STOP"),
+        "take_profit_count": sum(1 for row in positions if row.get("exit_reason") == "TAKE_PROFIT"),
+        "avg_position_net_pnl": round(sum(net_pnls) / len(net_pnls), 8) if net_pnls else 0.0,
+        "median_position_net_pnl": round(statistics.median(net_pnls), 8) if net_pnls else 0.0,
+        "avg_holding_minutes": round(sum(parse_float(row.get("holding_minutes")) for row in positions) / len(positions), 8) if positions else 0.0,
+        "total_fees": round(total_entry_fees + total_exit_fees, 8),
+        "total_entry_fees": round(total_entry_fees, 8),
+        "total_exit_fees": round(total_exit_fees, 8),
+        "rejection_count_by_reason": rejection_count_by_reason,
+        "positions_per_day": round(len(positions) / span_days, 8) if span_days > 0 else 0.0,
+        "legs_per_day": round(len(legs) / span_days, 8) if span_days > 0 else 0.0,
+        "long_positions": long_stats["positions"],
+        "long_win_rate": long_stats["win_rate"],
+        "long_net_pnl": long_stats["net_pnl"],
+        "long_avg_legs": long_stats["avg_legs"],
+        "long_liquidation_count": long_stats["liquidation_count"],
+        "short_positions": short_stats["positions"],
+        "short_win_rate": short_stats["win_rate"],
+        "short_net_pnl": short_stats["net_pnl"],
+        "short_avg_legs": short_stats["avg_legs"],
+        "short_liquidation_count": short_stats["liquidation_count"],
+        "parameters": params.__dict__,
+    }
+    return summary
+
+
 def backtest_span_days(candidates: list[Mapping[str, Any]], params: BacktestParams) -> float:
     start_ts, end_ts = date_boundaries(params.start_date, params.end_date, params.timezone)
     if start_ts is not None and end_ts is not None:
@@ -1190,6 +2055,62 @@ def write_outputs(result: Mapping[str, Any], out_dir: Path | str) -> None:
         json.dump(summary, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
     (out / "iceberg_boll_summary.md").write_text(render_summary_md(summary), encoding="utf-8")
+
+
+def write_martingale_outputs(result: Mapping[str, Any], out_dir: Path | str) -> None:
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    write_csv_file(out / "iceberg_boll_martingale_positions.csv", result.get("positions", []), MARTINGALE_POSITION_FIELDS)
+    write_csv_file(out / "iceberg_boll_martingale_legs.csv", result.get("legs", []), MARTINGALE_LEG_FIELDS)
+    write_csv_file(out / "iceberg_boll_martingale_rejections.csv", result.get("rejections", []), MARTINGALE_REJECTION_FIELDS)
+    write_csv_file(out / "iceberg_boll_martingale_equity_curve.csv", result.get("equity_curve", []), MARTINGALE_EQUITY_FIELDS)
+    summary = dict(result.get("summary", {}))
+    with (out / "iceberg_boll_martingale_summary.json").open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+    (out / "iceberg_boll_martingale_summary.md").write_text(render_martingale_summary_md(summary), encoding="utf-8")
+
+
+def martingale_summary_csv_row(summary: Mapping[str, Any]) -> dict[str, Any]:
+    row = {field: summary.get(field, "") for field in MARTINGALE_SUMMARY_FIELDS}
+    if isinstance(row.get("rejection_count_by_reason"), Mapping):
+        row["rejection_count_by_reason"] = json.dumps(row["rejection_count_by_reason"], ensure_ascii=False, sort_keys=True)
+    return row
+
+
+def render_martingale_summary_md(summary: Mapping[str, Any]) -> str:
+    lines = [
+        "# ICEBERG Bollinger Martingale Backtest",
+        "",
+        f"- Version: {summary.get('version', '')}",
+        f"- Scenario: {summary.get('scenario_id', '')}",
+        f"- Margin pct: {summary.get('margin_pct', 0)}",
+        f"- Drop pct: {summary.get('drop_pct', 0)}",
+        f"- Initial equity: {summary.get('initial_equity', 0)}",
+        f"- Final equity: {summary.get('final_equity', 0)}",
+        f"- Net profit: {summary.get('net_profit', 0)}",
+        f"- Total return pct: {summary.get('total_return_pct', 0)}",
+        f"- Max drawdown pct: {summary.get('max_drawdown_pct', 0)}",
+        f"- Total positions: {summary.get('total_positions', 0)}",
+        f"- Win rate: {summary.get('win_rate', 0)}",
+        f"- Profit factor: {summary.get('profit_factor', 0)}",
+        f"- Total legs: {summary.get('total_legs', 0)}",
+        f"- Max legs: {summary.get('max_legs', 0)}",
+        f"- Liquidation count: {summary.get('liquidation_count', 0)}",
+        f"- Martingale stop count: {summary.get('martingale_stop_count', 0)}",
+        f"- Take profit count: {summary.get('take_profit_count', 0)}",
+        f"- Total fees: {summary.get('total_fees', 0)}",
+        "",
+        "## Direction",
+        f"- LONG: positions={summary.get('long_positions', 0)} pnl={summary.get('long_net_pnl', 0)} win_rate={summary.get('long_win_rate', 0)} avg_legs={summary.get('long_avg_legs', 0)} liquidations={summary.get('long_liquidation_count', 0)}",
+        f"- SHORT: positions={summary.get('short_positions', 0)} pnl={summary.get('short_net_pnl', 0)} win_rate={summary.get('short_win_rate', 0)} avg_legs={summary.get('short_avg_legs', 0)} liquidations={summary.get('short_liquidation_count', 0)}",
+        "",
+        "## Rejections",
+    ]
+    for reason, count in dict(summary.get("rejection_count_by_reason", {})).items():
+        lines.append(f"- {reason}: {count}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def render_summary_md(summary: Mapping[str, Any]) -> str:
@@ -1234,8 +2155,59 @@ def run_from_files(
     return result
 
 
+def run_martingale_from_files(
+    phase1_candidates: Path | str,
+    kline: Path | str,
+    out: Path | str,
+    base_params: MartingaleParams,
+    margin_pct_list: list[float],
+    drop_pct_list: list[float],
+) -> dict[str, Any]:
+    candidates = load_finalized_iceberg_candidates(phase1_candidates)
+    klines = load_1m_klines(kline, base_params.timezone)
+    out_path = Path(out)
+    out_path.mkdir(parents=True, exist_ok=True)
+    scenario_results: dict[str, Any] = {}
+    scenario_rows: list[dict[str, Any]] = []
+    for margin_pct in margin_pct_list:
+        for drop_pct in drop_pct_list:
+            params = MartingaleParams(
+                scenario_id=martingale_scenario_id(margin_pct, drop_pct),
+                initial_equity=base_params.initial_equity,
+                margin_pct=margin_pct,
+                drop_pct=drop_pct,
+                freeze_min=base_params.freeze_min,
+                leverage=base_params.leverage,
+                max_leg_before_stop=base_params.max_leg_before_stop,
+                stop_drawdown_pct=base_params.stop_drawdown_pct,
+                take_profit_pct=base_params.take_profit_pct,
+                fee_rate_per_side=base_params.fee_rate_per_side,
+                contract_size_eth=base_params.contract_size_eth,
+                contract_step=base_params.contract_step,
+                min_contracts=base_params.min_contracts,
+                liquidation_check=base_params.liquidation_check,
+                maintenance_margin_rate=base_params.maintenance_margin_rate,
+                liquidation_fee_buffer_pct=base_params.liquidation_fee_buffer_pct,
+                signal_price_model=base_params.signal_price_model,
+                entry_price_model=base_params.entry_price_model,
+                boll_timeframe=base_params.boll_timeframe,
+                boll_period=base_params.boll_period,
+                boll_std=base_params.boll_std,
+                timezone=base_params.timezone,
+                start_date=base_params.start_date,
+                end_date=base_params.end_date,
+            )
+            result = simulate_martingale_backtest(candidates, klines, params)
+            write_martingale_outputs(result, out_path / params.scenario_id)
+            scenario_results[params.scenario_id] = result
+            scenario_rows.append(martingale_summary_csv_row(result["summary"]))
+    write_csv_file(out_path / "iceberg_boll_martingale_scenario_summary.csv", scenario_rows, MARTINGALE_SUMMARY_FIELDS)
+    return {"scenarios": scenario_results, "scenario_summary": scenario_rows}
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="V7.1.0 ICEBERG Bollinger midline offline strategy backtest")
+    parser.add_argument("--strategy-mode", choices=["midline", "martingale"], default="midline")
     parser.add_argument("--phase1-candidates", required=True)
     parser.add_argument("--kline", required=True)
     parser.add_argument("--out", required=True)
@@ -1257,6 +2229,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-target-r", type=float, default=3.0)
     parser.add_argument("--one-position-at-a-time", default="true")
     parser.add_argument("--boll-touch-required", default="true")
+    parser.add_argument("--signal-price-model", default="min_of_all")
+    parser.add_argument("--entry-price-model", choices=["signal_price", "settle_price", "next_1m_open"], default="signal_price")
+    parser.add_argument("--martingale-margin-pct-list", default="0.03,0.05")
+    parser.add_argument("--martingale-drop-pct-list", default="0.003,0.005")
+    parser.add_argument("--martingale-freeze-min", type=int, default=30)
+    parser.add_argument("--martingale-leverage", type=float, default=50.0)
+    parser.add_argument("--martingale-max-leg-before-stop", type=int, default=12)
+    parser.add_argument("--martingale-stop-drawdown-pct", type=float, default=0.02)
+    parser.add_argument("--martingale-take-profit-pct", type=float, default=0.005)
+    parser.add_argument("--liquidation-check", default="true")
+    parser.add_argument("--maintenance-margin-rate", type=float, default=0.005)
+    parser.add_argument("--liquidation-fee-buffer-pct", type=float, default=0.001)
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
     return parser
@@ -1287,9 +2271,48 @@ def params_from_args(args: argparse.Namespace) -> BacktestParams:
     )
 
 
+def martingale_params_from_args(args: argparse.Namespace) -> MartingaleParams:
+    return MartingaleParams(
+        initial_equity=args.initial_equity,
+        margin_pct=0.0,
+        drop_pct=0.0,
+        freeze_min=args.martingale_freeze_min,
+        leverage=args.martingale_leverage,
+        max_leg_before_stop=args.martingale_max_leg_before_stop,
+        stop_drawdown_pct=args.martingale_stop_drawdown_pct,
+        take_profit_pct=args.martingale_take_profit_pct,
+        fee_rate_per_side=args.fee_rate_per_side,
+        contract_size_eth=args.contract_size_eth,
+        contract_step=args.contract_step,
+        min_contracts=args.min_contracts,
+        liquidation_check=parse_bool(args.liquidation_check, True),
+        maintenance_margin_rate=args.maintenance_margin_rate,
+        liquidation_fee_buffer_pct=args.liquidation_fee_buffer_pct,
+        signal_price_model=args.signal_price_model,
+        entry_price_model=args.entry_price_model,
+        boll_timeframe=args.boll_timeframe,
+        boll_period=args.boll_period,
+        boll_std=args.boll_std,
+        timezone=args.timezone,
+        start_date=args.start_date,
+        end_date=args.end_date,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.strategy_mode == "martingale":
+        params = martingale_params_from_args(args)
+        run_martingale_from_files(
+            args.phase1_candidates,
+            args.kline,
+            args.out,
+            params,
+            parse_float_list(args.martingale_margin_pct_list),
+            parse_float_list(args.martingale_drop_pct_list),
+        )
+        return 0
     params = params_from_args(args)
     run_from_files(args.phase1_candidates, args.kline, args.out, params)
     return 0
