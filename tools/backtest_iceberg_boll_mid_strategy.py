@@ -35,6 +35,8 @@ TRADE_FIELDS = [
     "entry_price",
     "exit_price",
     "stop_price",
+    "stop_basis_price",
+    "stop_basis_type",
     "initial_boll_mid",
     "exit_boll_mid",
     "target_price_at_exit",
@@ -96,6 +98,8 @@ REJECTION_FIELDS = [
     "zone_contains_boll_band_flag",
     "entry_trigger",
     "stop_price",
+    "stop_basis_price",
+    "stop_basis_type",
     "risk_u",
     "target_r",
     "details",
@@ -400,35 +404,46 @@ def find_a3_entry(
     return None, parse_float(row.get("zone_upper" if direction == "BUY" else "zone_lower"))
 
 
-def structural_stop(row: Mapping[str, Any], entry_price: float, params: BacktestParams) -> tuple[float, float]:
+def structural_stop(row: Mapping[str, Any], entry_price: float, params: BacktestParams) -> tuple[float, float, float, str]:
     direction = str(row.get("direction") or "").upper()
     if direction == "BUY":
-        basis = first_positive(
+        basis, basis_type = extreme_positive_value(
             row,
-            "first_iceberg_pie_min_trade_price",
-            "first_pie_min_trade_price",
-            "min_trade_price",
-            "zone_lower",
+            "min",
+            [
+                ("first_iceberg_pie_min_trade_price", "FIRST_ICEBERG_PIE_MIN_TRADE_PRICE"),
+                ("first_pie_min_trade_price", "FIRST_PIE_MIN_TRADE_PRICE"),
+                ("min_trade_price", "MIN_TRADE_PRICE"),
+                ("zone_lower", "ZONE_LOWER"),
+            ],
         )
         stop = basis - params.stop_buffer_u if basis > 0 else 0.0
-        return stop, entry_price - stop
-    basis = first_positive(
+        return stop, entry_price - stop, basis, basis_type
+    basis, basis_type = extreme_positive_value(
         row,
-        "first_iceberg_pie_max_trade_price",
-        "first_pie_max_trade_price",
-        "max_trade_price",
-        "zone_upper",
+        "max",
+        [
+            ("first_iceberg_pie_max_trade_price", "FIRST_ICEBERG_PIE_MAX_TRADE_PRICE"),
+            ("first_pie_max_trade_price", "FIRST_PIE_MAX_TRADE_PRICE"),
+            ("max_trade_price", "MAX_TRADE_PRICE"),
+            ("zone_upper", "ZONE_UPPER"),
+        ],
     )
     stop = basis + params.stop_buffer_u if basis > 0 else 0.0
-    return stop, stop - entry_price
+    return stop, stop - entry_price, basis, basis_type
 
 
-def first_positive(row: Mapping[str, Any], *fields: str) -> float:
-    for field in fields:
+def extreme_positive_value(row: Mapping[str, Any], mode: str, fields: list[tuple[str, str]]) -> tuple[float, str]:
+    valid: list[tuple[float, str]] = []
+    for field, label in fields:
         value = parse_float(row.get(field))
         if value > 0:
-            return value
-    return 0.0
+            valid.append((value, label))
+    if not valid:
+        return 0.0, "UNAVAILABLE"
+    if mode == "max":
+        return max(valid, key=lambda x: x[0])
+    return min(valid, key=lambda x: x[0])
 
 
 def floor_to_step(value: float, step: float) -> float:
@@ -578,6 +593,8 @@ def make_rejection(
     touch: Mapping[str, Any] | None = None,
     entry_trigger: float = 0.0,
     stop_price: float = 0.0,
+    stop_basis_price: float = 0.0,
+    stop_basis_type: str = "",
     risk_u: float = 0.0,
     target_r: float = 0.0,
     details: str = "",
@@ -604,6 +621,8 @@ def make_rejection(
         "zone_contains_boll_band_flag": bool(touch.get("zone_contains_boll_band_flag", False)) if touch else "",
         "entry_trigger": round(entry_trigger, 8) if entry_trigger else "",
         "stop_price": round(stop_price, 8) if stop_price else "",
+        "stop_basis_price": round(stop_basis_price, 8) if stop_basis_price else "",
+        "stop_basis_type": stop_basis_type,
         "risk_u": round(risk_u, 8) if risk_u else "",
         "target_r": round(target_r, 8) if target_r else "",
         "details": details,
@@ -619,7 +638,7 @@ def simulate_backtest(
     boll_bars = build_bollinger_bars(klines, params)
     equity = params.initial_equity
     high_water = equity
-    open_until_ts = 0.0
+    closed_positions: list[tuple[float, float]] = []
     trades: list[dict[str, Any]] = []
     rejections: list[dict[str, Any]] = []
     equity_curve: list[dict[str, Any]] = [
@@ -632,9 +651,6 @@ def simulate_backtest(
         c_price = candidate_price(row)
         if not klines or c_ts <= 0 or c_price <= 0:
             rejections.append(make_rejection(row, "DATA_UNAVAILABLE", candidate_price_value=c_price))
-            continue
-        if params.one_position_at_a_time and open_until_ts > c_ts:
-            rejections.append(make_rejection(row, "POSITION_ALREADY_OPEN", candidate_price_value=c_price))
             continue
 
         signal_boll = last_closed_boll(boll_bars, c_ts)
@@ -671,7 +687,7 @@ def simulate_backtest(
 
         entry_price = parse_float(entry["entry_price"])
         entry_ts = parse_float(entry["entry_ts"])
-        stop_price, risk_u = structural_stop(row, entry_price, params)
+        stop_price, risk_u, stop_basis_price, stop_basis_type = structural_stop(row, entry_price, params)
         if risk_u <= 0:
             rejections.append(
                 make_rejection(
@@ -682,6 +698,8 @@ def simulate_backtest(
                     touch=touch,
                     entry_trigger=entry_trigger,
                     stop_price=stop_price,
+                    stop_basis_price=stop_basis_price,
+                    stop_basis_type=stop_basis_type,
                     risk_u=risk_u,
                 )
             )
@@ -710,6 +728,8 @@ def simulate_backtest(
                     touch=touch,
                     entry_trigger=entry_trigger,
                     stop_price=stop_price,
+                    stop_basis_price=stop_basis_price,
+                    stop_basis_type=stop_basis_type,
                     risk_u=risk_u,
                     target_r=target_r,
                 )
@@ -727,6 +747,26 @@ def simulate_backtest(
                     touch=touch,
                     entry_trigger=entry_trigger,
                     stop_price=stop_price,
+                    stop_basis_price=stop_basis_price,
+                    stop_basis_type=stop_basis_type,
+                    risk_u=risk_u,
+                    target_r=target_r,
+                )
+            )
+            continue
+
+        if params.one_position_at_a_time and any(start <= entry_ts < end for start, end in closed_positions):
+            rejections.append(
+                make_rejection(
+                    row,
+                    "POSITION_ALREADY_OPEN",
+                    candidate_price_value=c_price,
+                    boll=signal_boll,
+                    touch=touch,
+                    entry_trigger=entry_trigger,
+                    stop_price=stop_price,
+                    stop_basis_price=stop_basis_price,
+                    stop_basis_type=stop_basis_type,
                     risk_u=risk_u,
                     target_r=target_r,
                 )
@@ -768,6 +808,8 @@ def simulate_backtest(
             "entry_price": round(entry_price, 8),
             "exit_price": round(exit_price, 8),
             "stop_price": round(stop_price, 8),
+            "stop_basis_price": round(stop_basis_price, 8),
+            "stop_basis_type": stop_basis_type,
             "initial_boll_mid": round(parse_float(entry_boll.get("middle")), 8),
             "exit_boll_mid": round(parse_float(exit_info["exit_boll_mid"]), 8),
             "target_price_at_exit": round(parse_float(exit_info["target_price_at_exit"]), 8),
@@ -809,7 +851,7 @@ def simulate_backtest(
             "boll_proximity_ratio_used": params.boll_proximity_ratio,
         }
         trades.append(trade)
-        open_until_ts = parse_float(exit_info["exit_ts"]) if params.one_position_at_a_time else 0.0
+        closed_positions.append((entry_ts, parse_float(exit_info["exit_ts"])))
         high_water = max(high_water, equity)
         drawdown = (equity / high_water - 1.0) * 100.0 if high_water > 0 else 0.0
         equity_curve.append(

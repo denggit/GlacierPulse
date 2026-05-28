@@ -76,8 +76,8 @@ def _candidate(direction: str = "BUY", **overrides) -> dict:
         "settle_ts": START + 45 * 60,
         "settle_price": 93.0 if direction == "BUY" else 107.0,
         "trigger_price": 0,
-        "zone_lower": 92.0 if direction == "BUY" else 107.0,
-        "zone_upper": 93.0 if direction == "BUY" else 108.0,
+        "zone_lower": 92.2 if direction == "BUY" else 107.6,
+        "zone_upper": 92.4 if direction == "BUY" else 107.8,
         "min_trade_price": 93.5,
         "max_trade_price": 106.0,
         "first_iceberg_pie_min_trade_price": 93.5,
@@ -152,25 +152,37 @@ def test_sell_not_touch_upper_band_rejected():
 
 def test_buy_a3_breakout_above_zone_upper_enters():
     entry, trigger = find_a3_entry(_candidate("BUY"), _base_buy_klines(), _params())
-    assert trigger == 93.0
-    assert entry["entry_price"] == 93.0
+    assert trigger == 92.4
+    assert entry["entry_price"] == 92.4
     assert entry["entry_ts"] == START + 46 * 60
 
 
 def test_sell_a3_breakout_below_zone_lower_enters():
     entry, trigger = find_a3_entry(_candidate("SELL"), _base_sell_klines(), _params())
-    assert trigger == 107.0
-    assert entry["entry_price"] == 107.0
+    assert trigger == 107.6
+    assert entry["entry_price"] == 107.6
     assert entry["entry_ts"] == START + 46 * 60
 
 
 def test_structural_stop_uses_sweep_extreme_plus_or_minus_buffer():
-    buy_stop, buy_risk = structural_stop(_candidate("BUY"), 93.0, _params())
-    sell_stop, sell_risk = structural_stop(_candidate("SELL"), 107.0, _params())
-    assert buy_stop == 92.0
-    assert buy_risk == 1.0
-    assert sell_stop == 107.5
-    assert sell_risk == 0.5
+    buy_stop, buy_risk, buy_basis, buy_basis_type = structural_stop(
+        _candidate("BUY", first_iceberg_pie_min_trade_price=93.5, zone_lower=92.0),
+        93.0,
+        _params(),
+    )
+    sell_stop, sell_risk, sell_basis, sell_basis_type = structural_stop(
+        _candidate("SELL", first_iceberg_pie_max_trade_price=106.0, zone_upper=108.0),
+        107.0,
+        _params(),
+    )
+    assert buy_stop == 90.5
+    assert buy_risk == 2.5
+    assert buy_basis == 92.0
+    assert buy_basis_type == "ZONE_LOWER"
+    assert sell_stop == 109.5
+    assert sell_risk == 2.5
+    assert sell_basis == 108.0
+    assert sell_basis_type == "ZONE_UPPER"
 
 
 def test_target_r_below_minimum_is_rejected():
@@ -242,6 +254,39 @@ def test_output_trade_rejection_and_summary_files(tmp_path):
     assert (out / "iceberg_boll_rejections.csv").exists()
     assert (out / "iceberg_boll_summary.json").exists()
     assert (out / "iceberg_boll_summary.md").exists()
+
+
+def test_one_position_rejects_by_entry_overlap_not_candidate_time():
+    klines = _minute_bars(
+        [100.0] * 30 + [94.0] * 15 + [93.0] * 30,
+        after={
+            48: {"high": 93.0, "low": 90.6, "close": 91.0},
+            55: {"high": 94.0, "low": 93.0, "close": 94.0},
+            56: {"high": 98.1, "low": 93.5, "close": 98.0},
+        },
+    )
+    candidate_a = _candidate(
+        "BUY",
+        event_key="candidate-a",
+        settle_ts=START + 45 * 60,
+        settle_price=92.3,
+        zone_lower=92.2,
+        zone_upper=94.0,
+    )
+    candidate_b = _candidate(
+        "BUY",
+        event_key="candidate-b",
+        settle_ts=START + 46 * 60,
+        settle_price=92.3,
+        zone_lower=92.2,
+        zone_upper=92.4,
+    )
+    result = simulate_backtest([candidate_a, candidate_b], klines, _params(min_target_r=1.0))
+    assert [row["candidate_event_key"] for row in result["trades"]] == ["candidate-a", "candidate-b"]
+    assert not [row for row in result["rejections"] if row["reason"] == "POSITION_ALREADY_OPEN"]
+    assert result["trades"][0]["entry_ts"] == START + 55 * 60
+    assert result["trades"][1]["entry_ts"] == START + 47 * 60
+    assert result["trades"][1]["exit_ts"] == START + 48 * 60
 
 
 def test_truth_score_does_not_participate_in_entry():
