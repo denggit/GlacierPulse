@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 from config import research_evaluator as cfg
 from src.research.a1_edge.io_utils import normalize_klines, read_csv, read_jsonl, write_csv, write_json
 from src.research.a1_edge.schema import parse_bool, parse_float
+from src.research.context import IcebergContextConfig, build_context_summary_rows, label_iceberg_contexts
 
 from .a2_accumulation_v2 import attach_a2_accumulation_path_v2
 from .a3_aggression_v2 import attach_a3_aggression_v2
@@ -91,6 +92,21 @@ GROUP_METRIC_FIELDS = [
     "complete_4h_count",
 ] + FEE_AWARE_GROUP_METRIC_FIELDS
 
+CONTEXT_SUMMARY_METRIC_FIELDS = [
+    "zone_count",
+    "iceberg_zone_count",
+    "avg_truth_score",
+    "median_truth_score",
+    "a2_pre_pool_count",
+    "a2_ready_count",
+    "a3_count",
+    "avg_mfe_r",
+    "avg_mae_r",
+    "fee_positive_rate",
+    "avg_realized_r_proxy",
+    "median_realized_r_proxy",
+]
+
 
 class ZoneTruthAnalyzer:
     def __init__(
@@ -99,22 +115,31 @@ class ZoneTruthAnalyzer:
         time_tolerance_sec: float = 300.0,
         windows_sec: Iterable[int] | None = None,
         timezone: str = "Asia/Shanghai",
+        enable_context_labels: bool = True,
+        vp_bin_size_u: float = 1.0,
+        vp_value_area_ratio: float = 0.70,
     ) -> None:
         self.price_tolerance_usdt = float(price_tolerance_usdt)
         self.time_tolerance_sec = float(time_tolerance_sec)
         self.windows_sec = list(windows_sec or [900, 3600, 14400])
         self.timezone = timezone
+        self.enable_context_labels = bool(enable_context_labels)
+        self.context_config = IcebergContextConfig(
+            timezone=timezone,
+            vp_bin_size_u=float(vp_bin_size_u),
+            vp_value_area_ratio=float(vp_value_area_ratio),
+        )
 
     def analyze_files(
         self,
         phase1_candidates: str | Path,
         a1_reactions: str | Path,
-        kline: str | Path,
+        kline: str | Path | None,
         out_dir: str | Path,
     ) -> dict[str, Any]:
         phase1_records = read_jsonl(phase1_candidates)
         reaction_records = read_jsonl(a1_reactions)
-        kline_records = read_csv(kline)
+        kline_records = read_csv(kline) if kline else []
         return self.export(phase1_records, reaction_records, kline_records, out_dir)
 
     def export(
@@ -126,6 +151,7 @@ class ZoneTruthAnalyzer:
     ) -> dict[str, Any]:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
+        kline_records = list(kline_records or [])
         aggregator = ZoneTruthAggregator(
             price_tolerance_usdt=self.price_tolerance_usdt,
             time_tolerance_sec=self.time_tolerance_sec,
@@ -137,7 +163,8 @@ class ZoneTruthAnalyzer:
         rows = ZoneA2StateClassifier().attach_a2_state(rows)
         rows = [attach_a2_accumulation_path_v2(row) for row in rows]
         rows = [attach_a3_aggression_v2(row) for row in rows]
-        normalized_bars = normalize_klines(kline_records, kline_timezone=self.timezone)
+        rows = self.attach_context_labels(rows, kline_records)
+        normalized_bars = normalize_klines(kline_records, kline_timezone=self.timezone) if kline_records else []
         simulated_trades = (
             simulate_3a_proxy_trades(rows, normalized_bars)
             if bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True))
@@ -182,9 +209,39 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a3_after_a2_structural_realized_outcome_1h.csv", self.group_rows(rows, "a3_after_a2_structural_realized_outcome_1h"), ["a3_after_a2_structural_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_structural_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_structural_realized_r_proxy_1h_bucket"), ["a3_after_a2_structural_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_structural_improved.csv", self.group_rows(rows, "a3_after_a2_structural_improved_flag"), ["a3_after_a2_structural_improved_flag"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a1_evidence_type.csv", self.group_rows(rows, "a1_primary_evidence_type"), ["a1_primary_evidence_type"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_shadow_evidence.csv", self.group_rows(rows, "a1_primary_evidence_type"), ["a1_primary_evidence_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a2_accumulation_path_v2.csv", self.group_rows(rows, "a2_accumulation_path_v2"), ["a2_accumulation_path_v2"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_aggression_type_v2.csv", self.group_rows(rows, "a3_aggression_type_v2"), ["a3_aggression_type_v2"] + GROUP_METRIC_FIELDS)
+        write_csv(
+            out / "zone_truth_by_boll_context.csv",
+            build_context_summary_rows(rows, ["direction", "boll_15m_position", "boll_1h_position"]),
+            ["direction", "boll_15m_position", "boll_1h_position"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+        )
+        write_csv(
+            out / "zone_truth_by_vp_context.csv",
+            build_context_summary_rows(rows, ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"]),
+            ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+        )
+        write_csv(
+            out / "zone_truth_by_local_structure_context.csv",
+            build_context_summary_rows(rows, ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"]),
+            ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+        )
+        write_csv(
+            out / "zone_truth_by_order_block_context.csv",
+            build_context_summary_rows(rows, ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"]),
+            ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+        )
+        write_csv(
+            out / "zone_truth_by_book_liquidity_proxy_context.csv",
+            build_context_summary_rows(rows, ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"]),
+            ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+        )
+        write_csv(
+            out / "zone_truth_by_context_combo.csv",
+            build_context_summary_rows(rows, ["direction", "boll_15m_position", "vp24h_proxy_location", "order_block_15m_type", "near_local_structure_flag", "book_blocking_liquidity_proxy_strength"], min_count=5),
+            ["direction", "boll_15m_position", "vp24h_proxy_location", "order_block_15m_type", "near_local_structure_flag", "book_blocking_liquidity_proxy_strength"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+        )
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -207,6 +264,29 @@ class ZoneTruthAnalyzer:
         self._write_summary_md(out / "zone_truth_summary.md", summary)
         return summary
 
+    def attach_context_labels(
+        self,
+        rows: list[Mapping[str, Any]],
+        kline_records: Iterable[Mapping[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched = [dict(row) for row in rows]
+        if not self.enable_context_labels:
+            for row in enriched:
+                row["context_labels_status"] = "DISABLED"
+            return enriched
+        kline_list = list(kline_records or [])
+        labels_by_key = label_iceberg_contexts(enriched, kline_list, self.context_config)
+        for row in enriched:
+            key = self._context_join_key(row)
+            labels = labels_by_key.get(key)
+            if labels:
+                row.update(labels)
+            elif parse_float(row.get("iceberg_pie_count")) > 0:
+                row["context_labels_status"] = "KLINE_UNAVAILABLE" if not kline_list else "CONTEXT_UNMATCHED"
+            else:
+                row["context_labels_status"] = "NON_ICEBERG_ZONE"
+        return enriched
+
     def summary(self, rows: list[Mapping[str, Any]], unmatched_pie_count: int = 0) -> dict[str, Any]:
         total = len(rows)
         exact = sum(1 for row in rows if str(row.get("zone_match_method")) == "exact")
@@ -214,6 +294,7 @@ class ZoneTruthAnalyzer:
         synthetic = sum(1 for row in rows if str(row.get("zone_source")) == SOURCE_SYNTHETIC)
         a2_count = sum(1 for row in rows if parse_bool(row.get("a2_pre_pool_eligible")))
         reaction_distribution = dict(Counter(str(row.get("reaction_type") or "UNKNOWN") for row in rows))
+        context_status_distribution = dict(Counter(str(row.get("context_labels_status") or "UNKNOWN") for row in rows))
         enhanced_trend_1h_distribution = dict(Counter(str(row.get("trend_regime_enhanced_1h") or "UNKNOWN") for row in rows))
         enhanced_trend_4h_distribution = dict(Counter(str(row.get("trend_regime_enhanced_4h") or "UNKNOWN") for row in rows))
         trend_alignment_distribution = dict(Counter(str(row.get("trend_alignment") or "MIXED_OR_UNKNOWN") for row in rows))
@@ -254,6 +335,8 @@ class ZoneTruthAnalyzer:
             "synthetic_zones": synthetic,
             "unmatched_pie_count": int(unmatched_pie_count),
             "a2_pre_pool_zone_count": a2_count,
+            "context_labels_status": self._context_status(rows),
+            "context_labels_status_distribution": context_status_distribution,
             "reaction_distribution": reaction_distribution,
             "trend_regime_enhanced_1h_distribution": enhanced_trend_1h_distribution,
             "trend_regime_enhanced_4h_distribution": enhanced_trend_4h_distribution,
@@ -477,6 +560,25 @@ class ZoneTruthAnalyzer:
         )
 
     @staticmethod
+    def _context_join_key(row: Mapping[str, Any]) -> str:
+        for field in ("iceberg_pie_event_keys", "best_pie_event_key", "event_key", "zone_id"):
+            value = str(row.get(field) or "").strip()
+            if value:
+                return value.split("|")[0]
+        return ""
+
+    @staticmethod
+    def _context_status(rows: list[Mapping[str, Any]]) -> str:
+        statuses = {str(row.get("context_labels_status") or "") for row in rows}
+        if "SUCCESS" in statuses:
+            return "SUCCESS"
+        if "KLINE_UNAVAILABLE" in statuses:
+            return "KLINE_UNAVAILABLE"
+        if "DISABLED" in statuses:
+            return "DISABLED"
+        return "UNAVAILABLE"
+
+    @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
             "# V7.0.0 Zone Truth 3A Full Research Loop Shadow",
@@ -487,6 +589,7 @@ class ZoneTruthAnalyzer:
             f"- synthetic_zones: {summary.get('synthetic_zones')}",
             f"- unmatched_pie_count: {summary.get('unmatched_pie_count')}",
             f"- a2_pre_pool_zone_count: {summary.get('a2_pre_pool_zone_count')}",
+            f"- context_labels_status: {summary.get('context_labels_status')}",
             "",
             "## Reaction Distribution",
             "",

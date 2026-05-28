@@ -5,8 +5,8 @@ from src.research.zone_truth.combo_matrix import build_combo_matrix, combo_key, 
 
 
 BASE = {
-    "a1_primary_evidence_type": "HIDDEN_RELOAD_ICEBERG",
-    "a1_evidence_types": "HIDDEN_RELOAD_ICEBERG",
+    "a1_primary_evidence_type": "ICEBERG",
+    "a1_evidence_types": "ICEBERG",
     "a1_strength_tier": "NORMAL_A1",
     "a1_best_horizon": "UNKNOWN",
     "a2_accumulation_path_v2": "A2_CLEAN_HOLD",
@@ -24,7 +24,7 @@ BASE = {
 
 
 def test_combo_key_generation():
-    assert combo_key(BASE)[0] == "HIDDEN_RELOAD_ICEBERG"
+    assert combo_key(BASE)[0] == "ICEBERG"
 
 
 def test_group_stats_count_avg_median_positive_rate():

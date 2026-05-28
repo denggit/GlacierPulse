@@ -72,7 +72,8 @@ def test_generate_reports_writes_v7_csvs_and_summary(tmp_path):
     assert (out / "zone_truth_events.csv").exists()
     assert (out / "zone_truth_3a_simulated_trades.csv").exists()
     assert (out / "zone_truth_by_3a_combo_matrix.csv").exists()
-    assert (out / "zone_truth_by_a1_evidence_type.csv").exists()
+    assert (out / "zone_truth_by_shadow_evidence.csv").exists()
+    assert (out / "zone_truth_by_boll_context.csv").exists()
     assert (out / "summary.json").exists()
     assert summary["v7_enabled"] is True
     assert "V7.0.0 Zone Truth 3A Full Research Loop Shadow" in (out / "zone_truth_summary.md").read_text(encoding="utf-8")

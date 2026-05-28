@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from src.research.a1_edge.schema import parse_bool, parse_float, parse_int, parse_timestamp
+from src.research.context import CONTEXT_LABEL_FIELDS
 
 
 SCHEMA_VERSION = "v6.3.12.zone_truth.2"
@@ -513,7 +514,7 @@ MARKET_CONTEXT_FIELDS = [
     "session_low",
 ]
 ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS = ZONE_TRUTH_EVENT_FIELDS + FORWARD_FIELDS
-ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS = ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS + MARKET_CONTEXT_FIELDS
+ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS = ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS + MARKET_CONTEXT_FIELDS + CONTEXT_LABEL_FIELDS
 
 
 def parse_candidate_bool(value: Any) -> bool:

@@ -26,9 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--phase1-candidates", required=True)
     parser.add_argument("--a1-reactions", required=True)
-    parser.add_argument("--kline", required=True)
+    parser.add_argument("--kline")
     parser.add_argument("--nohup")
     parser.add_argument("--timezone", default="Asia/Shanghai")
+    parser.add_argument("--enable-context-labels", default="true")
+    parser.add_argument("--vp-bin-size-u", type=float, default=1.0)
+    parser.add_argument("--vp-value-area-ratio", type=float, default=0.70)
     parser.add_argument("--min-sample", type=int, default=30)
     parser.add_argument("--snapshot", action="store_true")
     parser.add_argument("--zip", action="store_true", dest="zip_enabled")
@@ -47,8 +50,9 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
     inputs = {
         "phase1_candidates": Path(args.phase1_candidates),
         "a1_reactions": Path(args.a1_reactions),
-        "kline": Path(args.kline),
     }
+    if args.kline:
+        inputs["kline"] = Path(args.kline)
     if args.nohup:
         inputs["nohup"] = Path(args.nohup)
 
@@ -69,9 +73,10 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
         snapshot_names = {
             "phase1_candidates": "phase1_candidates.jsonl",
             "a1_reactions": "a1_reaction_events.jsonl",
-            "kline": "kline.csv",
             "nohup": "nohup.out",
         }
+        if "kline" in inputs:
+            snapshot_names["kline"] = "kline.csv"
         for label, original in inputs.items():
             snapshot_path = snapshot_dir / snapshot_names[label]
             shutil.copy2(original, snapshot_path)
@@ -107,7 +112,7 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
             "--events",
             str(active_paths["a1_reactions"]),
             "--klines",
-            str(active_paths["kline"]),
+            str(active_paths.get("kline", "")),
             "--out",
             str(run_dir / "a1_edge"),
             "--kline-timezone",
@@ -122,14 +127,23 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
             str(active_paths["phase1_candidates"]),
             "--a1-reactions",
             str(active_paths["a1_reactions"]),
-            "--kline",
-            str(active_paths["kline"]),
             "--out",
             str(run_dir / "zone_truth"),
             "--timezone",
             args.timezone,
+            "--enable-context-labels",
+            args.enable_context_labels,
+            "--vp-bin-size-u",
+            str(args.vp_bin_size_u),
+            "--vp-value-area-ratio",
+            str(args.vp_value_area_ratio),
         ],
     }
+    if "kline" in active_paths:
+        commands["zone_truth"][6:6] = ["--kline", str(active_paths["kline"])]
+    else:
+        reports["a1_edge"]["status"] = "skipped_kline_unavailable"
+        commands.pop("a1_edge")
 
     has_failure = False
     for report_name, command in commands.items():
@@ -155,7 +169,8 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
         "python_version": sys.version,
         "phase1_candidates_path": str(active_paths["phase1_candidates"]),
         "a1_reactions_path": str(active_paths["a1_reactions"]),
-        "kline_path": str(active_paths["kline"]),
+        "kline_path": str(active_paths["kline"]) if "kline" in active_paths else "",
+        "context_labels_status": "ENABLED" if _parse_bool(args.enable_context_labels) and "kline" in active_paths else "KLINE_UNAVAILABLE",
         "nohup_path": str(active_paths["nohup"]) if "nohup" in active_paths else "",
         "snapshot_enabled": bool(args.snapshot),
         "reports": reports,
@@ -220,6 +235,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_bool(value: object) -> bool:
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _git_commit() -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -256,7 +275,7 @@ def _write_index(
         "Inputs:",
         f"- phase1_candidates: {active_paths['phase1_candidates']}",
         f"- a1_reactions: {active_paths['a1_reactions']}",
-        f"- kline: {active_paths['kline']}",
+        f"- kline: {active_paths['kline'] if 'kline' in active_paths else 'KLINE_UNAVAILABLE'}",
         f"- nohup: {nohup_text}",
         "",
         "Reports:",

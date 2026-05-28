@@ -398,14 +398,43 @@ def _row_identity(row: Mapping[str, Any]) -> dict[str, Any]:
         "zone_id": str(row.get("zone_id") or ""),
         "symbol": str(row.get("symbol") or ""),
         "direction": str(row.get("direction") or "UNKNOWN"),
-        "a1_primary_evidence_type": str(row.get("a1_primary_evidence_type") or "UNKNOWN"),
-        "a1_evidence_types": str(row.get("a1_evidence_types") or ""),
+        "a1_primary_evidence_type": _mainline_a1(row),
+        "a1_evidence_types": _mainline_a1(row),
         "a1_strength_tier": str(row.get("strong_a1_tier") or row.get("a1_strength_tier") or "UNKNOWN"),
         "a1_best_horizon": str(row.get("a1_best_horizon") or "UNKNOWN"),
-        "a2_accumulation_path_v2": str(row.get("a2_accumulation_path_v2") or "A2_UNKNOWN"),
+        "a2_accumulation_path_v2": _mainline_a2(row),
         "a3_aggression_type_v2": str(row.get("a3_aggression_type_v2") or "NO_AGGRESSION"),
         "market_context_bucket": _market_context(row),
     }
+
+
+def _mainline_a1(row: Mapping[str, Any]) -> str:
+    if parse_float(row.get("iceberg_pie_count")) > 0 or str(row.get("result") or "").upper() == "ICEBERG":
+        return "ICEBERG"
+    if parse_bool(row.get("hidden_reload_iceberg_flag")) or str(row.get("a1_primary_evidence_type") or "") == "HIDDEN_RELOAD_ICEBERG":
+        return "ICEBERG"
+    return str(row.get("a1_primary_evidence_type") or "UNKNOWN")
+
+
+def _mainline_a2(row: Mapping[str, Any]) -> str:
+    raw = str(row.get("a2_accumulation_path_v2") or "").upper()
+    if parse_bool(row.get("a2_ready_for_a3_watch_flag")):
+        return "A2_READY"
+    if parse_bool(row.get("a2_validated_candidate_flag")):
+        return "A2_VALIDATED"
+    if parse_bool(row.get("a2_retest_flag")) or "RETEST" in raw:
+        return "A2_RETEST"
+    if str(row.get("a2_compression_state") or "").upper() not in {"", "UNKNOWN", "NO_COMPRESSION", "INSUFFICIENT_BARS"}:
+        return "A2_COMPRESSION"
+    if parse_bool(row.get("a2_clean_hold_flag")) or "HOLD" in raw:
+        return "A2_HOLD"
+    if parse_bool(row.get("a2_failed_reclaim_flag")) or "FAILED" in raw:
+        return "A2_FAILED"
+    if parse_bool(row.get("a2_pre_pool_eligible")):
+        return "A2_PRE_POOL"
+    if "EXPIRED" in raw:
+        return "A2_EXPIRED"
+    return raw or "A2_UNKNOWN"
 
 
 def _market_context(row: Mapping[str, Any]) -> str:

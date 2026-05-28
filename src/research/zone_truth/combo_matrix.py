@@ -52,6 +52,14 @@ INVALID_SIMULATED_OUTCOMES = {
     "STRUCTURAL_PROXY_UNAVAILABLE",
     "ZONE_BOUNDARY_V2_FALLBACK_STRUCTURAL_PROXY_UNAVAILABLE",
 }
+MAINLINE_A1_TYPES = {"ICEBERG"}
+MAINLINE_A3_TYPES = {
+    "PRICE_BREAKOUT_PERSISTENT",
+    "CLOSE_BREAK",
+    "CLOSE_BREAK_NO_QUICK_RETURN",
+    "RETEST_HOLD",
+    "PERSISTENT_BREAKOUT",
+}
 
 
 def combo_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -79,6 +87,8 @@ def is_valid_simulated_trade(trade: Mapping[str, Any]) -> bool:
         and parse_float(trade.get("entry_ts")) > 0
         and parse_float(trade.get("entry_price")) > 0
         and parse_float(trade.get("risk_u")) > 0
+        and str(trade.get("a1_primary_evidence_type") or "").upper() in MAINLINE_A1_TYPES
+        and str(trade.get("a3_aggression_type_v2") or "").upper() in MAINLINE_A3_TYPES
         and str(trade.get("realized_outcome_1h") or "").upper() not in INVALID_SIMULATED_OUTCOMES
     )
 
