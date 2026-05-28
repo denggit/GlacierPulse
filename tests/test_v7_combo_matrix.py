@@ -14,6 +14,10 @@ BASE = {
     "entry_model": "BREAKOUT",
     "stop_model": "V1_ZONE_WIDTH",
     "target_r": 1.0,
+    "entry_ts": 1000,
+    "entry_price": 100,
+    "risk_u": 1,
+    "realized_outcome_1h": "CLOSE_EXIT",
     "market_context_bucket": "UNKNOWN",
     "direction": "BUY",
 }
@@ -50,3 +54,15 @@ def test_bad_combo_output(monkeypatch):
     monkeypatch.setattr(cfg, "V7_3A_MIN_SAMPLE", 2)
     matrix = build_combo_matrix([{**BASE, "realized_r_1h": -1.0}, {**BASE, "realized_r_1h": -0.5}])
     assert len(bad_combos(matrix)) == 1
+
+
+def test_combo_matrix_excludes_invalid_simulated_trades_but_keeps_source_rows_available():
+    trades = [
+        {**BASE, "entry_ts": 1000, "entry_price": 100, "risk_u": 1, "realized_r_1h": 1.0, "realized_outcome_1h": "TARGET_1R_FIRST"},
+        {**BASE, "entry_ts": 0, "entry_price": 0, "risk_u": 0, "realized_r_1h": 0.0, "realized_outcome_1h": "NO_ENTRY"},
+        {**BASE, "entry_ts": 1000, "entry_price": 100, "risk_u": 0, "realized_r_1h": 0.0, "realized_outcome_1h": "INVALID_STOP"},
+    ]
+    matrix = build_combo_matrix(trades)
+    assert len(trades) == 3
+    assert len(matrix) == 1
+    assert matrix[0]["count"] == 1

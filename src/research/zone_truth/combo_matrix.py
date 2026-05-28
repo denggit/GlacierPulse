@@ -44,6 +44,14 @@ COMBO_METRIC_FIELDS = [
     "avg_mae_r",
     "complete_rate",
 ]
+INVALID_SIMULATED_OUTCOMES = {
+    "NO_ENTRY",
+    "INVALID_STOP",
+    "UNKNOWN_ENTRY_MODEL",
+    "UNKNOWN_STOP_MODEL",
+    "STRUCTURAL_PROXY_UNAVAILABLE",
+    "ZONE_BOUNDARY_V2_FALLBACK_STRUCTURAL_PROXY_UNAVAILABLE",
+}
 
 
 def combo_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -53,7 +61,7 @@ def combo_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
 def build_combo_matrix(trades: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     groups: defaultdict[tuple[Any, ...], list[Mapping[str, Any]]] = defaultdict(list)
     for trade in trades or []:
-        if parse_float(trade.get("target_r")) < 1.0:
+        if not is_valid_simulated_trade(trade):
             continue
         groups[combo_key(trade)].append(trade)
     rows = []
@@ -63,6 +71,16 @@ def build_combo_matrix(trades: Iterable[Mapping[str, Any]]) -> list[dict[str, An
         rows.append(row)
     rows.sort(key=lambda r: (parse_float(r.get("avg_realized_r")), parse_float(r.get("profit_factor_proxy")), parse_float(r.get("count"))), reverse=True)
     return rows
+
+
+def is_valid_simulated_trade(trade: Mapping[str, Any]) -> bool:
+    return (
+        parse_float(trade.get("target_r")) >= 1.0
+        and parse_float(trade.get("entry_ts")) > 0
+        and parse_float(trade.get("entry_price")) > 0
+        and parse_float(trade.get("risk_u")) > 0
+        and str(trade.get("realized_outcome_1h") or "").upper() not in INVALID_SIMULATED_OUTCOMES
+    )
 
 
 def group_stats(rows: list[Mapping[str, Any]]) -> dict[str, Any]:

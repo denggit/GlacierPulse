@@ -10,6 +10,8 @@ from config import research_evaluator as cfg
 from src.research.a1_edge.schema import parse_bool, parse_float
 
 
+BarIndex = dict[str, Any]
+
 ENTRY_MODELS = (
     "BREAKOUT",
     "RECLAIM_CLOSE",
@@ -30,16 +32,23 @@ def simulate_3a_proxy_trades(
     window_sec: int = 3600,
     fee_pct: float | None = None,
 ) -> list[dict[str, Any]]:
-    normalized_bars = _normalize_bars(bars)
+    bar_index = build_bar_index(bars)
     targets = [float(x) for x in (target_r_list or getattr(cfg, "V7_3A_TARGET_R_LIST", [1.0, 1.5, 2.0])) if float(x) >= 1.0]
     fee = float(fee_pct if fee_pct is not None else getattr(cfg, "V7_3A_ROUNDTRIP_FEE_PCT", 0.001))
     trades: list[dict[str, Any]] = []
     for row in rows or []:
         for entry_model in entry_models:
-            entry = resolve_entry(row, normalized_bars, entry_model)
+            entry = resolve_entry(row, bar_index, entry_model)
             if not entry["available"]:
                 trades.append(_unavailable(row, entry_model, "NO_ENTRY", entry.get("reason", "NO_ENTRY")))
                 continue
+            future_bars = _future_bars(
+                bar_index,
+                entry["entry_ts"],
+                window_sec,
+                entry_bar_ts=entry.get("entry_bar_ts", 0.0),
+                entry_price_source=entry.get("entry_price_source", ""),
+            )
             for stop_model in stop_models:
                 stop = resolve_stop(row, entry, stop_model)
                 if not stop["available"]:
@@ -55,9 +64,9 @@ def simulate_3a_proxy_trades(
                     continue
                 for target_r in targets:
                     trades.append(
-                        simulate_single_trade(
+                        simulate_single_trade_with_future_bars(
                             row,
-                            normalized_bars,
+                            future_bars,
                             entry_model=entry_model,
                             stop_model=stop_model,
                             target_r=target_r,
@@ -75,7 +84,7 @@ def simulate_3a_proxy_trades(
     return trades
 
 
-def resolve_entry(row: Mapping[str, Any], bars: list[dict[str, float]], entry_model: str) -> dict[str, Any]:
+def resolve_entry(row: Mapping[str, Any], bar_index: BarIndex, entry_model: str) -> dict[str, Any]:
     model = str(entry_model).upper()
     if model == "BREAKOUT":
         ts = parse_float(row.get("a3_preview_entry_ts"))
@@ -91,17 +100,17 @@ def resolve_entry(row: Mapping[str, Any], bars: list[dict[str, float]], entry_mo
         return {"available": False, "reason": "NO_BREAKOUT_ENTRY"}
     if model == "RECLAIM_CLOSE":
         ts = _first_ts(row, "sweep_reclaimed_ts", "a1_reaction_confirmed_ts", "reaction_event_ts")
-        return _entry_from_bar_close(bars, ts, "NO_RECLAIM_TS")
+        return _entry_from_bar_close(bar_index, ts, "NO_RECLAIM_TS")
     if model == "RETEST_HOLD":
         if not parse_bool(row.get("has_retested_inside_zone")) and not parse_bool(row.get("a2_retest_flag")):
             return {"available": False, "reason": "NO_RETEST_HOLD"}
         ts = _first_ts(row, "retest_confirmed_ts", "retest_started_ts", "reaction_event_ts")
-        return _entry_from_bar_close(bars, ts, "NO_RETEST_TS")
+        return _entry_from_bar_close(bar_index, ts, "NO_RETEST_TS")
     if model == "AGGRESSION_FLIP":
         if not parse_bool(row.get("a3_orderflow_aggression_flag")):
             return {"available": False, "reason": "NO_ORDERFLOW_AGGRESSION"}
         ts = _first_ts(row, "a3_aggression_ts", "confirmed_ts", "a3_preview_entry_ts", "reaction_event_ts")
-        return _entry_from_bar_close(bars, ts, "NO_AGGRESSION_TS")
+        return _entry_from_bar_close(bar_index, ts, "NO_AGGRESSION_TS")
     if model == "NO_QUICK_RETURN_CONFIRM":
         if not (
             parse_bool(row.get("a3_no_quick_return_flag"))
@@ -111,7 +120,7 @@ def resolve_entry(row: Mapping[str, Any], bars: list[dict[str, float]], entry_mo
             return {"available": False, "reason": "NO_QUICK_RETURN_NOT_CONFIRMED"}
         base = parse_float(row.get("a3_preview_entry_ts"))
         offset = 300.0 if parse_bool(row.get("a3_preview_no_quick_return_5m_flag")) else 180.0
-        return _entry_from_bar_close(bars, base + offset if base > 0 else 0.0, "NO_QUICK_RETURN_TS")
+        return _entry_from_bar_close(bar_index, base + offset if base > 0 else 0.0, "NO_QUICK_RETURN_TS")
     return {"available": False, "reason": "UNKNOWN_ENTRY_MODEL"}
 
 
@@ -177,6 +186,43 @@ def simulate_single_trade(
     window_sec: int = 3600,
     fee_pct: float = 0.001,
 ) -> dict[str, Any]:
+    bar_index = build_bar_index(bars)
+    future = _future_bars(bar_index, entry_ts, window_sec, entry_bar_ts=entry_bar_ts, entry_price_source=entry_price_source)
+    return simulate_single_trade_with_future_bars(
+        row,
+        future,
+        entry_model=entry_model,
+        stop_model=stop_model,
+        target_r=target_r,
+        entry_ts=entry_ts,
+        entry_price=entry_price,
+        stop_price=stop_price,
+        risk_u=risk_u,
+        entry_bar_ts=entry_bar_ts,
+        entry_price_source=entry_price_source,
+        stop_basis_reason=stop_basis_reason,
+        window_sec=window_sec,
+        fee_pct=fee_pct,
+    )
+
+
+def simulate_single_trade_with_future_bars(
+    row: Mapping[str, Any],
+    future_bars: list[dict[str, float]],
+    *,
+    entry_model: str,
+    stop_model: str,
+    target_r: float,
+    entry_ts: float,
+    entry_price: float,
+    stop_price: float,
+    risk_u: float,
+    entry_bar_ts: float = 0.0,
+    entry_price_source: str = "",
+    stop_basis_reason: str = "",
+    window_sec: int = 3600,
+    fee_pct: float = 0.001,
+) -> dict[str, Any]:
     direction = str(row.get("direction") or "").upper()
     target_r = max(float(target_r), 1.0)
     fee_u = entry_price * fee_pct
@@ -185,8 +231,7 @@ def simulate_single_trade(
         target_price = entry_price + target_r * risk_u
     else:
         target_price = entry_price - target_r * risk_u
-    future = _future_bars(bars, entry_ts, window_sec, entry_bar_ts=entry_bar_ts, entry_price_source=entry_price_source)
-    realized, outcome, flags, mfe_r, mae_r, complete = _first_hit(direction, future, entry_price, stop_price, target_price, risk_u, target_r, fee_share, window_sec)
+    realized, outcome, flags, mfe_r, mae_r, complete = _first_hit(direction, future_bars, entry_price, stop_price, target_price, risk_u, target_r, fee_share, window_sec)
     return {
         **_row_identity(row),
         "entry_model": entry_model,
@@ -276,10 +321,18 @@ def _normalize_bars(bars: Iterable[Mapping[str, Any]]) -> list[dict[str, float]]
     return result
 
 
-def _entry_from_bar_close(bars: list[dict[str, float]], ts: float, reason: str) -> dict[str, Any]:
+def build_bar_index(bars: Iterable[Mapping[str, Any]]) -> BarIndex:
+    normalized_bars = _normalize_bars(bars)
+    return {
+        "bars": normalized_bars,
+        "timestamps": [float(b["timestamp"]) for b in normalized_bars],
+    }
+
+
+def _entry_from_bar_close(bar_index: BarIndex, ts: float, reason: str) -> dict[str, Any]:
     if ts <= 0:
         return {"available": False, "reason": reason}
-    bar = _bar_at_or_after(bars, ts)
+    bar = _bar_at_or_after(bar_index, ts)
     if not bar:
         return {"available": False, "reason": "ENTRY_BAR_UNAVAILABLE"}
     return {
@@ -291,20 +344,22 @@ def _entry_from_bar_close(bars: list[dict[str, float]], ts: float, reason: str) 
     }
 
 
-def _bar_at_or_after(bars: list[dict[str, float]], ts: float) -> dict[str, float] | None:
-    timestamps = [float(b["timestamp"]) for b in bars]
+def _bar_at_or_after(bar_index: BarIndex, ts: float) -> dict[str, float] | None:
+    bars = bar_index["bars"]
+    timestamps = bar_index["timestamps"]
     idx = bisect_left(timestamps, ts)
     return bars[idx] if idx < len(bars) else None
 
 
 def _future_bars(
-    bars: list[dict[str, float]],
+    bar_index: BarIndex,
     entry_ts: float,
     window_sec: int,
     entry_bar_ts: float = 0.0,
     entry_price_source: str = "",
 ) -> list[dict[str, float]]:
-    timestamps = [float(b["timestamp"]) for b in bars]
+    bars = bar_index["bars"]
+    timestamps = bar_index["timestamps"]
     close_based_entry = str(entry_price_source or "").upper() == "BAR_CLOSE" and entry_bar_ts > 0
     anchor_ts = entry_bar_ts if close_based_entry else entry_ts
     start = bisect_right(timestamps, entry_bar_ts) if close_based_entry else bisect_left(timestamps, entry_ts)

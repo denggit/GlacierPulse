@@ -2,6 +2,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -95,6 +96,42 @@ def test_jsonl_recorders_still_enabled(tmp_path, monkeypatch):
 
     assert os.environ["PHASE1_CANDIDATE_RECORDER_WRITE_JSONL"] == "true"
     assert os.environ["A1_REACTION_EVENT_RECORDER_WRITE_JSONL"] == "true"
+
+
+def test_local_replay_research_jsonl_preserves_insertion_order_and_strips_internal_profiles(tmp_path):
+    path = tmp_path / "research_events.jsonl"
+    runtime = backtest.LocalA1ResearchRuntime.__new__(backtest.LocalA1ResearchRuntime)
+    runtime.research_config = SimpleNamespace(ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS=False)
+    runtime.research_events_file = path.open("w", encoding="utf-8")
+    try:
+        runtime._write_research_event(
+            {
+                "z_field": 1,
+                "a_field": 2,
+                "book_profile_start": {100.0: 1.0},
+                "_zone_v2_profile_keys": [100.0],
+            },
+            current_price=100.0,
+            source="book",
+        )
+    finally:
+        runtime.research_events_file.close()
+
+    text = path.read_text(encoding="utf-8")
+    row = json.loads(text)
+    assert text.startswith('{"z_field"')
+    assert "book_profile_start" not in row
+    assert "_zone_v2_profile_keys" not in row
+
+
+def test_report_jsonl_reader_is_key_order_independent(tmp_path):
+    from src.research.a1_edge.io_utils import read_jsonl
+
+    path = tmp_path / "rows.jsonl"
+    path.write_text('{"z_field": 1, "a_field": 2}\n{"a_field": 3, "z_field": 4}\n', encoding="utf-8")
+    rows = read_jsonl(path)
+    assert rows[0]["a_field"] == 2
+    assert rows[1]["z_field"] == 4
 
 
 def test_generate_reports_requires_kline(tmp_path):

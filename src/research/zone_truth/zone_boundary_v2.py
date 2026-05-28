@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from config import research_evaluator as cfg
 from src.research.a1_edge.schema import parse_bool, parse_float
@@ -24,10 +24,27 @@ def build_book_profile(
 ) -> dict[float, float]:
     size = max(float(bucket_size or getattr(cfg, "ZONE_BOUNDARY_V2_BUCKET_SIZE_U", 0.5)), 0.000001)
     profile: dict[float, float] = {}
-    for raw_price, raw_size in (book_levels or {}).items():
+    for raw_price, raw_size in _iter_book_levels(book_levels):
         price = parse_float(raw_price)
         qty = parse_float(raw_size)
         if price <= 0 or qty <= 0 or price < lower or price > upper:
+            continue
+        bucket = bucket_price(price, size)
+        profile[bucket] = profile.get(bucket, 0.0) + price * qty
+    return {k: round(v, 8) for k, v in sorted(profile.items())}
+
+
+def build_book_bucket_profile(
+    book_levels: Mapping[Any, Any] | Iterable[Any],
+    *,
+    bucket_size: float | None = None,
+) -> dict[float, float]:
+    size = max(float(bucket_size or getattr(cfg, "ZONE_BOUNDARY_V2_BUCKET_SIZE_U", 0.5)), 0.000001)
+    profile: dict[float, float] = {}
+    for raw_price, raw_size in _iter_book_levels(book_levels):
+        price = parse_float(raw_price)
+        qty = parse_float(raw_size)
+        if price <= 0 or qty <= 0:
             continue
         bucket = bucket_price(price, size)
         profile[bucket] = profile.get(bucket, 0.0) + price * qty
@@ -55,6 +72,9 @@ def initialize_pending_event_profile(
     event["book_profile_start"] = dict(profile)
     event["book_profile_min"] = dict(profile)
     event["book_profile_end"] = dict(profile)
+    event["_zone_v2_profile_keys"] = sorted(profile.keys())
+    event["_zone_v2_scan_lower"] = lower
+    event["_zone_v2_scan_upper"] = upper
 
 
 def record_trade_bucket(event: dict[str, Any], price: float, active_notional: float) -> None:
@@ -72,17 +92,38 @@ def update_pending_event_profile(event: dict[str, Any], book_levels: Mapping[Any
         return
     if "book_profile_start" not in event:
         return
-    keys = set(event.get("book_profile_start") or {})
+    keys = _profile_keys(event)
     if not keys:
         return
-    lower = min(keys)
-    upper = max(keys) + float(getattr(cfg, "ZONE_BOUNDARY_V2_BUCKET_SIZE_U", 0.5))
-    current = build_book_profile(book_levels, lower, upper)
+    current = build_book_bucket_profile(book_levels)
+    update_pending_event_profile_from_bucket_profile(event, current, changed_buckets=None)
+
+
+def update_pending_event_profile_from_bucket_profile(
+    event: dict[str, Any],
+    side_bucket_profile: Mapping[float, float],
+    changed_buckets: set[float] | None = None,
+) -> None:
+    if not bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+        return
+    if "book_profile_start" not in event:
+        return
+    keys = _profile_keys(event)
+    if not keys:
+        return
+    update_keys = keys
+    if changed_buckets is not None:
+        changed = {parse_float(bucket) for bucket in changed_buckets}
+        update_keys = keys & changed
+        if not update_keys:
+            return
+    current = {parse_float(k): parse_float(v) for k, v in (side_bucket_profile or {}).items()}
     min_profile = event.setdefault("book_profile_min", {})
-    for bucket in keys:
+    end_profile = event.setdefault("book_profile_end", dict(event.get("book_profile_start") or {}))
+    for bucket in update_keys:
         depth = parse_float(current.get(bucket))
         min_profile[bucket] = min(parse_float(min_profile.get(bucket), depth), depth)
-    event["book_profile_end"] = current
+        end_profile[bucket] = depth
 
 
 def compute_zone_boundary_v2(
@@ -240,6 +281,25 @@ def _numeric_map(value: Any) -> dict[float, float]:
     for key, val in value.items():
         result[parse_float(key)] = parse_float(val)
     return result
+
+
+def _profile_keys(event: Mapping[str, Any]) -> set[float]:
+    raw_keys = event.get("_zone_v2_profile_keys") or (event.get("book_profile_start") or {}).keys()
+    return {parse_float(key) for key in raw_keys if parse_float(key) > 0}
+
+
+def _iter_book_levels(book_levels: Mapping[Any, Any] | Iterable[Any] | None):
+    if isinstance(book_levels, Mapping):
+        yield from book_levels.items()
+        return
+    for item in book_levels or []:
+        if isinstance(item, Mapping):
+            yield item.get("price"), item.get("size", item.get("qty"))
+            continue
+        try:
+            yield item[0], item[1]
+        except (TypeError, IndexError, KeyError):
+            continue
 
 
 def _avg(rows: list[Mapping[str, Any]], field: str) -> float:

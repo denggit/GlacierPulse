@@ -54,6 +54,23 @@ LOCAL_REPLAY_LOG_OVERRIDE_ENV_KEYS = (
     "V62_LOG_COMPONENT_STATUS_ON_START",
     "V62_LOG_CONFIG_SNAPSHOT_ON_START",
 )
+ZONE_V2_INTERNAL_PROFILE_FIELDS = {
+    "book_profile_start",
+    "book_profile_min",
+    "book_profile_end",
+    "trade_notional_by_bucket",
+    "_zone_v2_profile_keys",
+    "_zone_v2_scan_lower",
+    "_zone_v2_scan_upper",
+}
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 @dataclass(order=True)
@@ -240,7 +257,13 @@ class LocalA1ResearchRuntime:
         row["replay_ignored"] = bool(ignored)
         row["runtime_mode"] = "local_research_replay"
         row["execution_enabled"] = False
-        self.research_events_file.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) + "\n")
+        if not _truthy(getattr(self.research_config, "ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS", False)):
+            for field_name in ZONE_V2_INTERNAL_PROFILE_FIELDS:
+                row.pop(field_name, None)
+        else:
+            for field_name in ("_zone_v2_profile_keys", "_zone_v2_scan_lower", "_zone_v2_scan_upper"):
+                row.pop(field_name, None)
+        self.research_events_file.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
 
 class BookEventCleaner:

@@ -1,7 +1,64 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from src.research.zone_truth.zone_boundary_v2 import compute_zone_boundary_v2
+from copy import deepcopy
+
+from src.research.zone_truth.zone_boundary_v2 import (
+    build_book_bucket_profile,
+    compute_zone_boundary_v2,
+    update_pending_event_profile,
+    update_pending_event_profile_from_bucket_profile,
+)
+
+
+def test_build_book_bucket_profile_aggregates_notional_by_bucket():
+    profile = build_book_bucket_profile({100.0: 2.0, 100.2: 3.0, 101.0: 1.0}, bucket_size=0.5)
+    assert profile[100.0] == 500.6
+    assert profile[101.0] == 101.0
+
+
+def test_cached_update_matches_full_update():
+    event = {
+        "book_profile_start": {100.0: 200.0, 100.5: 100.0},
+        "book_profile_min": {100.0: 200.0, 100.5: 100.0},
+        "book_profile_end": {100.0: 200.0, 100.5: 100.0},
+        "_zone_v2_profile_keys": [100.0, 100.5],
+    }
+    full_event = deepcopy(event)
+    cached_event = deepcopy(event)
+    updated_book = {100.0: 1.0, 100.5: 0.5}
+    update_pending_event_profile(full_event, updated_book)
+    update_pending_event_profile_from_bucket_profile(cached_event, build_book_bucket_profile(updated_book), changed_buckets=None)
+    assert cached_event["book_profile_min"] == full_event["book_profile_min"]
+    assert cached_event["book_profile_end"] == full_event["book_profile_end"]
+
+
+def test_cached_update_skips_when_changed_buckets_do_not_overlap():
+    event = {
+        "book_profile_start": {100.0: 200.0},
+        "book_profile_min": {100.0: 200.0},
+        "book_profile_end": {100.0: 200.0},
+        "_zone_v2_profile_keys": [100.0],
+    }
+    before = deepcopy(event)
+    update_pending_event_profile_from_bucket_profile(event, {100.0: 50.0}, changed_buckets={105.0})
+    assert event == before
+
+
+def test_cached_update_only_changes_intersecting_keys_and_matches_full_update():
+    event = {
+        "book_profile_start": {100.0: 200.0, 100.5: 100.0},
+        "book_profile_min": {100.0: 200.0, 100.5: 100.0},
+        "book_profile_end": {100.0: 200.0, 100.5: 100.0},
+        "_zone_v2_profile_keys": [100.0, 100.5],
+    }
+    full_event = deepcopy(event)
+    cached_event = deepcopy(event)
+    profile = {100.0: 50.0, 100.5: 100.0}
+    update_pending_event_profile_from_bucket_profile(full_event, profile, changed_buckets=None)
+    update_pending_event_profile_from_bucket_profile(cached_event, profile, changed_buckets={100.0})
+    assert cached_event["book_profile_min"] == full_event["book_profile_min"]
+    assert cached_event["book_profile_end"] == full_event["book_profile_end"]
 
 
 def test_buy_boundary_core_and_stop():

@@ -41,10 +41,12 @@ from src.research.phase1_truth.tracker import Phase1TruthTracker, session_snapsh
 from src.research.a1_dynamic_params.previewer import A1DynamicParamPreviewer
 from src.research.zone_truth.a1_evidence_v2 import classify_a1_evidence_event
 from src.research.zone_truth.zone_boundary_v2 import (
+    build_book_bucket_profile,
+    bucket_price,
     compute_zone_boundary_v2,
     initialize_pending_event_profile,
     record_trade_bucket,
-    update_pending_event_profile,
+    update_pending_event_profile_from_bucket_profile,
 )
 
 logger = logging.getLogger(__name__)
@@ -301,13 +303,35 @@ class A1AbsorptionEngine:
 
         remaining_events = []
         candidate_signals = []
+        zone_v2_enabled = bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True))
+        bid_bucket_profile = None
+        ask_bucket_profile = None
+        changed_bid_buckets: set[float] = set()
+        changed_ask_buckets: set[float] = set()
+        if zone_v2_enabled and any("book_profile_start" in event for event in self.pending_events):
+            changed_bid_buckets = self._changed_zone_v2_buckets(book_data.get("bids"))
+            changed_ask_buckets = self._changed_zone_v2_buckets(book_data.get("asks"))
+            has_buy_profile = any(
+                str(event.get("direction")) == "BUY" and "book_profile_start" in event
+                for event in self.pending_events
+            )
+            has_sell_profile = any(
+                str(event.get("direction")) == "SELL" and "book_profile_start" in event
+                for event in self.pending_events
+            )
+            if has_buy_profile and changed_bid_buckets:
+                bid_bucket_profile = build_book_bucket_profile(self.ctx.bids)
+            if has_sell_profile and changed_ask_buckets:
+                ask_bucket_profile = build_book_bucket_profile(self.ctx.asks)
 
         for event in self.pending_events:
             status = event.get("status")
-            if bool(getattr(cfg, "ZONE_BOUNDARY_V2_ENABLED", True)):
+            if zone_v2_enabled and "book_profile_start" in event:
                 try:
-                    book_levels = self.ctx.bids if str(event.get("direction")) == "BUY" else self.ctx.asks
-                    update_pending_event_profile(event, book_levels)
+                    if str(event.get("direction")) == "BUY" and bid_bucket_profile is not None:
+                        update_pending_event_profile_from_bucket_profile(event, bid_bucket_profile, changed_bid_buckets)
+                    elif str(event.get("direction")) == "SELL" and ask_bucket_profile is not None:
+                        update_pending_event_profile_from_bucket_profile(event, ask_bucket_profile, changed_ask_buckets)
                 except Exception:
                     logger.debug("[ZONE-BOUNDARY-V2] pending_profile_update_failed", exc_info=True)
 
@@ -1069,6 +1093,27 @@ class A1AbsorptionEngine:
         ):
             if field_name in assigned_zone and field_name not in snapshot:
                 snapshot[field_name] = assigned_zone.get(field_name)
+
+    @staticmethod
+    def _changed_zone_v2_buckets(levels: Any) -> set[float]:
+        buckets: set[float] = set()
+        if isinstance(levels, dict):
+            iterator = levels.items()
+        else:
+            iterator = levels or []
+        for item in iterator:
+            if isinstance(item, dict):
+                price = A1AbsorptionEngine._safe_float(item.get("price"), 0.0)
+            elif isinstance(levels, dict):
+                price = A1AbsorptionEngine._safe_float(item[0], 0.0)
+            else:
+                try:
+                    price = A1AbsorptionEngine._safe_float(item[0], 0.0)
+                except (TypeError, IndexError, KeyError):
+                    continue
+            if price > 0:
+                buckets.add(bucket_price(price))
+        return buckets
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
