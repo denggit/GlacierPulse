@@ -42,6 +42,12 @@ TRADE_FIELDS = [
     "target_price_at_exit",
     "risk_u",
     "target_r_at_entry",
+    "target_price_r_at_entry",
+    "target_net_r_at_entry",
+    "fee_share_r_at_stop",
+    "fee_share_r_at_target",
+    "planned_loss_u",
+    "target_net_profit_u",
     "contracts",
     "notional",
     "required_margin",
@@ -102,6 +108,10 @@ REJECTION_FIELDS = [
     "stop_basis_type",
     "risk_u",
     "target_r",
+    "target_price_r",
+    "target_net_r",
+    "fee_share_r_at_target",
+    "planned_loss_u",
     "details",
 ]
 
@@ -453,16 +463,83 @@ def floor_to_step(value: float, step: float) -> float:
     return round(math.floor((value + 1e-12) / step) * step, decimals)
 
 
+def compute_fee_aware_r_metrics(
+    direction: str,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    fee_rate_per_side: float,
+) -> dict[str, float]:
+    direction = str(direction or "").upper()
+    entry_price = parse_float(entry_price)
+    stop_price = parse_float(stop_price)
+    target_price = parse_float(target_price)
+    fee_rate_per_side = parse_float(fee_rate_per_side)
+
+    empty = {
+        "price_risk_u": 0.0,
+        "price_target_u": 0.0,
+        "entry_fee_u": 0.0,
+        "stop_exit_fee_u": 0.0,
+        "target_exit_fee_u": 0.0,
+        "planned_loss_u": 0.0,
+        "target_net_profit_u": 0.0,
+        "target_price_r": 0.0,
+        "target_net_r": 0.0,
+        "fee_share_r_at_stop": 0.0,
+        "fee_share_r_at_target": 0.0,
+    }
+    if entry_price <= 0 or stop_price <= 0 or target_price <= 0 or fee_rate_per_side < 0:
+        return empty
+
+    if direction == "BUY":
+        price_risk_u = entry_price - stop_price
+        price_target_u = target_price - entry_price
+    elif direction == "SELL":
+        price_risk_u = stop_price - entry_price
+        price_target_u = entry_price - target_price
+    else:
+        return empty
+    if price_risk_u <= 0:
+        return empty
+
+    entry_fee_u = entry_price * fee_rate_per_side
+    stop_exit_fee_u = stop_price * fee_rate_per_side
+    target_exit_fee_u = target_price * fee_rate_per_side
+    planned_loss_u = price_risk_u + entry_fee_u + stop_exit_fee_u
+    target_net_profit_u = price_target_u - entry_fee_u - target_exit_fee_u
+
+    return {
+        "price_risk_u": price_risk_u,
+        "price_target_u": price_target_u,
+        "entry_fee_u": entry_fee_u,
+        "stop_exit_fee_u": stop_exit_fee_u,
+        "target_exit_fee_u": target_exit_fee_u,
+        "planned_loss_u": planned_loss_u,
+        "target_net_profit_u": target_net_profit_u,
+        "target_price_r": price_target_u / price_risk_u,
+        "target_net_r": target_net_profit_u / planned_loss_u if planned_loss_u > 0 else 0.0,
+        "fee_share_r_at_stop": (entry_fee_u + stop_exit_fee_u) / max(price_risk_u, 1e-12),
+        "fee_share_r_at_target": (entry_fee_u + target_exit_fee_u) / max(price_risk_u, 1e-12),
+    }
+
+
 def calculate_position_size(
     equity: float,
     entry_price: float,
+    stop_price: float,
     risk_u: float,
     params: BacktestParams,
 ) -> tuple[dict[str, float] | None, str | None]:
+    if equity <= 0 or entry_price <= 0 or stop_price <= 0 or risk_u <= 0:
+        return None, "INVALID_STOP"
     risk_budget = equity * params.risk_pct
     contract_stop_loss = risk_u * params.contract_size_eth
-    estimated_contract_fee = entry_price * params.contract_size_eth * params.fee_rate_per_side * 2.0
-    contract_total_risk = contract_stop_loss + estimated_contract_fee
+    contract_stop_fee = (
+        entry_price * params.contract_size_eth * params.fee_rate_per_side
+        + stop_price * params.contract_size_eth * params.fee_rate_per_side
+    )
+    contract_total_risk = contract_stop_loss + contract_stop_fee
     if contract_total_risk <= 0:
         return None, "INVALID_STOP"
     contracts = floor_to_step(risk_budget / contract_total_risk, params.contract_step)
@@ -480,7 +557,9 @@ def calculate_position_size(
         return None, "INSUFFICIENT_MARGIN"
 
     actual_stop_loss = contracts * params.contract_size_eth * risk_u
-    estimated_fee = contracts * params.contract_size_eth * entry_price * params.fee_rate_per_side * 2.0
+    estimated_fee = contracts * params.contract_size_eth * (
+        entry_price * params.fee_rate_per_side + stop_price * params.fee_rate_per_side
+    )
     actual_total_risk = actual_stop_loss + estimated_fee
     if actual_total_risk > risk_budget * 1.02:
         max_by_risk = floor_to_step(risk_budget / contract_total_risk, params.contract_step)
@@ -491,7 +570,9 @@ def calculate_position_size(
     notional = contracts * params.contract_size_eth * entry_price
     required_margin = notional / params.leverage
     actual_stop_loss = contracts * params.contract_size_eth * risk_u
-    estimated_fee = contracts * params.contract_size_eth * entry_price * params.fee_rate_per_side * 2.0
+    estimated_fee = contracts * params.contract_size_eth * (
+        entry_price * params.fee_rate_per_side + stop_price * params.fee_rate_per_side
+    )
     actual_total_risk = actual_stop_loss + estimated_fee
     return (
         {
@@ -597,6 +678,10 @@ def make_rejection(
     stop_basis_type: str = "",
     risk_u: float = 0.0,
     target_r: float = 0.0,
+    target_price_r: float = 0.0,
+    target_net_r: float = 0.0,
+    fee_share_r_at_target: float = 0.0,
+    planned_loss_u: float = 0.0,
     details: str = "",
 ) -> dict[str, Any]:
     boll = boll or {}
@@ -625,6 +710,10 @@ def make_rejection(
         "stop_basis_type": stop_basis_type,
         "risk_u": round(risk_u, 8) if risk_u else "",
         "target_r": round(target_r, 8) if target_r else "",
+        "target_price_r": round(target_price_r, 8) if target_price_r else "",
+        "target_net_r": round(target_net_r, 8) if target_net_r else "",
+        "fee_share_r_at_target": round(fee_share_r_at_target, 8) if fee_share_r_at_target else "",
+        "planned_loss_u": round(planned_loss_u, 8) if planned_loss_u else "",
         "details": details,
     }
 
@@ -714,13 +803,23 @@ def simulate_backtest(
             )
             continue
         target_price = parse_float(entry_boll.get("middle"))
-        if direction == "BUY":
-            target_r = (target_price - entry_price) / risk_u
-            target_valid = target_price > entry_price and target_r >= params.min_target_r
-        else:
-            target_r = (entry_price - target_price) / risk_u
-            target_valid = target_price < entry_price and target_r >= params.min_target_r
+        r_metrics = compute_fee_aware_r_metrics(direction, entry_price, stop_price, target_price, params.fee_rate_per_side)
+        target_price_r = parse_float(r_metrics.get("target_price_r"))
+        target_net_r = parse_float(r_metrics.get("target_net_r"))
+        target_valid = (
+            (direction == "BUY" and target_price > entry_price)
+            or (direction == "SELL" and target_price < entry_price)
+        ) and target_net_r >= params.min_target_r
         if not target_valid:
+            details = json.dumps(
+                {
+                    "target_price_r": round(target_price_r, 8),
+                    "target_net_r": round(target_net_r, 8),
+                    "fee_share_r_at_target": round(parse_float(r_metrics.get("fee_share_r_at_target")), 8),
+                    "planned_loss_u": round(parse_float(r_metrics.get("planned_loss_u")), 8),
+                },
+                sort_keys=True,
+            )
             rejections.append(
                 make_rejection(
                     row,
@@ -733,7 +832,12 @@ def simulate_backtest(
                     stop_basis_price=stop_basis_price,
                     stop_basis_type=stop_basis_type,
                     risk_u=risk_u,
-                    target_r=target_r,
+                    target_r=target_net_r,
+                    target_price_r=target_price_r,
+                    target_net_r=target_net_r,
+                    fee_share_r_at_target=parse_float(r_metrics.get("fee_share_r_at_target")),
+                    planned_loss_u=parse_float(r_metrics.get("planned_loss_u")),
+                    details=details,
                 )
             )
             continue
@@ -768,7 +872,8 @@ def simulate_backtest(
                 "stop_basis_type": stop_basis_type,
                 "entry_boll": entry_boll,
                 "target_price": target_price,
-                "target_r": target_r,
+                "target_r": target_net_r,
+                "r_metrics": r_metrics,
                 "exit_info": exit_info,
                 "exit_ts": parse_float(exit_info["exit_ts"]),
             }
@@ -802,6 +907,13 @@ def simulate_backtest(
         stop_basis_type = str(proposal["stop_basis_type"])
         entry_boll = proposal["entry_boll"]
         target_r = parse_float(proposal["target_r"])
+        r_metrics = dict(proposal.get("r_metrics") or {})
+        target_price_r = parse_float(r_metrics.get("target_price_r"))
+        target_net_r = parse_float(r_metrics.get("target_net_r"), target_r)
+        fee_share_r_at_stop = parse_float(r_metrics.get("fee_share_r_at_stop"))
+        fee_share_r_at_target = parse_float(r_metrics.get("fee_share_r_at_target"))
+        planned_loss_u = parse_float(r_metrics.get("planned_loss_u"))
+        target_net_profit_u = parse_float(r_metrics.get("target_net_profit_u"))
 
         if params.one_position_at_a_time and any(intervals_overlap(entry_ts, exit_ts, start, end) for start, end in closed_positions):
             rejections.append(
@@ -817,11 +929,15 @@ def simulate_backtest(
                     stop_basis_type=stop_basis_type,
                     risk_u=risk_u,
                     target_r=target_r,
+                    target_price_r=target_price_r,
+                    target_net_r=target_net_r,
+                    fee_share_r_at_target=fee_share_r_at_target,
+                    planned_loss_u=planned_loss_u,
                 )
             )
             continue
 
-        size, size_reason = calculate_position_size(equity, entry_price, risk_u, params)
+        size, size_reason = calculate_position_size(equity, entry_price, stop_price, risk_u, params)
         if not size:
             rejections.append(
                 make_rejection(
@@ -836,6 +952,10 @@ def simulate_backtest(
                     stop_basis_type=stop_basis_type,
                     risk_u=risk_u,
                     target_r=target_r,
+                    target_price_r=target_price_r,
+                    target_net_r=target_net_r,
+                    fee_share_r_at_target=fee_share_r_at_target,
+                    planned_loss_u=planned_loss_u,
                 )
             )
             continue
@@ -870,7 +990,13 @@ def simulate_backtest(
             "exit_boll_mid": round(parse_float(exit_info["exit_boll_mid"]), 8),
             "target_price_at_exit": round(parse_float(exit_info["target_price_at_exit"]), 8),
             "risk_u": round(risk_u, 8),
-            "target_r_at_entry": round(target_r, 8),
+            "target_r_at_entry": round(target_net_r, 8),
+            "target_price_r_at_entry": round(target_price_r, 8),
+            "target_net_r_at_entry": round(target_net_r, 8),
+            "fee_share_r_at_stop": round(fee_share_r_at_stop, 8),
+            "fee_share_r_at_target": round(fee_share_r_at_target, 8),
+            "planned_loss_u": round(planned_loss_u, 8),
+            "target_net_profit_u": round(target_net_profit_u, 8),
             "contracts": round(contracts, 8),
             "notional": round(parse_float(size["notional"]), 8),
             "required_margin": round(parse_float(size["required_margin"]), 8),
@@ -947,6 +1073,10 @@ def build_summary(
     wins = [t for t in trades if parse_float(t.get("net_pnl")) > 0]
     losses = [t for t in trades if parse_float(t.get("net_pnl")) < 0]
     realized = [parse_float(t.get("realized_r")) for t in trades]
+    target_price_r_values = [parse_float(t.get("target_price_r_at_entry")) for t in trades]
+    target_net_r_values = [parse_float(t.get("target_net_r_at_entry")) for t in trades]
+    fee_share_stop_values = [parse_float(t.get("fee_share_r_at_stop")) for t in trades]
+    fee_share_target_values = [parse_float(t.get("fee_share_r_at_target")) for t in trades]
     fees = sum(parse_float(t.get("entry_fee")) + parse_float(t.get("exit_fee")) for t in trades)
     gross_wins = sum(parse_float(t.get("net_pnl")) for t in wins)
     gross_losses = abs(sum(parse_float(t.get("net_pnl")) for t in losses))
@@ -978,6 +1108,10 @@ def build_summary(
         "avg_loss_r": round(sum(parse_float(t.get("realized_r")) for t in losses) / len(losses), 8) if losses else 0.0,
         "max_win_r": round(max(realized), 8) if realized else 0.0,
         "max_loss_r": round(min(realized), 8) if realized else 0.0,
+        "avg_target_price_r_at_entry": round(sum(target_price_r_values) / len(target_price_r_values), 8) if target_price_r_values else 0.0,
+        "avg_target_net_r_at_entry": round(sum(target_net_r_values) / len(target_net_r_values), 8) if target_net_r_values else 0.0,
+        "avg_fee_share_r_at_stop": round(sum(fee_share_stop_values) / len(fee_share_stop_values), 8) if fee_share_stop_values else 0.0,
+        "avg_fee_share_r_at_target": round(sum(fee_share_target_values) / len(fee_share_target_values), 8) if fee_share_target_values else 0.0,
         "total_fees": round(fees, 8),
         "avg_holding_minutes": round(sum(parse_float(t.get("holding_minutes")) for t in trades) / len(trades), 8) if trades else 0.0,
         "trades_per_day": round(len(trades) / span_days, 8) if span_days > 0 else 0.0,

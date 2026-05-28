@@ -16,6 +16,7 @@ from tools.backtest_iceberg_boll_mid_strategy import (
     build_bollinger_bars,
     calculate_position_size,
     candidate_price,
+    compute_fee_aware_r_metrics,
     find_a3_entry,
     is_near_required_band,
     last_closed_boll,
@@ -186,28 +187,87 @@ def test_structural_stop_uses_sweep_extreme_plus_or_minus_buffer():
     assert sell_basis_type == "ZONE_UPPER"
 
 
+def test_compute_fee_aware_r_metrics_buy():
+    metrics = compute_fee_aware_r_metrics("BUY", 100.0, 97.0, 109.0, 0.0005)
+
+    assert metrics["price_risk_u"] == pytest.approx(3.0)
+    assert metrics["price_target_u"] == pytest.approx(9.0)
+    assert metrics["entry_fee_u"] == pytest.approx(0.05)
+    assert metrics["stop_exit_fee_u"] == pytest.approx(0.0485)
+    assert metrics["target_exit_fee_u"] == pytest.approx(0.0545)
+    assert metrics["planned_loss_u"] == pytest.approx(3.0985)
+    assert metrics["target_net_profit_u"] == pytest.approx(8.8955)
+    assert metrics["target_price_r"] == pytest.approx(3.0)
+    assert metrics["target_net_r"] == pytest.approx(8.8955 / 3.0985)
+    assert metrics["target_net_r"] < metrics["target_price_r"]
+
+
+def test_compute_fee_aware_r_metrics_sell():
+    metrics = compute_fee_aware_r_metrics("SELL", 100.0, 103.0, 91.0, 0.0005)
+
+    assert metrics["price_risk_u"] == pytest.approx(3.0)
+    assert metrics["price_target_u"] == pytest.approx(9.0)
+    assert metrics["entry_fee_u"] == pytest.approx(0.05)
+    assert metrics["stop_exit_fee_u"] == pytest.approx(0.0515)
+    assert metrics["target_exit_fee_u"] == pytest.approx(0.0455)
+    assert metrics["planned_loss_u"] == pytest.approx(3.1015)
+    assert metrics["target_net_profit_u"] == pytest.approx(8.9045)
+    assert metrics["target_price_r"] == pytest.approx(3.0)
+    assert metrics["target_net_r"] == pytest.approx(8.9045 / 3.1015)
+    assert metrics["target_net_r"] < metrics["target_price_r"]
+
+
 def test_target_r_below_minimum_is_rejected():
     params = _params(min_target_r=20.0)
     result = simulate_backtest([_candidate("BUY")], _base_buy_klines(), params)
     assert result["rejections"][0]["reason"] == "TARGET_LT_MIN_R"
 
 
-def test_position_size_uses_two_pct_risk_and_roundtrip_fee():
-    size, reason = calculate_position_size(100.0, 100.0, 1.0, BacktestParams())
+def test_target_filter_rejects_when_price_r_passes_but_fee_aware_r_fails():
+    params = _params(min_target_r=3.0, fee_rate_per_side=0.0015)
+    result = simulate_backtest([_candidate("BUY")], _base_buy_klines(), params)
+
+    assert result["trades"] == []
+    rejection = result["rejections"][0]
+    assert rejection["reason"] == "TARGET_LT_MIN_R"
+    assert rejection["target_price_r"] >= 3.0
+    assert rejection["target_net_r"] < 3.0
+    assert rejection["fee_share_r_at_target"] > 0
+    assert rejection["planned_loss_u"] > 0
+
+
+def test_target_filter_accepts_only_when_fee_aware_r_passes():
+    result = simulate_backtest([_candidate("BUY")], _base_buy_klines(), _params(min_target_r=3.0))
+
+    assert len(result["trades"]) == 1
+    trade = result["trades"][0]
+    assert trade["target_price_r_at_entry"] >= 3.0
+    assert trade["target_net_r_at_entry"] >= 3.0
+
+
+def test_position_size_uses_stop_price_fee_for_planned_risk():
+    size, reason = calculate_position_size(100.0, 100.0, 97.0, 3.0, BacktestParams())
     assert reason is None
-    assert size["contracts"] == pytest.approx(18.18)
-    assert size["actual_total_risk"] == pytest.approx(1.9998)
+    expected_per_contract_risk = 0.1 * (3.0 + 100.0 * 0.0005 + 97.0 * 0.0005)
+    assert size["contracts"] == pytest.approx(6.45)
+    assert size["actual_total_risk"] == pytest.approx(size["contracts"] * expected_per_contract_risk)
+
+    gross_pnl = size["contracts"] * 0.1 * (97.0 - 100.0)
+    entry_fee = size["contracts"] * 0.1 * 100.0 * 0.0005
+    exit_fee = size["contracts"] * 0.1 * 97.0 * 0.0005
+    realized_r = (gross_pnl - entry_fee - exit_fee) / size["actual_total_risk"]
+    assert realized_r == pytest.approx(-1.0)
 
 
 def test_contracts_floor_to_cent_step():
     params = BacktestParams(contract_step=0.01)
-    size, _ = calculate_position_size(100.0, 123.0, 1.0, params)
-    assert size["contracts"] == pytest.approx(17.8)
+    size, _ = calculate_position_size(100.0, 123.0, 122.0, 1.0, params)
+    assert size["contracts"] == pytest.approx(17.81)
 
 
 def test_margin_shortfall_shrinks_position():
     params = BacktestParams(leverage=1.0, contract_step=0.01, min_contracts=0.01)
-    size, reason = calculate_position_size(100.0, 10_000.0, 1.0, params)
+    size, reason = calculate_position_size(100.0, 10_000.0, 9_999.0, 1.0, params)
     assert reason is None
     assert size["contracts"] == pytest.approx(0.1)
     assert size["required_margin"] == pytest.approx(100.0)
@@ -255,6 +315,19 @@ def test_output_trade_rejection_and_summary_files(tmp_path):
     assert (out / "iceberg_boll_rejections.csv").exists()
     assert (out / "iceberg_boll_summary.json").exists()
     assert (out / "iceberg_boll_summary.md").exists()
+
+    with (out / "iceberg_boll_trades.csv").open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    expected_fields = {
+        "target_price_r_at_entry",
+        "target_net_r_at_entry",
+        "fee_share_r_at_stop",
+        "fee_share_r_at_target",
+        "planned_loss_u",
+        "target_net_profit_u",
+    }
+    assert expected_fields.issubset(rows[0].keys())
+    assert rows[0]["target_r_at_entry"] == rows[0]["target_net_r_at_entry"]
 
 
 def test_one_position_rejects_by_entry_overlap_not_candidate_time():
