@@ -14,7 +14,6 @@ from src.research.a1_edge.schema import parse_bool, parse_float
 
 COMBO_KEY_FIELDS = [
     "a1_primary_evidence_type",
-    "a1_evidence_types",
     "a1_strength_tier",
     "a1_best_horizon",
     "a2_accumulation_path_v2",

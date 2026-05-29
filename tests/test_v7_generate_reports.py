@@ -121,3 +121,31 @@ def test_generate_research_reports_zip_includes_v7_files(tmp_path, monkeypatch):
     assert (run_dir / "zone_truth" / "zone_truth_3a_simulated_trades.csv").exists()
     with zipfile.ZipFile(tmp_path / "reports" / "v7_unit.zip") as zf:
         assert "v7_unit/zone_truth/zone_truth_3a_simulated_trades.csv" in zf.namelist()
+
+
+def test_v721_context_combo_prunes_book_proxy_and_writes_new_summaries(tmp_path):
+    paths = _write_inputs(tmp_path)
+    out = tmp_path / "zone_truth_v721"
+    ZoneTruthAnalyzer().analyze_files(paths["phase1"], paths["reactions"], paths["kline"], out)
+    header = (out / "zone_truth_by_context_combo.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "book_blocking_liquidity_proxy_strength" not in header
+    for name in [
+        "zone_truth_shadow_evidence_events.csv",
+        "zone_truth_by_vp_node_context.csv",
+        "zone_truth_by_value_edge_reclaim_context.csv",
+        "zone_truth_by_sweep_failed_auction_context.csv",
+        "zone_truth_by_aggression_quality_context.csv",
+        "zone_truth_by_session_context.csv",
+        "zone_truth_by_ob_quality_context.csv",
+        "zone_truth_by_poc_risk_context.csv",
+    ]:
+        assert (out / name).exists()
+    with (out / "zone_truth_events.csv").open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 1
+
+
+def test_v721_no_boll_or_martingale_strategy_files_exist():
+    files = [str(path).lower() for path in Path(".").rglob("*.py") if ".git" not in path.parts]
+    assert not any("martingale" in name for name in files)
+    assert not any("boll_strategy" in name or "bollinger_strategy" in name for name in files)

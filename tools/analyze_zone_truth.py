@@ -17,7 +17,7 @@ from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="V6.3.11.5 offline zone truth aggregation and forward MFE/MAE analysis.")
+    parser = argparse.ArgumentParser(description="V7.2.1 ICEBERG 3A context research and zone truth analysis.")
     parser.add_argument("--phase1-candidates", required=True, help="Phase1 candidate JSONL with candidate_settled/candidate_finalized rows")
     parser.add_argument("--a1-reactions", required=True, help="A1 reaction JSONL with zone_id/frozen zone/reaction fields")
     parser.add_argument("--kline", help="1m kline CSV used for forward metrics and runtime-compatible context labels")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from src.research.zone_truth.combo_matrix import build_combo_matrix, combo_key, group_stats, bad_combos, top_combos
+from src.research.zone_truth.combo_matrix import COMBO_KEY_FIELDS, build_combo_matrix, combo_key, group_stats, bad_combos, top_combos
 from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
 
@@ -77,3 +77,13 @@ def test_zone_truth_simulated_trade_groups_are_mainline_only_by_default():
     ]
     rows = ZoneTruthAnalyzer().group_simulated_trades(trades, "entry_model")
     assert rows == [{"entry_model": "BREAKOUT", **group_stats([trades[0]])}]
+
+
+def test_v721_main_combo_prunes_shadow_evidence_from_key():
+    assert "a1_evidence_types" not in COMBO_KEY_FIELDS
+    rows = build_combo_matrix([
+        {**BASE, "a1_evidence_types": "ICEBERG", "realized_r_1h": 1.0},
+        {**BASE, "a1_evidence_types": "ICEBERG|VISIBLE_WALL", "realized_r_1h": 2.0},
+    ])
+    assert len(rows) == 1
+    assert rows[0]["count"] == 2

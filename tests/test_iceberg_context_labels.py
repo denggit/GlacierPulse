@@ -319,3 +319,69 @@ def test_a1_and_a2_pre_pool_existing_tests_still_present():
     root = Path(__file__).resolve().parents[1]
     assert (root / "tests" / "test_v6311_phase1_truth_scorer.py").exists()
     assert (root / "tests" / "test_v6312_zone_truth_a2_fields.py").exists()
+
+
+def test_v721_vp_nearest_hvn_lvn_node_and_value_area_width():
+    from src.research.context.iceberg_context_labels import _classify_vp_price, _compute_vp_cache
+
+    cache = _compute_vp_cache({98: 10, 99: 20, 100: 100, 101: 15, 102: 80}, 0.70)
+    labels = _classify_vp_price(cache, 102.0, threshold=0.25, bin_size=1.0, atr_15m=2.0)
+    assert labels["nearest_hvn"] == 102
+    assert labels["nearest_lvn"] in {98, 101}
+    assert labels["near_hvn_flag"] is True
+    assert labels["node_context"] == "NEAR_VAH"
+    assert labels["value_area_width_u"] == cache["vah"] - cache["val"]
+    assert labels["value_area_width_pct"] == round((cache["vah"] - cache["val"]) / 102.0, 8)
+    assert labels["value_area_width_atr"] == round((cache["vah"] - cache["val"]) / 2.0, 8)
+
+
+def test_v721_value_edge_reclaim_and_sweep_failed_auction_labels():
+    analyzer = ZoneTruthAnalyzer()
+    future = [
+        {"timestamp": BASE_TS + 60, "close": 99.5},
+        {"timestamp": BASE_TS + 120, "close": 100.5},
+    ]
+    buy = {"vpsession_proxy_val": 100, "vpsession_proxy_vah": 110, "previous_local_15m_low_16": 99, "zone_v2_structural_risk_u": 2}
+    value = analyzer._value_edge_labels(buy, future, "BUY", 98.5, "vpsession")
+    sweep = analyzer._sweep_failed_auction_labels(buy, future, "BUY", 98.5, "15m", 16)
+    assert value["vpsession_value_edge_side"] == "BELOW_VAL"
+    assert value["vpsession_reclaim_value_post_event_flag"] is True
+    assert value["vpsession_bars_to_reclaim"] == 2
+    assert sweep["post_sweep_reclaim_15m_post_event_flag"] is True
+    assert sweep["failed_auction_15m_post_event_flag"] is True
+
+    sell = {"vp24h_proxy_val": 90, "vp24h_proxy_vah": 100, "previous_local_1h_high_12": 101, "zone_v2_structural_risk_u": 2}
+    future_sell = [{"timestamp": BASE_TS + 60, "close": 99.5}]
+    value_sell = analyzer._value_edge_labels(sell, future_sell, "SELL", 101.5, "vp24h")
+    sweep_sell = analyzer._sweep_failed_auction_labels(sell, future_sell, "SELL", 101.5, "1h", 12)
+    assert value_sell["vp24h_value_edge_side"] == "ABOVE_VAH"
+    assert value_sell["vp24h_reclaim_value_post_event_flag"] is True
+    assert sweep_sell["failed_auction_1h_post_event_flag"] is True
+
+
+def test_v721_aggression_quality_boll_session_and_ob_quality():
+    from src.research.context.iceberg_context_labels import _aggression_quality_labels, _boll_labels, _compute_boll, _ob_labels, _session_labels
+
+    recent = _minute_rows(BASE_TS, 20, open_price=100, close_price=100, high=100.5, low=99.5, volume=10)
+    strong_bar = {"timestamp": BASE_TS + 1200, "open": 100, "high": 110, "low": 99, "close": 109.5, "volume": 100}
+    strong = _aggression_quality_labels(strong_bar, recent + [strong_bar], "BUY")
+    weak_bar = {"timestamp": BASE_TS + 1260, "open": 100, "high": 101, "low": 99, "close": 100.1, "volume": 10}
+    weak = _aggression_quality_labels(weak_bar, recent + [weak_bar], "BUY")
+    assert strong["a3_aggression_quality"] == "STRONG"
+    assert weak["a3_aggression_quality"] in {"WEAK", "MEDIUM"}
+
+    bars = [{"timestamp": BASE_TS + i * 900, "open": 100, "high": 100 + (i % 5), "low": 99, "close": 100 + (i % 5), "volume": 10} for i in range(120)]
+    boll = _boll_labels(_compute_boll(bars, IcebergContextConfig(), "15m"), 100, "15m")
+    assert 0 <= boll["boll_15m_band_width_percentile"] <= 1
+    assert "boll_15m_squeeze_flag" in boll and "boll_15m_expansion_flag" in boll
+
+    session = _session_labels(BASE_TS, BASE_TS - 60 * 30)
+    assert session["session_utc"] in {"ASIA", "EUROPE", "US"}
+    assert session["session_bucket"].endswith("EARLY")
+
+    ob = {"bullish": {"type": "BULLISH_OB", "low": 99, "high": 101, "created_bar_index": 10, "displacement_strength": 1.5, "invalidated_flag": False}}
+    labels = _ob_labels(ob, 100, "BUY", 1.0, "15m", 1.0, current_index=20, fresh_bars=32)
+    assert labels["order_block_15m_age_bars"] == 10
+    assert labels["order_block_15m_fresh_flag"] is True
+    ob["bullish"]["invalidated_flag"] = True
+    assert _ob_labels(ob, 100, "BUY", 1.0, "15m", 1.0, 50, 32)["order_block_15m_invalidated_flag"] is True

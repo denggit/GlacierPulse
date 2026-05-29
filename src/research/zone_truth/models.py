@@ -12,7 +12,7 @@ from src.research.a1_edge.schema import parse_bool, parse_float, parse_int, pars
 from src.research.context import CONTEXT_LABEL_FIELDS
 
 
-SCHEMA_VERSION = "v6.3.12.zone_truth.2"
+SCHEMA_VERSION = "v7.2.1.zone_truth.context"
 MATCH_EXACT = "exact"
 MATCH_FUZZY = "fuzzy"
 MATCH_UNMATCHED = "unmatched"
