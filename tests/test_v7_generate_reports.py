@@ -149,9 +149,51 @@ def test_v721_context_combo_prunes_book_proxy_and_writes_new_summaries(tmp_path)
     with (out / "zone_truth_shadow_evidence_events.csv").open(encoding="utf-8", newline="") as handle:
         shadow_header = next(csv.reader(handle))
     assert len(rows) == 1
-    for field in ["visible_wall_absorption_flag", "cluster_absorption_flag", "ladder_absorption_flag"]:
+    for field in ["a1_evidence_types", "visible_wall_absorption_flag", "cluster_absorption_flag", "ladder_absorption_flag"]:
         assert field not in events_header
         assert field in shadow_header
+
+def test_v721_context_summaries_are_iceberg_only(tmp_path):
+    paths = _write_inputs(tmp_path)
+    with paths["phase1"].open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "record_type": "candidate_finalized",
+                    "event_key": "non-iceberg-1",
+                    "zone_id": "z2",
+                    "direction": "BUY",
+                    "result": "REJECTED",
+                    "settle_ts": BASE_TS + 120,
+                    "trigger_ts": BASE_TS + 120,
+                    "settle_price": 100,
+                    "trigger_price": 100,
+                    "zone_lower": 99,
+                    "zone_upper": 101,
+                }
+            )
+            + "\n"
+        )
+    with paths["reactions"].open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "zone_id": "z2",
+                    "direction": "BUY",
+                    "reaction_event_ts": BASE_TS + 180,
+                    "frozen_ts": BASE_TS + 120,
+                    "frozen_low": 99,
+                    "frozen_high": 101,
+                    "reaction_type": "FAILED_RECLAIM",
+                }
+            )
+            + "\n"
+        )
+    out = tmp_path / "zone_truth_iceberg_only"
+    ZoneTruthAnalyzer().analyze_files(paths["phase1"], paths["reactions"], paths["kline"], out)
+    with (out / "zone_truth_by_session_context.csv").open(encoding="utf-8", newline="") as handle:
+        summary_rows = list(csv.DictReader(handle))
+    assert sum(int(float(row["zone_count"])) for row in summary_rows) == 1
 
 
 def test_v721_no_boll_or_martingale_strategy_files_exist():

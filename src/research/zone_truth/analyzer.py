@@ -240,43 +240,44 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_shadow_evidence_events.csv", self.shadow_evidence_rows(rows), SHADOW_EVIDENCE_EVENT_FIELDS)
         write_csv(out / "zone_truth_by_a2_accumulation_path_v2.csv", self.group_rows(rows, "a2_accumulation_path_v2"), ["a2_accumulation_path_v2"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_aggression_type_v2.csv", self.group_rows(rows, "a3_aggression_type_v2"), ["a3_aggression_type_v2"] + GROUP_METRIC_FIELDS)
+        iceberg_rows = self.iceberg_context_rows(rows)
         write_csv(
             out / "zone_truth_by_boll_context.csv",
-            build_context_summary_rows(rows, ["direction", "boll_15m_position", "boll_1h_position"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "boll_15m_position", "boll_1h_position"]),
             ["direction", "boll_15m_position", "boll_1h_position"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_vp_context.csv",
-            build_context_summary_rows(rows, ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"]),
             ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_local_structure_context.csv",
-            build_context_summary_rows(rows, ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"]),
             ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_order_block_context.csv",
-            build_context_summary_rows(rows, ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"]),
             ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_book_liquidity_proxy_context.csv",
-            build_context_summary_rows(rows, ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"]),
             ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_context_combo.csv",
-            build_context_summary_rows(rows, CONTEXT_COMBO_FIELDS, min_count=5),
+            build_context_summary_rows(iceberg_rows, CONTEXT_COMBO_FIELDS, min_count=5),
             CONTEXT_COMBO_FIELDS + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
-        write_csv(out / "zone_truth_by_vp_node_context.csv", build_context_summary_rows(rows, ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"]), ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_value_edge_reclaim_context.csv", build_context_summary_rows(rows, ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_post_event_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_post_event_flag"]), ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_post_event_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_post_event_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_sweep_failed_auction_context.csv", build_context_summary_rows(rows, ["direction", "failed_auction_15m_post_event_flag", "failed_auction_1h_post_event_flag"]), ["direction", "failed_auction_15m_post_event_flag", "failed_auction_1h_post_event_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_aggression_quality_context.csv", build_context_summary_rows(rows, ["direction", "a3_aggression_quality"]), ["direction", "a3_aggression_quality"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_session_context.csv", build_context_summary_rows(rows, ["session_utc", "session_bucket", "is_weekend_flag"]), ["session_utc", "session_bucket", "is_weekend_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_ob_quality_context.csv", build_context_summary_rows(rows, ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"]), ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_poc_risk_context.csv", build_context_summary_rows(rows, ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"]), ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_vp_node_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"]), ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_value_edge_reclaim_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_post_event_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_post_event_flag"]), ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_post_event_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_post_event_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_sweep_failed_auction_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "failed_auction_15m_post_event_flag", "failed_auction_1h_post_event_flag"]), ["direction", "failed_auction_15m_post_event_flag", "failed_auction_1h_post_event_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_aggression_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "a3_aggression_quality"]), ["direction", "a3_aggression_quality"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_session_context.csv", build_context_summary_rows(iceberg_rows, ["session_utc", "session_bucket", "is_weekend_flag"]), ["session_utc", "session_bucket", "is_weekend_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_ob_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"]), ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_poc_risk_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"]), ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -321,6 +322,15 @@ class ZoneTruthAnalyzer:
             else:
                 row["context_labels_status"] = "NON_ICEBERG_ZONE"
         return enriched
+
+
+    @staticmethod
+    def iceberg_context_rows(rows: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        return [
+            row for row in rows
+            if parse_float(row.get("iceberg_pie_count")) > 0
+            or str(row.get("a1_primary_evidence_type") or "").upper() == "ICEBERG"
+        ]
 
 
     def attach_post_event_context_labels(self, rows: list[Mapping[str, Any]], bars: list[Mapping[str, Any]]) -> list[dict[str, Any]]:

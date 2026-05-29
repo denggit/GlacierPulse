@@ -514,6 +514,7 @@ MARKET_CONTEXT_FIELDS = [
     "session_low",
 ]
 SHADOW_DETAIL_FIELDS = {
+    "a1_evidence_types",
     "visible_wall_absorption_flag",
     "cluster_absorption_flag",
     "ladder_absorption_flag",
