@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from src.research.zone_truth.combo_matrix import build_combo_matrix, combo_key, group_stats, bad_combos, top_combos
+from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
 
 BASE = {
@@ -66,3 +67,13 @@ def test_combo_matrix_excludes_invalid_simulated_trades_but_keeps_source_rows_av
     assert len(trades) == 3
     assert len(matrix) == 1
     assert matrix[0]["count"] == 1
+
+
+def test_zone_truth_simulated_trade_groups_are_mainline_only_by_default():
+    trades = [
+        {**BASE, "entry_model": "BREAKOUT", "realized_r_1h": 1.0},
+        {**BASE, "entry_model": "PULLBACK", "a1_primary_evidence_type": "SWEEP", "realized_r_1h": 1.0},
+        {**BASE, "entry_model": "FAILED", "entry_ts": 0, "entry_price": 0, "risk_u": 0, "realized_outcome_1h": "NO_ENTRY"},
+    ]
+    rows = ZoneTruthAnalyzer().group_simulated_trades(trades, "entry_model")
+    assert rows == [{"entry_model": "BREAKOUT", **group_stats([trades[0]])}]

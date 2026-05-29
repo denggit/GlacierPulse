@@ -143,21 +143,22 @@ class _BarAggregator:
     def update(self, bar: Mapping[str, float]) -> dict[str, float] | None:
         ts = float(bar["timestamp"])
         bucket = int(ts // self.interval_sec)
-        if self.current_bucket is None:
+        if self.current_bucket is None or bucket != self.current_bucket:
             self.current_bucket = bucket
             self.current = _bar_copy(bar)
-            return None
-        if bucket == self.current_bucket:
+        else:
             assert self.current is not None
             self.current["high"] = max(self.current["high"], float(bar["high"]))
             self.current["low"] = min(self.current["low"], float(bar["low"]))
             self.current["close"] = float(bar["close"])
             self.current["volume"] += float(bar.get("volume", 0.0))
             self.current["timestamp"] = ts
+
+        if _bar_close_ts(bar) < (bucket + 1) * self.interval_sec:
             return None
         completed = dict(self.current or {})
-        self.current_bucket = bucket
-        self.current = _bar_copy(bar)
+        self.current_bucket = None
+        self.current = None
         return completed
 
 
@@ -176,7 +177,7 @@ class _RollingVolumeProfile:
         self.cache = _vp_unavailable()
 
     def update(self, bar: Mapping[str, float]) -> None:
-        ts = float(bar["timestamp"])
+        ts = _bar_close_ts(bar)
         contrib = _bar_vp_contribution(bar, self.bin_size)
         self.entries.append((ts, contrib))
         for price_bin, volume in contrib.items():
@@ -245,8 +246,14 @@ class ContextCacheSimulator:
             return result
 
         idx = 0
+        last_close_ts = 0.0
         for bar in self.klines:
-            ts = float(bar["timestamp"])
+            close_ts = _bar_close_ts(bar)
+            while idx < len(self.candidates) and parse_float(self.candidates[idx].get("_context_ts")) < close_ts:
+                candidate = self.candidates[idx]
+                result[str(candidate["_context_key"])] = self._label_candidate(candidate)
+                idx += 1
+
             self._update_1m(bar)
             completed_15m = self._agg_15m.update(bar)
             if completed_15m:
@@ -254,13 +261,12 @@ class ContextCacheSimulator:
             completed_1h = self._agg_1h.update(bar)
             if completed_1h:
                 self._update_1h(completed_1h)
-            while idx < len(self.candidates) and parse_float(self.candidates[idx].get("_context_ts")) <= ts:
-                candidate = self.candidates[idx]
-                result[str(candidate["_context_key"])] = self._label_candidate(candidate)
-                idx += 1
+            last_close_ts = close_ts
+
         while idx < len(self.candidates):
             candidate = self.candidates[idx]
-            result[str(candidate["_context_key"])] = self._label_candidate(candidate)
+            status = "KLINE_OUT_OF_RANGE_AFTER_LAST_BAR" if parse_float(candidate.get("_context_ts")) > last_close_ts else None
+            result[str(candidate["_context_key"])] = self._label_candidate(candidate, status_override=status)
             idx += 1
         return result
 
@@ -312,11 +318,11 @@ class ContextCacheSimulator:
             if candle:
                 cache["bearish"] = {"type": "BEARISH_OB", "low": float(candle["low"]), "high": float(candle["high"])}
 
-    def _label_candidate(self, candidate: Mapping[str, Any]) -> dict[str, Any]:
+    def _label_candidate(self, candidate: Mapping[str, Any], status_override: str | None = None) -> dict[str, Any]:
         direction = str(candidate.get("direction") or "").upper()
         price = parse_float(candidate.get("iceberg_context_price"))
         labels = {
-            "context_labels_status": "SUCCESS" if price > 0 else "CONTEXT_PRICE_UNAVAILABLE",
+            "context_labels_status": status_override or ("SUCCESS" if price > 0 else "CONTEXT_PRICE_UNAVAILABLE"),
             "iceberg_context_price": price,
             "iceberg_context_price_source": str(candidate.get("iceberg_context_price_source") or ""),
             "iceberg_context_side": direction,
@@ -548,6 +554,10 @@ def _compute_atr(bars: list[dict[str, float]], period: int) -> float:
     return round(sum(trs) / len(trs), 8) if trs else 0.0
 
 
+def _bar_close_ts(bar: Mapping[str, Any]) -> float:
+    return float(bar["timestamp"]) + 60.0
+
+
 def _bar_vp_contribution(bar: Mapping[str, float], bin_size: float) -> dict[float, float]:
     high = parse_float(bar.get("high"))
     low = parse_float(bar.get("low"))
@@ -571,15 +581,34 @@ def _compute_vp_cache(hist: Mapping[float, float], value_area_ratio: float) -> d
     if not positive:
         return _vp_unavailable()
     total = sum(positive.values())
-    poc = max(positive, key=lambda key: (positive[key], -abs(key)))
-    ranked = sorted(positive.items(), key=lambda item: item[1], reverse=True)
-    selected = []
-    running = 0.0
-    for price_bin, volume in ranked:
-        selected.append(price_bin)
-        running += volume
-        if running >= total * value_area_ratio:
-            break
+    ordered_bins = sorted(positive)
+    poc = max(ordered_bins, key=lambda key: (positive[key], -abs(key)))
+    poc_idx = ordered_bins.index(poc)
+    target = total * value_area_ratio
+    selected = {poc}
+    running = positive[poc]
+    lower_idx = poc_idx - 1
+    upper_idx = poc_idx + 1
+    while running < target and (lower_idx >= 0 or upper_idx < len(ordered_bins)):
+        lower_volume = positive[ordered_bins[lower_idx]] if lower_idx >= 0 else -1.0
+        upper_volume = positive[ordered_bins[upper_idx]] if upper_idx < len(ordered_bins) else -1.0
+        if lower_volume > upper_volume:
+            selected.add(ordered_bins[lower_idx])
+            running += lower_volume
+            lower_idx -= 1
+        elif upper_volume > lower_volume:
+            selected.add(ordered_bins[upper_idx])
+            running += upper_volume
+            upper_idx += 1
+        else:
+            if lower_idx >= 0:
+                selected.add(ordered_bins[lower_idx])
+                running += lower_volume
+                lower_idx -= 1
+            if upper_idx < len(ordered_bins) and running < target:
+                selected.add(ordered_bins[upper_idx])
+                running += upper_volume
+                upper_idx += 1
     return {
         "poc": round(poc, 8),
         "val": round(min(selected), 8),
@@ -779,12 +808,13 @@ def _book_proxy_labels(row: Mapping[str, Any]) -> dict[str, Any]:
         local_depth_usdt = local_depth
     reload_count = parse_int(row.get("zone_v2_reload_level_count"))
     absorption = max(parse_float(row.get("absorption_rate")), parse_float(row.get("avg_absorption_rate")), parse_float(row.get("max_absorption_rate")))
-    hidden = max(parse_float(row.get("hidden_notional")), parse_float(row.get("hidden_volume")), parse_float(row.get("sum_hidden_volume")), parse_float(row.get("max_hidden_volume")))
+    hidden_notional = max(parse_float(row.get("hidden_notional")), parse_float(row.get("sum_hidden_notional")), parse_float(row.get("max_hidden_notional")))
+    hidden_volume = max(parse_float(row.get("hidden_volume")), parse_float(row.get("sum_hidden_volume")), parse_float(row.get("max_hidden_volume")))
     active = max(parse_float(row.get("active_notional")), parse_float(row.get("sum_active_notional")), parse_float(row.get("max_active_notional")))
-    for value in (local_depth_usdt, reload_count, absorption, hidden, active):
+    for value in (local_depth_usdt, reload_count, absorption, hidden_notional, hidden_volume, active):
         usable = usable or value > 0
     visible = local_depth_usdt >= 1_000_000
-    reload = reload_count >= 2 or (absorption >= 0.80 and hidden >= 1_500_000)
+    reload = reload_count >= 2 or (absorption >= 0.80 and hidden_notional >= 1_500_000)
     passive = absorption >= 0.80 and active >= 1_000_000
     flag = visible or reload or passive
     if not usable:

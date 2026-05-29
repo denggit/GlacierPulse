@@ -87,6 +87,40 @@ def test_boll_1h_no_future_uses_previous_closed_hour_only():
     assert labels["c1"]["boll_1h_mid"] == 100.0
 
 
+def test_context_cache_simulator_does_not_use_open_1m_bar_until_close():
+    rows = [
+        {"timestamp": BASE_TS, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 10},
+        {"timestamp": BASE_TS + 60, "open": 200, "high": 200, "low": 200, "close": 200, "volume": 1000},
+    ]
+    labels = label_iceberg_contexts(
+        [
+            _candidate("inside_second_bar", BASE_TS + 90, zone_lower=100, settle_price=100),
+            _candidate("at_second_close", BASE_TS + 120, zone_lower=200, settle_price=200),
+        ],
+        rows,
+    )
+    assert labels["inside_second_bar"]["vp1h_proxy_poc"] == 100
+    assert labels["inside_second_bar"]["vp1h_proxy_total_volume"] == 10
+    assert labels["at_second_close"]["vp1h_proxy_poc"] == 200
+    assert labels["at_second_close"]["vp1h_proxy_total_volume"] == 1010
+
+
+def test_vp_value_area_expands_contiguously_from_poc():
+    rows = [
+        {"timestamp": BASE_TS + idx * 60, "open": price, "high": price, "low": price, "close": price, "volume": volume}
+        for idx, (price, volume) in enumerate([(100, 1000), (101, 10), (102, 10), (103, 900), (104, 10)])
+    ]
+    labels = label_iceberg_contexts(
+        [_candidate("vp", BASE_TS + 5 * 60, zone_lower=100, settle_price=100)],
+        rows,
+        IcebergContextConfig(vp_bin_size_u=1.0, vp_value_area_ratio=0.52),
+    )
+    assert labels["vp"]["vp1h_proxy_poc"] == 100
+    assert labels["vp"]["vp1h_proxy_val"] == 100
+    assert labels["vp"]["vp1h_proxy_vah"] == 101
+    assert labels["vp"]["vp1h_proxy_value_area_volume"] == 1010
+
+
 def test_buy_context_price_uses_min_extreme_and_sell_uses_max_extreme():
     buy = _candidate(
         "buy",
@@ -204,6 +238,16 @@ def test_book_liquidity_proxy_unavailable_medium_and_strong():
     assert labels["none"]["book_blocking_liquidity_proxy_strength"] == "UNAVAILABLE"
     assert labels["medium"]["book_blocking_liquidity_proxy_strength"] == "MEDIUM"
     assert labels["strong"]["book_blocking_liquidity_proxy_strength"] == "STRONG"
+
+
+def test_book_liquidity_proxy_does_not_treat_hidden_volume_as_notional():
+    labels = label_iceberg_contexts(
+        [_candidate("volume_only", BASE_TS, hidden_volume=2_000_000, absorption_rate=0.9)],
+        [],
+    )
+    assert labels["volume_only"]["reload_wall_proxy_flag"] is False
+    assert labels["volume_only"]["book_blocking_liquidity_proxy_flag"] is False
+    assert labels["volume_only"]["book_blocking_liquidity_proxy_strength"] == "NONE"
 
 
 def test_context_labels_do_not_change_zone_truth_events_row_count_and_no_kline_does_not_fail(tmp_path):
