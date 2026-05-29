@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from src.research.zone_truth.combo_matrix import COMBO_KEY_FIELDS, build_combo_matrix, combo_key, group_stats, bad_combos, top_combos
+from src.research.zone_truth.combo_matrix import COMBO_KEY_FIELDS, build_combo_matrix, combo_key, group_stats, bad_combos, top_combos, is_valid_simulated_trade
 from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
 
@@ -87,3 +87,12 @@ def test_v721_main_combo_prunes_shadow_evidence_from_key():
     ])
     assert len(rows) == 1
     assert rows[0]["count"] == 2
+
+
+def test_v721_mainline_trade_filter_requirements_remain_strict():
+    assert is_valid_simulated_trade(BASE) is True
+    assert is_valid_simulated_trade({**BASE, "a1_primary_evidence_type": "VISIBLE_WALL"}) is False
+    assert is_valid_simulated_trade({**BASE, "a3_aggression_type_v2": "PRICE_BREAKOUT_WEAK"}) is False
+    assert is_valid_simulated_trade({**BASE, "target_r": 0.5}) is False
+    assert is_valid_simulated_trade({**BASE, "entry_price": 0}) is False
+    assert is_valid_simulated_trade({**BASE, "risk_u": 0}) is False

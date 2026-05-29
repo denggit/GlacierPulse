@@ -385,3 +385,33 @@ def test_v721_aggression_quality_boll_session_and_ob_quality():
     assert labels["order_block_15m_fresh_flag"] is True
     ob["bullish"]["invalidated_flag"] = True
     assert _ob_labels(ob, 100, "BUY", 1.0, "15m", 1.0, 50, 32)["order_block_15m_invalidated_flag"] is True
+
+
+def test_v721_vp_labels_filter_internal_histogram_keys():
+    labels = label_iceberg_contexts([_candidate("vp_internal", BASE_TS + 120)], _minute_rows(BASE_TS, 4, close_price=100, volume=10))
+    row = labels["vp_internal"]
+    assert not any(key.endswith(("__hist", "__hvn_bins", "__lvn_bins")) for key in row)
+
+
+def test_v721_post_event_aggression_uses_first_future_bar_not_pre_event_bar():
+    analyzer = ZoneTruthAnalyzer()
+    bars = _minute_rows(BASE_TS, 19, open_price=100, close_price=100, high=100.5, low=99.5, volume=10)
+    bars.append({"timestamp": BASE_TS + 19 * 60, "open": 100, "high": 112, "low": 99, "close": 111.5, "volume": 500})
+    bars.append({"timestamp": BASE_TS + 20 * 60, "open": 100, "high": 101, "low": 99, "close": 100.1, "volume": 10})
+    bars.append({"timestamp": BASE_TS + 21 * 60, "open": 100, "high": 150, "low": 90, "close": 149, "volume": 10_000})
+    rows = [{"zone_id": "z", "direction": "BUY", "settle_ts": BASE_TS + 20 * 60, "iceberg_context_price": 100}]
+    out = analyzer.attach_post_event_context_labels(rows, bars)[0]
+    assert out["a3_aggression_quality"] != "STRONG"
+
+
+def test_v721_post_event_aggression_strong_and_ignores_later_future_baseline():
+    analyzer = ZoneTruthAnalyzer()
+    baseline = _minute_rows(BASE_TS, 20, open_price=100, close_price=100, high=100.5, low=99.5, volume=10)
+    strong_post = {"timestamp": BASE_TS + 20 * 60, "open": 100, "high": 112, "low": 99, "close": 111.5, "volume": 500}
+    later_future = {"timestamp": BASE_TS + 21 * 60, "open": 100, "high": 200, "low": 50, "close": 190, "volume": 100_000}
+    rows = [{"zone_id": "z", "direction": "BUY", "settle_ts": BASE_TS + 20 * 60, "iceberg_context_price": 100}]
+    without_later = analyzer.attach_post_event_context_labels(rows, baseline + [strong_post])[0]
+    with_later = analyzer.attach_post_event_context_labels(rows, baseline + [strong_post, later_future])[0]
+    assert with_later["a3_aggression_quality"] == "STRONG"
+    assert with_later["a3_volume_zscore"] == without_later["a3_volume_zscore"]
+    assert with_later["a3_range_expansion_ratio"] == without_later["a3_range_expansion_ratio"]

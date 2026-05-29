@@ -301,7 +301,7 @@ class _RollingVolumeProfile:
             out = dict(self.cache)
         near_threshold = max(self.bin_size * 2.0, atr_15m * 0.10) if atr_15m > 0 else self.bin_size * 2.0
         out.update(_classify_vp_price(out, price, near_threshold, self.bin_size, atr_15m))
-        return {f"{prefix}_{key}": value for key, value in out.items()}
+        return {f"{prefix}_{key}": value for key, value in out.items() if not str(key).startswith("_")}
 
 
 class ContextCacheSimulator:
@@ -463,7 +463,7 @@ class ContextCacheSimulator:
         )
         labels.update(_ob_labels(self._ob_15m, price, direction, self._atr_15m, "15m", self.config.order_block_threshold_min_u, len(self._bars_15m) - 1, 32))
         labels.update(_ob_labels(self._ob_1h, price, direction, self._atr_15m, "1h", self.config.order_block_threshold_min_u, len(self._bars_1h) - 1, 24))
-        labels.update(_aggression_quality_labels(self._last_1m_bar, list(self._recent_1m_bars), direction))
+        labels.update(_aggression_quality_labels(None, [], direction))
         labels.update(_session_labels(candidate_ts, self._session_start_ts))
         labels.update(_book_proxy_labels(candidate))
         return labels

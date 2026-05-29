@@ -513,8 +513,34 @@ MARKET_CONTEXT_FIELDS = [
     "session_high",
     "session_low",
 ]
+SHADOW_DETAIL_FIELDS = {
+    "visible_wall_absorption_flag",
+    "cluster_absorption_flag",
+    "ladder_absorption_flag",
+    "failed_wall_flag",
+    "spoofing_withdrawal_flag",
+    "visible_wall_start_depth_usdt",
+    "visible_wall_end_depth_usdt",
+    "visible_wall_consumption_ratio",
+    "visible_wall_survival_ratio",
+    "visible_wall_withdrawal_excess_ratio",
+    "visible_wall_absorbed_notional_proxy",
+    "cluster_best_window_sec",
+    "cluster_best_active_notional",
+    "cluster_best_event_count",
+    "cluster_best_price_efficiency",
+    "ladder_level_count",
+    "ladder_core_low",
+    "ladder_core_high",
+    "ladder_sweep_extreme",
+    "ladder_absorption_score",
+    "a1_evidence_v2_reason",
+}
+ZONE_TRUTH_MAIN_EVENT_FIELDS = [field for field in ZONE_TRUTH_EVENT_FIELDS if field not in SHADOW_DETAIL_FIELDS]
 ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS = ZONE_TRUTH_EVENT_FIELDS + FORWARD_FIELDS
 ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS = ZONE_TRUTH_EVENT_WITH_FORWARD_FIELDS + MARKET_CONTEXT_FIELDS + CONTEXT_LABEL_FIELDS
+ZONE_TRUTH_MAIN_EVENT_WITH_FORWARD_FIELDS = ZONE_TRUTH_MAIN_EVENT_FIELDS + FORWARD_FIELDS
+ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS = ZONE_TRUTH_MAIN_EVENT_WITH_FORWARD_FIELDS + MARKET_CONTEXT_FIELDS + CONTEXT_LABEL_FIELDS
 
 
 def parse_candidate_bool(value: Any) -> bool:

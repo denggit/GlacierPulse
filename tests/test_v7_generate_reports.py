@@ -76,7 +76,9 @@ def test_generate_reports_writes_v7_csvs_and_summary(tmp_path):
     assert (out / "zone_truth_by_boll_context.csv").exists()
     assert (out / "summary.json").exists()
     assert summary["v7_enabled"] is True
-    assert "V7.0.0 Zone Truth 3A Full Research Loop Shadow" in (out / "zone_truth_summary.md").read_text(encoding="utf-8")
+    summary_md = (out / "zone_truth_summary.md").read_text(encoding="utf-8")
+    assert "# V7.2.1 ICEBERG 3A Context Research" in summary_md
+    assert "V7.0.0 Zone Truth 3A Full Research Loop Shadow" not in summary_md
     with (out / "zone_truth_3a_simulated_trades.csv").open(encoding="utf-8", newline="") as handle:
         header = next(csv.reader(handle))
         assert "stop_basis_reason" in header
@@ -141,8 +143,15 @@ def test_v721_context_combo_prunes_book_proxy_and_writes_new_summaries(tmp_path)
     ]:
         assert (out / name).exists()
     with (out / "zone_truth_events.csv").open(encoding="utf-8", newline="") as handle:
-        rows = list(csv.DictReader(handle))
+        events_reader = csv.DictReader(handle)
+        rows = list(events_reader)
+        events_header = events_reader.fieldnames or []
+    with (out / "zone_truth_shadow_evidence_events.csv").open(encoding="utf-8", newline="") as handle:
+        shadow_header = next(csv.reader(handle))
     assert len(rows) == 1
+    for field in ["visible_wall_absorption_flag", "cluster_absorption_flag", "ladder_absorption_flag"]:
+        assert field not in events_header
+        assert field in shadow_header
 
 
 def test_v721_no_boll_or_martingale_strategy_files_exist():

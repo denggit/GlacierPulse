@@ -12,6 +12,7 @@ from config import research_evaluator as cfg
 from src.research.a1_edge.io_utils import normalize_klines, read_csv, read_jsonl, write_csv, write_json
 from src.research.a1_edge.schema import parse_bool, parse_float
 from src.research.context import IcebergContextConfig, build_context_summary_rows, label_iceberg_contexts
+from src.research.context.iceberg_context_labels import _aggression_quality_labels
 
 from .a2_accumulation_v2 import attach_a2_accumulation_path_v2
 from .a3_aggression_v2 import attach_a3_aggression_v2
@@ -20,7 +21,7 @@ from .a2_state import ZoneA2StateClassifier
 from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, bad_combos, build_combo_matrix, combo_summary, group_stats, is_valid_simulated_trade, top_combos
 from .forward import ZoneForwardMetricsCalculator
 from .market_context import ZoneMarketContextCalculator
-from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
+from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS
 from .trade_simulator import simulate_3a_proxy_trades
 
 
@@ -199,7 +200,7 @@ class ZoneTruthAnalyzer:
         combo_matrix_rows = build_combo_matrix(simulated_trades)
         top_combo_rows = top_combos(combo_matrix_rows)
         bad_combo_rows = bad_combos(combo_matrix_rows)
-        write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
+        write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_direction.csv", self.group_rows(rows, "direction"), ["direction"] + GROUP_METRIC_FIELDS)
@@ -283,7 +284,7 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_trend_alignment.csv", self.group_rows(rows, "trend_alignment"), ["trend_alignment"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_volume_regime_1h.csv", self.group_rows(rows, "volume_regime_1h"), ["volume_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_volatility_regime_1h.csv", self.group_rows(rows, "volatility_regime_1h"), ["volatility_regime_1h"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
+        write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_match_quality.csv", self.match_quality(rows, aggregator.unmatched_pie_count), ["match_quality"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_3a_simulated_trades.csv", simulated_trades, V7_SIMULATED_TRADE_FIELDS)
         write_csv(out / "zone_truth_by_entry_model.csv", self.group_simulated_trades(simulated_trades, "entry_model"), ["entry_model"] + COMBO_METRIC_FIELDS)
@@ -332,6 +333,9 @@ class ZoneTruthAnalyzer:
             sweep_future = bars[idx:idx + int(self.context_config.sweep_reclaim_lookahead_bars)] if idx < len(bars) else []
             direction = str(row.get("direction") or "").upper()
             price = parse_float(row.get("iceberg_context_price"))
+            aggression_bar = future[0] if future else None
+            aggression_history = bars[max(0, idx - 20):idx] if aggression_bar else []
+            row.update(_aggression_quality_labels(aggression_bar, [*aggression_history, aggression_bar] if aggression_bar else [], direction))
             for prefix in ("vpsession", "vp24h"):
                 row.update(self._value_edge_labels(row, future, direction, price, prefix))
             for label, lookback in (("15m", 16), ("1h", 12)):
@@ -700,7 +704,7 @@ class ZoneTruthAnalyzer:
     @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
-            "# V7.0.0 Zone Truth 3A Full Research Loop Shadow",
+            "# V7.2.1 ICEBERG 3A Context Research",
             "",
             f"- total_zones: {summary.get('total_zones')}",
             f"- exact_matched_zones: {summary.get('exact_matched_zones')}",
