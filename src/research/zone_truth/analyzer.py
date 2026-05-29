@@ -16,7 +16,7 @@ from .a2_accumulation_v2 import attach_a2_accumulation_path_v2
 from .a3_aggression_v2 import attach_a3_aggression_v2
 from .aggregator import ZoneTruthAggregator
 from .a2_state import ZoneA2StateClassifier
-from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, bad_combos, build_combo_matrix, combo_summary, group_stats, top_combos
+from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, bad_combos, build_combo_matrix, combo_summary, group_stats, is_valid_simulated_trade, top_combos
 from .forward import ZoneForwardMetricsCalculator
 from .market_context import ZoneMarketContextCalculator
 from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
@@ -436,10 +436,12 @@ class ZoneTruthAnalyzer:
             result[-1]["count"] = int(result[-1].get("count") or 0) + unmatched_pie_count
         return result
 
-    def group_simulated_trades(self, trades: Iterable[Mapping[str, Any]], field: str) -> list[dict[str, Any]]:
+    def group_simulated_trades(self, trades: Iterable[Mapping[str, Any]], field: str, mainline_only: bool = True) -> list[dict[str, Any]]:
         groups: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for trade in trades or []:
-            if parse_float(trade.get("target_r")) < 1.0:
+            if mainline_only and not is_valid_simulated_trade(trade):
+                continue
+            if not mainline_only and parse_float(trade.get("target_r")) < 1.0:
                 continue
             key = str(trade.get(field) if trade.get(field) not in (None, "") else "UNKNOWN")
             groups[key].append(trade)

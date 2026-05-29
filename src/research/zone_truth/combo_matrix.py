@@ -155,7 +155,7 @@ def combo_summary(matrix: list[Mapping[str, Any]], trades: list[Mapping[str, Any
     positive = [row for row in matrix if parse_float(row.get("avg_realized_r")) > 0 and int(parse_float(row.get("count"))) >= int(getattr(cfg, "V7_3A_MIN_SAMPLE", 10))]
     return {
         "v7_enabled": bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True)),
-        "v7_3a_simulated_trade_count": len([t for t in trades if parse_float(t.get("target_r")) >= 1.0]),
+        "v7_3a_simulated_trade_count": len([t for t in trades if is_valid_simulated_trade(t)]),
         "v7_top_combo_count": len(top_combos(matrix)),
         "v7_positive_combo_count": len(positive),
         "v7_bad_combo_count": len(bad_combos(matrix)),
