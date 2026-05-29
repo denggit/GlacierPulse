@@ -24,6 +24,10 @@ CONTEXT_LABEL_FIELDS = [
     "boll_15m_upper",
     "boll_15m_pct_b",
     "boll_15m_band_width",
+    "boll_15m_band_width_pct",
+    "boll_15m_band_width_percentile",
+    "boll_15m_squeeze_flag",
+    "boll_15m_expansion_flag",
     "boll_15m_position",
     "boll_15m_distance_to_lower_u",
     "boll_15m_distance_to_mid_u",
@@ -33,6 +37,10 @@ CONTEXT_LABEL_FIELDS = [
     "boll_1h_upper",
     "boll_1h_pct_b",
     "boll_1h_band_width",
+    "boll_1h_band_width_pct",
+    "boll_1h_band_width_percentile",
+    "boll_1h_squeeze_flag",
+    "boll_1h_expansion_flag",
     "boll_1h_position",
     "boll_1h_distance_to_lower_u",
     "boll_1h_distance_to_mid_u",
@@ -49,6 +57,16 @@ CONTEXT_LABEL_FIELDS = [
     "vp1h_proxy_distance_to_val_u",
     "vp1h_proxy_distance_to_vah_u",
     "vp1h_proxy_price_percentile",
+    "vp1h_proxy_nearest_hvn",
+    "vp1h_proxy_nearest_lvn",
+    "vp1h_proxy_distance_to_hvn_u",
+    "vp1h_proxy_distance_to_lvn_u",
+    "vp1h_proxy_near_hvn_flag",
+    "vp1h_proxy_near_lvn_flag",
+    "vp1h_proxy_node_context",
+    "vp1h_proxy_value_area_width_u",
+    "vp1h_proxy_value_area_width_pct",
+    "vp1h_proxy_value_area_width_atr",
     "vp4h_proxy_poc",
     "vp4h_proxy_val",
     "vp4h_proxy_vah",
@@ -61,6 +79,16 @@ CONTEXT_LABEL_FIELDS = [
     "vp4h_proxy_distance_to_val_u",
     "vp4h_proxy_distance_to_vah_u",
     "vp4h_proxy_price_percentile",
+    "vp4h_proxy_nearest_hvn",
+    "vp4h_proxy_nearest_lvn",
+    "vp4h_proxy_distance_to_hvn_u",
+    "vp4h_proxy_distance_to_lvn_u",
+    "vp4h_proxy_near_hvn_flag",
+    "vp4h_proxy_near_lvn_flag",
+    "vp4h_proxy_node_context",
+    "vp4h_proxy_value_area_width_u",
+    "vp4h_proxy_value_area_width_pct",
+    "vp4h_proxy_value_area_width_atr",
     "vp24h_proxy_poc",
     "vp24h_proxy_val",
     "vp24h_proxy_vah",
@@ -73,6 +101,16 @@ CONTEXT_LABEL_FIELDS = [
     "vp24h_proxy_distance_to_val_u",
     "vp24h_proxy_distance_to_vah_u",
     "vp24h_proxy_price_percentile",
+    "vp24h_proxy_nearest_hvn",
+    "vp24h_proxy_nearest_lvn",
+    "vp24h_proxy_distance_to_hvn_u",
+    "vp24h_proxy_distance_to_lvn_u",
+    "vp24h_proxy_near_hvn_flag",
+    "vp24h_proxy_near_lvn_flag",
+    "vp24h_proxy_node_context",
+    "vp24h_proxy_value_area_width_u",
+    "vp24h_proxy_value_area_width_pct",
+    "vp24h_proxy_value_area_width_atr",
     "vpsession_proxy_poc",
     "vpsession_proxy_val",
     "vpsession_proxy_vah",
@@ -85,20 +123,46 @@ CONTEXT_LABEL_FIELDS = [
     "vpsession_proxy_distance_to_val_u",
     "vpsession_proxy_distance_to_vah_u",
     "vpsession_proxy_price_percentile",
+    "vpsession_proxy_nearest_hvn",
+    "vpsession_proxy_nearest_lvn",
+    "vpsession_proxy_distance_to_hvn_u",
+    "vpsession_proxy_distance_to_lvn_u",
+    "vpsession_proxy_near_hvn_flag",
+    "vpsession_proxy_near_lvn_flag",
+    "vpsession_proxy_node_context",
+    "vpsession_proxy_value_area_width_u",
+    "vpsession_proxy_value_area_width_pct",
+    "vpsession_proxy_value_area_width_atr",
     "local_15m_low_16",
     "local_15m_high_16",
+    "previous_local_15m_low_16",
+    "previous_local_15m_high_16",
     "local_15m_position_16",
     "near_local_15m_low_flag",
     "near_local_15m_high_flag",
     "sweep_local_15m_low_flag",
     "sweep_local_15m_high_flag",
+    "post_sweep_reclaim_15m_post_event_flag",
+    "bars_to_sweep_reclaim_15m",
+    "sweep_reclaim_level_15m",
+    "failed_auction_15m_post_event_flag",
+    "sweep_magnitude_15m_u",
+    "sweep_magnitude_15m_atr",
     "local_1h_low_12",
     "local_1h_high_12",
+    "previous_local_1h_low_12",
+    "previous_local_1h_high_12",
     "local_1h_position_12",
     "near_local_1h_low_flag",
     "near_local_1h_high_flag",
     "sweep_local_1h_low_flag",
     "sweep_local_1h_high_flag",
+    "post_sweep_reclaim_1h_post_event_flag",
+    "bars_to_sweep_reclaim_1h",
+    "sweep_reclaim_level_1h",
+    "failed_auction_1h_post_event_flag",
+    "sweep_magnitude_1h_u",
+    "sweep_magnitude_1h_atr",
     "near_local_structure_flag",
     "order_block_15m_type",
     "order_block_15m_low",
@@ -106,12 +170,47 @@ CONTEXT_LABEL_FIELDS = [
     "order_block_15m_distance_u",
     "inside_order_block_15m_flag",
     "near_order_block_15m_flag",
+    "order_block_15m_age_bars",
+    "order_block_15m_displacement_strength",
+    "order_block_15m_invalidated_flag",
+    "order_block_15m_fresh_flag",
     "order_block_1h_type",
     "order_block_1h_low",
     "order_block_1h_high",
     "order_block_1h_distance_u",
     "inside_order_block_1h_flag",
     "near_order_block_1h_flag",
+    "order_block_1h_age_bars",
+    "order_block_1h_displacement_strength",
+    "order_block_1h_invalidated_flag",
+    "order_block_1h_fresh_flag",
+    "vpsession_value_edge_side",
+    "vpsession_outside_value_flag",
+    "vpsession_reclaim_value_post_event_flag",
+    "vpsession_reject_value_post_event_flag",
+    "vpsession_bars_to_reclaim",
+    "vpsession_reclaim_level",
+    "vp24h_value_edge_side",
+    "vp24h_outside_value_flag",
+    "vp24h_reclaim_value_post_event_flag",
+    "vp24h_reject_value_post_event_flag",
+    "vp24h_bars_to_reclaim",
+    "vp24h_reclaim_level",
+    "a3_aggression_score",
+    "a3_aggression_quality",
+    "a3_body_strength",
+    "a3_range_expansion_ratio",
+    "a3_volume_zscore",
+    "a3_close_location_score",
+    "a3_no_quick_return_post_event_flag",
+    "a3_failed_quick_return_post_event_flag",
+    "a3_taker_imbalance_score",
+    "a3_delta_flip_flag",
+    "a3_cvd_pressure_score",
+    "session_utc",
+    "session_elapsed_minutes",
+    "session_bucket",
+    "is_weekend_flag",
     "book_blocking_liquidity_proxy_flag",
     "book_blocking_liquidity_proxy_strength",
     "visible_depth_proxy_flag",
@@ -132,6 +231,8 @@ class IcebergContextConfig:
     order_block_threshold_min_u: float = 1.0
     ob_swing_15m: int = 8
     ob_swing_1h: int = 6
+    value_reclaim_lookahead_bars: int = 3
+    sweep_reclaim_lookahead_bars: int = 3
 
 
 @dataclass
@@ -199,8 +300,8 @@ class _RollingVolumeProfile:
         else:
             out = dict(self.cache)
         near_threshold = max(self.bin_size * 2.0, atr_15m * 0.10) if atr_15m > 0 else self.bin_size * 2.0
-        out.update(_classify_vp_price(out, price, near_threshold, self.bin_size))
-        return {f"{prefix}_{key}": value for key, value in out.items()}
+        out.update(_classify_vp_price(out, price, near_threshold, self.bin_size, atr_15m))
+        return {f"{prefix}_{key}": value for key, value in out.items() if not str(key).startswith("_")}
 
 
 class ContextCacheSimulator:
@@ -235,6 +336,8 @@ class ContextCacheSimulator:
         self._vpsession = _RollingVolumeProfile(None, cfg.vp_bin_size_u, cfg.vp_value_area_ratio)
         self._session_id = ""
         self._session_start_ts = 0.0
+        self._last_1m_bar: dict[str, float] | None = None
+        self._recent_1m_bars: deque[dict[str, float]] = deque(maxlen=120)
 
     def run(self) -> dict[str, dict[str, Any]]:
         result: dict[str, dict[str, Any]] = {}
@@ -272,6 +375,8 @@ class ContextCacheSimulator:
 
     def _update_1m(self, bar: Mapping[str, float]) -> None:
         self._ensure_session_for_ts(float(bar["timestamp"]))
+        self._last_1m_bar = dict(bar)
+        self._recent_1m_bars.append(dict(bar))
         self._vp1h.update(bar)
         self._vp4h.update(bar)
         self._vp24h.update(bar)
@@ -299,9 +404,17 @@ class ContextCacheSimulator:
         self._update_ob(self._bars_1h, self._ob_1h, self.config.ob_swing_1h)
 
     def _update_ob(self, bars: list[dict[str, float]], cache: dict[str, Any], swing_n: int) -> None:
+        current_idx = len(bars) - 1
+        current = bars[-1]
+        for side, ob in list(cache.items()):
+            if not ob:
+                continue
+            if side == "bullish" and float(current["close"]) < parse_float(ob.get("low")):
+                ob["invalidated_flag"] = True
+            if side == "bearish" and float(current["close"]) > parse_float(ob.get("high")):
+                ob["invalidated_flag"] = True
         if len(bars) < swing_n + 2:
             return
-        current = bars[-1]
         prior = bars[-swing_n - 1:-1]
         previous_swing_high = max(float(bar["high"]) for bar in prior)
         previous_swing_low = min(float(bar["low"]) for bar in prior)
@@ -309,17 +422,18 @@ class ContextCacheSimulator:
         body = abs(float(current["close"]) - float(current["open"]))
         open_price = float(current["open"])
         pct = (float(current["close"]) / open_price - 1.0) if open_price > 0 else 0.0
+        displacement = max(body / atr, abs(pct) / 0.003) if atr > 0 else abs(pct) / 0.003
         bullish = float(current["close"]) > previous_swing_high and (body >= 0.5 * atr or pct >= 0.003)
         bearish = float(current["close"]) < previous_swing_low and (body >= 0.5 * atr or pct <= -0.003)
         search = bars[:-1]
         if bullish:
             candle = next((bar for bar in reversed(search) if float(bar["close"]) < float(bar["open"])), None)
             if candle:
-                cache["bullish"] = {"type": "BULLISH_OB", "low": float(candle["low"]), "high": float(candle["high"])}
+                cache["bullish"] = {"type": "BULLISH_OB", "low": float(candle["low"]), "high": float(candle["high"]), "created_bar_index": current_idx, "displacement_strength": round(displacement, 8), "invalidated_flag": False}
         if bearish:
             candle = next((bar for bar in reversed(search) if float(bar["close"]) > float(bar["open"])), None)
             if candle:
-                cache["bearish"] = {"type": "BEARISH_OB", "low": float(candle["low"]), "high": float(candle["high"])}
+                cache["bearish"] = {"type": "BEARISH_OB", "low": float(candle["low"]), "high": float(candle["high"]), "created_bar_index": current_idx, "displacement_strength": round(displacement, 8), "invalidated_flag": False}
 
     def _label_candidate(self, candidate: Mapping[str, Any], status_override: str | None = None) -> dict[str, Any]:
         candidate_ts = parse_float(candidate.get("_context_ts"))
@@ -347,8 +461,10 @@ class ContextCacheSimulator:
             or labels.get("near_local_1h_low_flag")
             or labels.get("near_local_1h_high_flag")
         )
-        labels.update(_ob_labels(self._ob_15m, price, direction, self._atr_15m, "15m", self.config.order_block_threshold_min_u))
-        labels.update(_ob_labels(self._ob_1h, price, direction, self._atr_15m, "1h", self.config.order_block_threshold_min_u))
+        labels.update(_ob_labels(self._ob_15m, price, direction, self._atr_15m, "15m", self.config.order_block_threshold_min_u, len(self._bars_15m) - 1, 32))
+        labels.update(_ob_labels(self._ob_1h, price, direction, self._atr_15m, "1h", self.config.order_block_threshold_min_u, len(self._bars_1h) - 1, 24))
+        labels.update(_aggression_quality_labels(None, [], direction))
+        labels.update(_session_labels(candidate_ts, self._session_start_ts))
         labels.update(_book_proxy_labels(candidate))
         return labels
 
@@ -468,6 +584,8 @@ def _status_only(status: str, candidate: Mapping[str, Any]) -> dict[str, Any]:
     labels.update(_local_unavailable("1h", 12))
     labels.update(_ob_unavailable("15m"))
     labels.update(_ob_unavailable("1h"))
+    labels.update(_aggression_quality_labels(None, [], str(candidate.get("direction") or "")))
+    labels.update(_session_labels(parse_float(candidate.get("_context_ts")), 0.0))
     labels.update(_book_proxy_labels(candidate))
     return labels
 
@@ -497,16 +615,29 @@ def _bar_copy(bar: Mapping[str, float]) -> dict[str, float]:
 def _compute_boll(bars: list[dict[str, float]], config: IcebergContextConfig, label: str) -> dict[str, Any]:
     if len(bars) < config.boll_period:
         return _boll_unavailable(label)
+    def width_at(end: int) -> float:
+        sample = bars[end - config.boll_period:end]
+        closes = [float(bar["close"]) for bar in sample]
+        mid_v = sum(closes) / len(closes)
+        std_v = statistics.pstdev(closes) if len(closes) > 1 else 0.0
+        return ((mid_v + config.boll_std * std_v) - (mid_v - config.boll_std * std_v)) / mid_v if mid_v > 0 else 0.0
     closes = [float(bar["close"]) for bar in bars[-config.boll_period:]]
     mid = sum(closes) / len(closes)
     std = statistics.pstdev(closes) if len(closes) > 1 else 0.0
     upper = mid + config.boll_std * std
     lower = mid - config.boll_std * std
-    return {"lower": lower, "mid": mid, "upper": upper, "band_width": upper - lower}
+    width_pct = (upper - lower) / mid if mid > 0 else 0.0
+    start = max(config.boll_period, len(bars) - 99)
+    history = [width_at(end) for end in range(start, len(bars) + 1)]
+    percentile = _percentile_rank(history, width_pct) if history else 0.0
+    return {
+        "lower": lower, "mid": mid, "upper": upper, "band_width": upper - lower, "band_width_pct": width_pct,
+        "band_width_percentile": percentile, "squeeze_flag": percentile <= 0.20, "expansion_flag": percentile >= 0.80,
+    }
 
 
 def _boll_unavailable(label: str) -> dict[str, Any]:
-    return {"lower": 0.0, "mid": 0.0, "upper": 0.0, "band_width": 0.0, "label": label}
+    return {"lower": 0.0, "mid": 0.0, "upper": 0.0, "band_width": 0.0, "band_width_pct": 0.0, "band_width_percentile": 0.0, "squeeze_flag": False, "expansion_flag": False, "label": label}
 
 
 def _boll_labels(cache: Mapping[str, Any], price: float, label: str) -> dict[str, Any]:
@@ -539,6 +670,10 @@ def _boll_labels(cache: Mapping[str, Any], price: float, label: str) -> dict[str
         f"boll_{label}_upper": round(upper, 8),
         f"boll_{label}_pct_b": round(pct_b, 8),
         f"boll_{label}_band_width": round(max(0.0, width), 8),
+        f"boll_{label}_band_width_pct": round(parse_float(cache.get("band_width_pct")), 8),
+        f"boll_{label}_band_width_percentile": round(parse_float(cache.get("band_width_percentile")), 8),
+        f"boll_{label}_squeeze_flag": parse_bool(cache.get("squeeze_flag")),
+        f"boll_{label}_expansion_flag": parse_bool(cache.get("expansion_flag")),
         f"boll_{label}_position": position,
         f"boll_{label}_distance_to_lower_u": round(price - lower, 8) if price > 0 and lower > 0 else 0.0,
         f"boll_{label}_distance_to_mid_u": round(price - mid, 8) if price > 0 and mid > 0 else 0.0,
@@ -614,6 +749,10 @@ def _compute_vp_cache(hist: Mapping[float, float], value_area_ratio: float) -> d
                 selected.add(ordered_bins[upper_idx])
                 running += upper_volume
                 upper_idx += 1
+    hvn_threshold = _percentile_value(list(positive.values()), 0.80)
+    lvn_threshold = _percentile_value(list(positive.values()), 0.20)
+    hvn_bins = [price_bin for price_bin, volume in positive.items() if volume >= hvn_threshold]
+    lvn_bins = [price_bin for price_bin, volume in positive.items() if volume <= lvn_threshold]
     return {
         "poc": round(poc, 8),
         "val": round(min(selected), 8),
@@ -626,8 +765,20 @@ def _compute_vp_cache(hist: Mapping[float, float], value_area_ratio: float) -> d
         "distance_to_poc_u": 0.0,
         "distance_to_val_u": 0.0,
         "distance_to_vah_u": 0.0,
+        "nearest_hvn": 0.0,
+        "nearest_lvn": 0.0,
+        "distance_to_hvn_u": 0.0,
+        "distance_to_lvn_u": 0.0,
+        "near_hvn_flag": False,
+        "near_lvn_flag": False,
+        "node_context": "VP_UNAVAILABLE",
+        "value_area_width_u": round(max(0.0, max(selected) - min(selected)), 8),
+        "value_area_width_pct": 0.0,
+        "value_area_width_atr": 0.0,
         "price_percentile": 0.0,
         "_hist": positive,
+        "_hvn_bins": hvn_bins,
+        "_lvn_bins": lvn_bins,
     }
 
 
@@ -644,36 +795,66 @@ def _vp_unavailable() -> dict[str, Any]:
         "distance_to_poc_u": 0.0,
         "distance_to_val_u": 0.0,
         "distance_to_vah_u": 0.0,
+        "nearest_hvn": 0.0,
+        "nearest_lvn": 0.0,
+        "distance_to_hvn_u": 0.0,
+        "distance_to_lvn_u": 0.0,
+        "near_hvn_flag": False,
+        "near_lvn_flag": False,
+        "node_context": "VP_UNAVAILABLE",
+        "value_area_width_u": 0.0,
+        "value_area_width_pct": 0.0,
+        "value_area_width_atr": 0.0,
         "price_percentile": 0.0,
         "_hist": {},
+        "_hvn_bins": [],
+        "_lvn_bins": [],
     }
 
 
-def _classify_vp_price(cache: Mapping[str, Any], price: float, threshold: float, bin_size: float) -> dict[str, Any]:
+def _classify_vp_price(cache: Mapping[str, Any], price: float, threshold: float, bin_size: float, atr_15m: float = 0.0) -> dict[str, Any]:
     poc = parse_float(cache.get("poc"))
     val = parse_float(cache.get("val"))
     vah = parse_float(cache.get("vah"))
     total = parse_float(cache.get("total_volume"))
     if price <= 0 or total <= 0 or poc <= 0:
-        return {"location": cache.get("location") or "VP_UNAVAILABLE", "nearest_node_type": "NONE"}
+        return {
+            "location": cache.get("location") or "VP_UNAVAILABLE",
+            "nearest_node_type": "NONE",
+            "node_context": cache.get("node_context") or "VP_UNAVAILABLE",
+        }
+    hist = dict(cache.get("_hist") or {})
+    hvn_bins = list(cache.get("_hvn_bins") or [])
+    lvn_bins = list(cache.get("_lvn_bins") or [])
+    nearest_hvn = _nearest(price, hvn_bins)
+    nearest_lvn = _nearest(price, lvn_bins)
     distances = {
         "distance_to_poc_u": abs(price - poc),
         "distance_to_val_u": abs(price - val),
         "distance_to_vah_u": abs(price - vah),
+        "distance_to_hvn_u": abs(price - nearest_hvn) if nearest_hvn > 0 else 0.0,
+        "distance_to_lvn_u": abs(price - nearest_lvn) if nearest_lvn > 0 else 0.0,
     }
+    near_hvn = nearest_hvn > 0 and distances["distance_to_hvn_u"] <= threshold
+    near_lvn = nearest_lvn > 0 and distances["distance_to_lvn_u"] <= threshold
     if distances["distance_to_val_u"] <= threshold:
         location = "NEAR_VAL"
     elif distances["distance_to_vah_u"] <= threshold:
         location = "NEAR_VAH"
     elif distances["distance_to_poc_u"] <= threshold:
         location = "NEAR_POC"
-    elif val <= price <= vah:
-        location = "INSIDE_VALUE_AREA"
+    elif near_lvn:
+        location = "NEAR_LVN"
+    elif near_hvn:
+        location = "NEAR_HVN"
+    elif price > vah:
+        location = "OUTSIDE_VALUE_ABOVE"
     elif price < val:
         location = "OUTSIDE_VALUE_BELOW"
+    elif val <= price <= vah:
+        location = "INSIDE_VALUE_AREA"
     else:
-        location = "OUTSIDE_VALUE_ABOVE"
-    hist = dict(cache.get("_hist") or {})
+        location = "UNKNOWN"
     current_bin = round(math.floor(price / bin_size) * bin_size, 8)
     volumes = sorted(hist.values())
     volume = hist.get(current_bin, 0.0)
@@ -692,12 +873,41 @@ def _classify_vp_price(cache: Mapping[str, Any], price: float, threshold: float,
     below = sum(v for k, v in hist.items() if k < current_bin)
     at = hist.get(current_bin, 0.0)
     price_percentile = (below + at * 0.5) / total if total > 0 else 0.0
+    width = max(0.0, vah - val)
     return {
         "location": location,
         "nearest_node_type": node,
+        "nearest_hvn": round(nearest_hvn, 8),
+        "nearest_lvn": round(nearest_lvn, 8),
+        "near_hvn_flag": near_hvn,
+        "near_lvn_flag": near_lvn,
+        "node_context": location,
+        "value_area_width_u": round(width, 8),
+        "value_area_width_pct": round(width / price, 8) if price > 0 else 0.0,
+        "value_area_width_atr": round(width / atr_15m, 8) if atr_15m > 0 else 0.0,
         **{key: round(value, 8) for key, value in distances.items()},
         "price_percentile": round(price_percentile, 8),
     }
+
+
+def _nearest(price: float, values: Iterable[float]) -> float:
+    vals = [parse_float(v) for v in values if parse_float(v) > 0]
+    return min(vals, key=lambda value: abs(price - value), default=0.0)
+
+
+def _percentile_value(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, math.ceil(q * len(ordered)) - 1))
+    return ordered[idx]
+
+
+def _percentile_rank(values: list[float], value: float) -> float:
+    clean = [float(v) for v in values if float(v) >= 0]
+    if not clean:
+        return 0.0
+    return sum(1 for v in clean if v <= value) / len(clean)
 
 
 def _utc_session(ts: float) -> tuple[str, float]:
@@ -759,6 +969,8 @@ def _local_labels(cache: Mapping[str, Any], price: float, direction: str, atr_15
     return {
         f"local_{label}_low_{lookback}": round(low, 8),
         f"local_{label}_high_{lookback}": round(high, 8),
+        f"previous_local_{label}_low_{lookback}": round(prev_low, 8),
+        f"previous_local_{label}_high_{lookback}": round(prev_high, 8),
         f"local_{label}_position_{lookback}": position,
         f"near_local_{label}_low_flag": near_low,
         f"near_local_{label}_high_flag": near_high,
@@ -767,7 +979,7 @@ def _local_labels(cache: Mapping[str, Any], price: float, direction: str, atr_15
     }
 
 
-def _ob_labels(cache: Mapping[str, Any], price: float, direction: str, atr_15m: float, label: str, min_threshold: float) -> dict[str, Any]:
+def _ob_labels(cache: Mapping[str, Any], price: float, direction: str, atr_15m: float, label: str, min_threshold: float, current_index: int = 0, fresh_bars: int = 0) -> dict[str, Any]:
     side = "bullish" if direction == "BUY" else "bearish"
     ob = cache.get(side)
     if not ob:
@@ -784,6 +996,8 @@ def _ob_labels(cache: Mapping[str, Any], price: float, direction: str, atr_15m: 
         distance = min(abs(price - low), abs(price - high)) if price > 0 else 0.0
         inside = False
     near = bool(inside or (price > 0 and distance <= threshold))
+    age = max(0, int(current_index) - int(parse_float(ob.get("created_bar_index"))))
+    invalidated = parse_bool(ob.get("invalidated_flag"))
     return {
         f"order_block_{label}_type": str(ob.get("type") or "OB_UNAVAILABLE"),
         f"order_block_{label}_low": round(low, 8),
@@ -791,6 +1005,10 @@ def _ob_labels(cache: Mapping[str, Any], price: float, direction: str, atr_15m: 
         f"order_block_{label}_distance_u": round(distance, 8),
         f"inside_order_block_{label}_flag": inside,
         f"near_order_block_{label}_flag": near,
+        f"order_block_{label}_age_bars": age,
+        f"order_block_{label}_displacement_strength": round(parse_float(ob.get("displacement_strength")), 8),
+        f"order_block_{label}_invalidated_flag": invalidated,
+        f"order_block_{label}_fresh_flag": bool(fresh_bars and age <= fresh_bars and not invalidated),
     }
 
 
@@ -802,8 +1020,76 @@ def _ob_unavailable(label: str) -> dict[str, Any]:
         f"order_block_{label}_distance_u": 0.0,
         f"inside_order_block_{label}_flag": False,
         f"near_order_block_{label}_flag": False,
+        f"order_block_{label}_age_bars": 0,
+        f"order_block_{label}_displacement_strength": 0.0,
+        f"order_block_{label}_invalidated_flag": False,
+        f"order_block_{label}_fresh_flag": False,
     }
 
+
+
+def _aggression_quality_labels(bar: Mapping[str, Any] | None, recent_bars: list[Mapping[str, Any]], direction: str) -> dict[str, Any]:
+    if not bar:
+        return {
+            "a3_aggression_score": 0.0, "a3_aggression_quality": "UNAVAILABLE", "a3_body_strength": 0.0,
+            "a3_range_expansion_ratio": 0.0, "a3_volume_zscore": 0.0, "a3_close_location_score": 0.0,
+            "a3_no_quick_return_post_event_flag": False, "a3_failed_quick_return_post_event_flag": False,
+            "a3_taker_imbalance_score": 0.0, "a3_delta_flip_flag": False, "a3_cvd_pressure_score": 0.0,
+        }
+    high = parse_float(bar.get("high")); low = parse_float(bar.get("low")); open_ = parse_float(bar.get("open")); close = parse_float(bar.get("close"))
+    rng = max(high - low, 0.0)
+    body_strength = min(abs(close - open_) / rng, 1.0) if rng > 0 else 0.0
+    if direction == "BUY" and rng > 0:
+        close_loc = (close - low) / rng
+    elif direction == "SELL" and rng > 0:
+        close_loc = (high - close) / rng
+    else:
+        close_loc = 0.0
+    ranges = [max(parse_float(b.get("high")) - parse_float(b.get("low")), 0.0) for b in recent_bars[:-1]][-20:]
+    avg_range = sum(ranges) / len(ranges) if ranges else 0.0
+    range_ratio = rng / avg_range if avg_range > 0 else 0.0
+    vols = [parse_float(b.get("volume")) for b in recent_bars[:-1]][-20:]
+    avg_vol = sum(vols) / len(vols) if vols else 0.0
+    std_vol = statistics.pstdev(vols) if len(vols) > 1 else 0.0
+    volume = parse_float(bar.get("volume"))
+    vol_z = max(0.0, (volume - avg_vol) / std_vol) if std_vol > 0 else (1.0 if avg_vol > 0 and volume > avg_vol else 0.0)
+    score = 0.30 * body_strength + 0.25 * close_loc + 0.25 * min(vol_z / 3.0, 1.0) + 0.20 * min(range_ratio / 2.0, 1.0)
+    if score >= 0.75:
+        quality = "STRONG"
+    elif score >= 0.50:
+        quality = "MEDIUM"
+    elif score > 0:
+        quality = "WEAK"
+    else:
+        quality = "UNAVAILABLE"
+    taker_buy = parse_float(bar.get("taker_buy_volume")) or parse_float(bar.get("takerBuyVolume"))
+    taker_sell = parse_float(bar.get("taker_sell_volume")) or parse_float(bar.get("takerSellVolume"))
+    denom = taker_buy + taker_sell
+    imbalance = (taker_buy - taker_sell) / denom if denom > 0 else 0.0
+    return {
+        "a3_aggression_score": round(score, 8), "a3_aggression_quality": quality,
+        "a3_body_strength": round(body_strength, 8), "a3_range_expansion_ratio": round(range_ratio, 8),
+        "a3_volume_zscore": round(vol_z, 8), "a3_close_location_score": round(close_loc, 8),
+        "a3_no_quick_return_post_event_flag": False, "a3_failed_quick_return_post_event_flag": False,
+        "a3_taker_imbalance_score": round(imbalance, 8), "a3_delta_flip_flag": False, "a3_cvd_pressure_score": 0.0,
+    }
+
+
+def _session_labels(ts: float, session_start_ts: float) -> dict[str, Any]:
+    if ts <= 0:
+        return {"session_utc": "UNKNOWN", "session_elapsed_minutes": 0.0, "session_bucket": "UNKNOWN", "is_weekend_flag": False}
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    session, start = _utc_session(ts)
+    session_name = session.split("-")[-1]
+    start_ts = session_start_ts if session_start_ts > 0 else start
+    elapsed = max(0.0, (ts - start_ts) / 60.0)
+    part = "EARLY" if elapsed < 160 else ("MID" if elapsed < 320 else "LATE")
+    return {
+        "session_utc": session_name,
+        "session_elapsed_minutes": round(elapsed, 8),
+        "session_bucket": f"{session_name}_{part}" if session_name in {"ASIA", "EUROPE", "US"} else "UNKNOWN",
+        "is_weekend_flag": dt.weekday() >= 5,
+    }
 
 def _book_proxy_labels(row: Mapping[str, Any]) -> dict[str, Any]:
     usable = False

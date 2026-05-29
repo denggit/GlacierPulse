@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""Offline zone-level truth aggregation for V6.3.11.5."""
+"""Offline V7.2.1 ICEBERG 3A context research and zone truth aggregation."""
 
 from .aggregator import ZoneTruthAggregator
 from .analyzer import ZoneTruthAnalyzer

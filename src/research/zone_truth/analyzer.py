@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import bisect
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -11,6 +12,7 @@ from config import research_evaluator as cfg
 from src.research.a1_edge.io_utils import normalize_klines, read_csv, read_jsonl, write_csv, write_json
 from src.research.a1_edge.schema import parse_bool, parse_float
 from src.research.context import IcebergContextConfig, build_context_summary_rows, label_iceberg_contexts
+from src.research.context.iceberg_context_labels import _aggression_quality_labels
 
 from .a2_accumulation_v2 import attach_a2_accumulation_path_v2
 from .a3_aggression_v2 import attach_a3_aggression_v2
@@ -19,7 +21,7 @@ from .a2_state import ZoneA2StateClassifier
 from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, bad_combos, build_combo_matrix, combo_summary, group_stats, is_valid_simulated_trade, top_combos
 from .forward import ZoneForwardMetricsCalculator
 from .market_context import ZoneMarketContextCalculator
-from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS
+from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS
 from .trade_simulator import simulate_3a_proxy_trades
 
 
@@ -107,6 +109,30 @@ CONTEXT_SUMMARY_METRIC_FIELDS = [
     "median_realized_r_proxy",
 ]
 
+CONTEXT_COMBO_FIELDS = [
+    "direction",
+    "vp24h_proxy_node_context",
+    "vpsession_proxy_node_context",
+    "vpsession_reclaim_value_post_event_flag",
+    "vp24h_reclaim_value_post_event_flag",
+    "failed_auction_15m_post_event_flag",
+    "failed_auction_1h_post_event_flag",
+    "order_block_15m_type",
+    "order_block_15m_fresh_flag",
+    "a3_aggression_quality",
+]
+
+SHADOW_EVIDENCE_EVENT_FIELDS = [
+    "zone_id", "symbol", "direction", "a1_primary_evidence_type", "a1_evidence_types",
+    "visible_wall_absorption_flag", "cluster_absorption_flag", "ladder_absorption_flag",
+    "failed_wall_flag", "spoofing_withdrawal_flag", "visible_wall_start_depth_usdt",
+    "visible_wall_end_depth_usdt", "visible_wall_consumption_ratio", "visible_wall_survival_ratio",
+    "visible_wall_withdrawal_excess_ratio", "visible_wall_absorbed_notional_proxy",
+    "cluster_best_window_sec", "cluster_best_active_notional", "cluster_best_event_count",
+    "cluster_best_price_efficiency", "ladder_level_count", "ladder_core_low", "ladder_core_high",
+    "ladder_sweep_extreme", "ladder_absorption_score", "a1_evidence_v2_reason",
+]
+
 
 class ZoneTruthAnalyzer:
     def __init__(
@@ -165,6 +191,7 @@ class ZoneTruthAnalyzer:
         rows = [attach_a3_aggression_v2(row) for row in rows]
         rows = self.attach_context_labels(rows, kline_records)
         normalized_bars = normalize_klines(kline_records, kline_timezone=self.timezone) if kline_records else []
+        rows = self.attach_post_event_context_labels(rows, normalized_bars)
         simulated_trades = (
             simulate_3a_proxy_trades(rows, normalized_bars)
             if bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True))
@@ -173,7 +200,7 @@ class ZoneTruthAnalyzer:
         combo_matrix_rows = build_combo_matrix(simulated_trades)
         top_combo_rows = top_combos(combo_matrix_rows)
         bad_combo_rows = bad_combos(combo_matrix_rows)
-        write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
+        write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_direction.csv", self.group_rows(rows, "direction"), ["direction"] + GROUP_METRIC_FIELDS)
@@ -209,39 +236,48 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a3_after_a2_structural_realized_outcome_1h.csv", self.group_rows(rows, "a3_after_a2_structural_realized_outcome_1h"), ["a3_after_a2_structural_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_structural_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_structural_realized_r_proxy_1h_bucket"), ["a3_after_a2_structural_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_structural_improved.csv", self.group_rows(rows, "a3_after_a2_structural_improved_flag"), ["a3_after_a2_structural_improved_flag"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_shadow_evidence.csv", self.group_rows(rows, "a1_primary_evidence_type"), ["a1_primary_evidence_type"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_shadow_evidence.csv", self.group_rows(rows, "a1_evidence_types"), ["a1_evidence_types"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_shadow_evidence_events.csv", self.shadow_evidence_rows(rows), SHADOW_EVIDENCE_EVENT_FIELDS)
         write_csv(out / "zone_truth_by_a2_accumulation_path_v2.csv", self.group_rows(rows, "a2_accumulation_path_v2"), ["a2_accumulation_path_v2"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_aggression_type_v2.csv", self.group_rows(rows, "a3_aggression_type_v2"), ["a3_aggression_type_v2"] + GROUP_METRIC_FIELDS)
+        iceberg_rows = self.iceberg_context_rows(rows)
         write_csv(
             out / "zone_truth_by_boll_context.csv",
-            build_context_summary_rows(rows, ["direction", "boll_15m_position", "boll_1h_position"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "boll_15m_position", "boll_1h_position"]),
             ["direction", "boll_15m_position", "boll_1h_position"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_vp_context.csv",
-            build_context_summary_rows(rows, ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"]),
             ["direction", "vp24h_proxy_location", "vp4h_proxy_location", "vp1h_proxy_location", "vpsession_proxy_location"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_local_structure_context.csv",
-            build_context_summary_rows(rows, ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"]),
             ["direction", "near_local_15m_low_flag", "near_local_15m_high_flag", "sweep_local_15m_low_flag", "sweep_local_15m_high_flag", "near_local_1h_low_flag", "near_local_1h_high_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_order_block_context.csv",
-            build_context_summary_rows(rows, ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"]),
             ["direction", "order_block_15m_type", "inside_order_block_15m_flag", "near_order_block_15m_flag", "order_block_1h_type", "inside_order_block_1h_flag", "near_order_block_1h_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_book_liquidity_proxy_context.csv",
-            build_context_summary_rows(rows, ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"]),
+            build_context_summary_rows(iceberg_rows, ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"]),
             ["direction", "book_blocking_liquidity_proxy_strength", "visible_depth_proxy_flag", "reload_wall_proxy_flag", "passive_absorption_proxy_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
         write_csv(
             out / "zone_truth_by_context_combo.csv",
-            build_context_summary_rows(rows, ["direction", "boll_15m_position", "vp24h_proxy_location", "order_block_15m_type", "near_local_structure_flag", "book_blocking_liquidity_proxy_strength"], min_count=5),
-            ["direction", "boll_15m_position", "vp24h_proxy_location", "order_block_15m_type", "near_local_structure_flag", "book_blocking_liquidity_proxy_strength"] + CONTEXT_SUMMARY_METRIC_FIELDS,
+            build_context_summary_rows(iceberg_rows, CONTEXT_COMBO_FIELDS, min_count=5),
+            CONTEXT_COMBO_FIELDS + CONTEXT_SUMMARY_METRIC_FIELDS,
         )
+        write_csv(out / "zone_truth_by_vp_node_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"]), ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_value_edge_reclaim_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_post_event_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_post_event_flag"]), ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_post_event_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_post_event_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_sweep_failed_auction_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "failed_auction_15m_post_event_flag", "failed_auction_1h_post_event_flag"]), ["direction", "failed_auction_15m_post_event_flag", "failed_auction_1h_post_event_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_aggression_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "a3_aggression_quality"]), ["direction", "a3_aggression_quality"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_session_context.csv", build_context_summary_rows(iceberg_rows, ["session_utc", "session_bucket", "is_weekend_flag"]), ["session_utc", "session_bucket", "is_weekend_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_ob_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"]), ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_poc_risk_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"]), ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_1h.csv", self.group_rows(rows, "trend_regime_1h"), ["trend_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_4h.csv", self.group_rows(rows, "trend_regime_4h"), ["trend_regime_4h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_trend_regime_enhanced_1h.csv", self.group_rows(rows, "trend_regime_enhanced_1h"), ["trend_regime_enhanced_1h"] + GROUP_METRIC_FIELDS)
@@ -249,7 +285,7 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_trend_alignment.csv", self.group_rows(rows, "trend_alignment"), ["trend_alignment"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_volume_regime_1h.csv", self.group_rows(rows, "volume_regime_1h"), ["volume_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_volatility_regime_1h.csv", self.group_rows(rows, "volatility_regime_1h"), ["volatility_regime_1h"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_EVENT_WITH_CONTEXT_FIELDS)
+        write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_match_quality.csv", self.match_quality(rows, aggregator.unmatched_pie_count), ["match_quality"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_3a_simulated_trades.csv", simulated_trades, V7_SIMULATED_TRADE_FIELDS)
         write_csv(out / "zone_truth_by_entry_model.csv", self.group_simulated_trades(simulated_trades, "entry_model"), ["entry_model"] + COMBO_METRIC_FIELDS)
@@ -286,6 +322,101 @@ class ZoneTruthAnalyzer:
             else:
                 row["context_labels_status"] = "NON_ICEBERG_ZONE"
         return enriched
+
+
+    @staticmethod
+    def iceberg_context_rows(rows: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        return [
+            row for row in rows
+            if parse_float(row.get("iceberg_pie_count")) > 0
+            or str(row.get("a1_primary_evidence_type") or "").upper() == "ICEBERG"
+        ]
+
+
+    def attach_post_event_context_labels(self, rows: list[Mapping[str, Any]], bars: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        out = [dict(row) for row in rows]
+        close_ts = [float(bar["timestamp"]) + 60.0 for bar in bars]
+        for row in out:
+            ts = self._row_context_ts(row)
+            idx = bisect.bisect_right(close_ts, ts)
+            future = bars[idx:idx + int(self.context_config.value_reclaim_lookahead_bars)] if idx < len(bars) else []
+            sweep_future = bars[idx:idx + int(self.context_config.sweep_reclaim_lookahead_bars)] if idx < len(bars) else []
+            direction = str(row.get("direction") or "").upper()
+            price = parse_float(row.get("iceberg_context_price"))
+            aggression_bar = future[0] if future else None
+            aggression_history = bars[max(0, idx - 20):idx] if aggression_bar else []
+            row.update(_aggression_quality_labels(aggression_bar, [*aggression_history, aggression_bar] if aggression_bar else [], direction))
+            for prefix in ("vpsession", "vp24h"):
+                row.update(self._value_edge_labels(row, future, direction, price, prefix))
+            for label, lookback in (("15m", 16), ("1h", 12)):
+                row.update(self._sweep_failed_auction_labels(row, sweep_future, direction, price, label, lookback))
+            self._attach_quick_return_labels(row, sweep_future, direction, price)
+        return out
+
+    def _value_edge_labels(self, row: dict[str, Any], future: list[Mapping[str, Any]], direction: str, price: float, prefix: str) -> dict[str, Any]:
+        val = parse_float(row.get(f"{prefix}_proxy_val")); vah = parse_float(row.get(f"{prefix}_proxy_vah"))
+        side = "INSIDE_VALUE"
+        level = 0.0
+        if direction == "BUY" and val > 0 and price > 0 and price < val:
+            side = "BELOW_VAL"; level = val
+        elif direction == "SELL" and vah > 0 and price > 0 and price > vah:
+            side = "ABOVE_VAH"; level = vah
+        outside = side in {"BELOW_VAL", "ABOVE_VAH"}
+        bars_to = 0; reclaimed = False
+        if outside:
+            for i, bar in enumerate(future, start=1):
+                close = parse_float(bar.get("close"))
+                if (direction == "BUY" and close >= level) or (direction == "SELL" and close <= level):
+                    bars_to = i; reclaimed = True; break
+        return {
+            f"{prefix}_value_edge_side": side if val > 0 or vah > 0 else "VP_UNAVAILABLE",
+            f"{prefix}_outside_value_flag": outside,
+            f"{prefix}_reclaim_value_post_event_flag": reclaimed,
+            f"{prefix}_reject_value_post_event_flag": False,
+            f"{prefix}_bars_to_reclaim": bars_to,
+            f"{prefix}_reclaim_level": round(level, 8),
+        }
+
+    def _sweep_failed_auction_labels(self, row: dict[str, Any], future: list[Mapping[str, Any]], direction: str, price: float, label: str, lookback: int) -> dict[str, Any]:
+        low = parse_float(row.get(f"previous_local_{label}_low_{lookback}"))
+        high = parse_float(row.get(f"previous_local_{label}_high_{lookback}"))
+        atr = parse_float(row.get("a3_structural_risk_u")) or parse_float(row.get("zone_v2_structural_risk_u"))
+        swept = False; level = 0.0; magnitude = 0.0
+        if direction == "BUY" and low > 0 and price > 0 and price < low:
+            swept = True; level = low; magnitude = low - price
+        elif direction == "SELL" and high > 0 and price > 0 and price > high:
+            swept = True; level = high; magnitude = price - high
+        reclaimed = False; bars_to = 0
+        if swept:
+            for i, bar in enumerate(future, start=1):
+                close = parse_float(bar.get("close"))
+                if (direction == "BUY" and close >= level) or (direction == "SELL" and close <= level):
+                    reclaimed = True; bars_to = i; break
+        return {
+            f"post_sweep_reclaim_{label}_post_event_flag": reclaimed,
+            f"bars_to_sweep_reclaim_{label}": bars_to,
+            f"sweep_reclaim_level_{label}": round(level, 8),
+            f"failed_auction_{label}_post_event_flag": reclaimed,
+            f"sweep_magnitude_{label}_u": round(magnitude, 8),
+            f"sweep_magnitude_{label}_atr": round(magnitude / atr, 8) if atr > 0 else 0.0,
+        }
+
+    def _attach_quick_return_labels(self, row: dict[str, Any], future: list[Mapping[str, Any]], direction: str, price: float) -> None:
+        if price <= 0 or not future or direction not in {"BUY", "SELL"}:
+            return
+        failed = any((direction == "BUY" and parse_float(bar.get("close")) < price) or (direction == "SELL" and parse_float(bar.get("close")) > price) for bar in future)
+        row["a3_failed_quick_return_post_event_flag"] = failed
+        row["a3_no_quick_return_post_event_flag"] = not failed
+
+    def shadow_evidence_rows(self, rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [{field: row.get(field, "") for field in SHADOW_EVIDENCE_EVENT_FIELDS} for row in rows if row.get("a1_evidence_types") or parse_bool(row.get("visible_wall_absorption_flag")) or parse_bool(row.get("cluster_absorption_flag")) or parse_bool(row.get("ladder_absorption_flag"))]
+
+    def _row_context_ts(self, row: Mapping[str, Any]) -> float:
+        for field in ("settle_ts", "settle_recv_ts", "trigger_ts", "first_iceberg_pie_ts", "best_pie_ts", "first_seen_ts"):
+            value = parse_float(row.get(field))
+            if value > 0:
+                return value
+        return 0.0
 
     def summary(self, rows: list[Mapping[str, Any]], unmatched_pie_count: int = 0) -> dict[str, Any]:
         total = len(rows)
@@ -583,7 +714,7 @@ class ZoneTruthAnalyzer:
     @staticmethod
     def _write_summary_md(path: Path, summary: Mapping[str, Any]) -> None:
         lines = [
-            "# V7.0.0 Zone Truth 3A Full Research Loop Shadow",
+            "# V7.2.1 ICEBERG 3A Context Research",
             "",
             f"- total_zones: {summary.get('total_zones')}",
             f"- exact_matched_zones: {summary.get('exact_matched_zones')}",
