@@ -271,15 +271,18 @@ class ContextCacheSimulator:
         return result
 
     def _update_1m(self, bar: Mapping[str, float]) -> None:
-        session_id, session_start = _utc_session(float(bar["timestamp"]))
-        if session_id != self._session_id:
-            self._session_id = session_id
-            self._session_start_ts = session_start
-            self._vpsession.reset()
+        self._ensure_session_for_ts(float(bar["timestamp"]))
         self._vp1h.update(bar)
         self._vp4h.update(bar)
         self._vp24h.update(bar)
         self._vpsession.update(bar)
+
+    def _ensure_session_for_ts(self, ts: float) -> None:
+        session_id, session_start = _utc_session(ts)
+        if session_id != self._session_id:
+            self._session_id = session_id
+            self._session_start_ts = session_start
+            self._vpsession.reset()
 
     def _update_15m(self, bar: Mapping[str, float]) -> None:
         self._bars_15m.append(dict(bar))
@@ -319,6 +322,8 @@ class ContextCacheSimulator:
                 cache["bearish"] = {"type": "BEARISH_OB", "low": float(candle["low"]), "high": float(candle["high"])}
 
     def _label_candidate(self, candidate: Mapping[str, Any], status_override: str | None = None) -> dict[str, Any]:
+        candidate_ts = parse_float(candidate.get("_context_ts"))
+        self._ensure_session_for_ts(candidate_ts)
         direction = str(candidate.get("direction") or "").upper()
         price = parse_float(candidate.get("iceberg_context_price"))
         labels = {
@@ -332,8 +337,8 @@ class ContextCacheSimulator:
         labels.update(self._vp1h.labels(price, self._atr_15m, "vp1h_proxy"))
         labels.update(self._vp4h.labels(price, self._atr_15m, "vp4h_proxy"))
         labels.update(self._vp24h.labels(price, self._atr_15m, "vp24h_proxy"))
-        session_elapsed = max(0.0, parse_float(candidate.get("_context_ts")) - self._session_start_ts)
-        labels.update(self._vpsession.labels(price, self._atr_15m, "vpsession_proxy", insufficient=session_elapsed < 3600))
+        session_volume = parse_float(self._vpsession.cache.get("total_volume"))
+        labels.update(self._vpsession.labels(price, self._atr_15m, "vpsession_proxy", insufficient=session_volume <= 0))
         labels.update(_local_labels(self._local_15m, price, direction, self._atr_15m, "15m", 16))
         labels.update(_local_labels(self._local_1h, price, direction, self._atr_15m, "1h", 12))
         labels["near_local_structure_flag"] = bool(

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import csv
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.research.context import ContextCacheSimulator, IcebergContextConfig, label_iceberg_contexts
@@ -103,6 +104,39 @@ def test_context_cache_simulator_does_not_use_open_1m_bar_until_close():
     assert labels["inside_second_bar"]["vp1h_proxy_total_volume"] == 10
     assert labels["at_second_close"]["vp1h_proxy_poc"] == 200
     assert labels["at_second_close"]["vp1h_proxy_total_volume"] == 1010
+
+
+def test_vpsession_resets_at_utc_session_boundary_before_first_new_session_bar_closes():
+    # UTC session boundary: Asia 00:00-08:00, Europe 08:00-16:00.
+    asia_last_open = datetime(2026, 1, 1, 7, 59, tzinfo=timezone.utc).timestamp()
+    europe_first_open = datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc).timestamp()
+    rows = [
+        {"timestamp": asia_last_open, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1000},
+        {"timestamp": europe_first_open, "open": 200, "high": 200, "low": 200, "close": 200, "volume": 2000},
+    ]
+    labels = label_iceberg_contexts(
+        [
+            _candidate("at_boundary", europe_first_open, zone_lower=200, settle_price=200, trigger_price=200),
+            _candidate("before_europe_close", europe_first_open + 30, zone_lower=200, settle_price=200, trigger_price=200),
+            _candidate("at_europe_close", europe_first_open + 60, zone_lower=200, settle_price=200, trigger_price=200),
+        ],
+        rows,
+    )
+
+    assert labels["at_boundary"]["vp1h_proxy_poc"] == 100
+    assert labels["at_boundary"]["vp1h_proxy_total_volume"] == 1000
+    assert labels["at_boundary"]["vpsession_proxy_total_volume"] == 0
+    assert labels["at_boundary"]["vpsession_proxy_location"] == "VP_INSUFFICIENT_DATA"
+
+    assert labels["before_europe_close"]["vp1h_proxy_poc"] == 100
+    assert labels["before_europe_close"]["vp1h_proxy_total_volume"] == 1000
+    assert labels["before_europe_close"]["vpsession_proxy_total_volume"] == 0
+    assert labels["before_europe_close"]["vpsession_proxy_location"] == "VP_INSUFFICIENT_DATA"
+
+    assert labels["at_europe_close"]["vp1h_proxy_poc"] == 200
+    assert labels["at_europe_close"]["vp1h_proxy_total_volume"] == 3000
+    assert labels["at_europe_close"]["vpsession_proxy_poc"] == 200
+    assert labels["at_europe_close"]["vpsession_proxy_total_volume"] == 2000
 
 
 def test_vp_value_area_expands_contiguously_from_poc():
