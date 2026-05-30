@@ -160,3 +160,53 @@ def test_parse_levels_and_normalize_book_accept_supported_level_shapes():
     assert normalized is not None
     assert normalized["bids"] == [[100.0, 0.2], [99.5, 0.30000000000000004], [99.0, 0.0], [98.5, 0.0]]
     assert normalized["asks"] == [[101.0, 0.1], [102.0, 0.2]]
+
+
+def test_book_cleaner_push_timing_does_not_cross_generator_yield(monkeypatch, tmp_path):
+    clock = {"value": 100.0}
+
+    def fake_perf_counter():
+        return clock["value"]
+
+    class FakeCleaner:
+        def __init__(self, options, stats, profiler=None):
+            self.options = options
+            self.stats = stats
+            self.profiler = profiler
+
+        def push(self, raw_book):
+            clock["value"] += 0.001
+            return [{"bids": [[100.0, 1.0]], "asks": [], "ts": raw_book["ts"], "recv_ts": raw_book["recv_ts"]}]
+
+        def flush(self):
+            clock["value"] += 0.002
+            return []
+
+    def fake_rows(*args, **kwargs):
+        yield {"bids": [], "asks": [], "ts": 1.0, "recv_ts": 1.0, "_mode": "delta"}
+
+    monkeypatch.setattr(backtest.time, "perf_counter", fake_perf_counter)
+    monkeypatch.setattr(backtest, "BookEventCleaner", FakeCleaner)
+    monkeypatch.setattr(backtest, "iter_normalized_book_rows_from_file", fake_rows)
+
+    stats = backtest.Stats()
+    profiler = backtest.ReplayProfiler()
+    iterator = backtest.iter_book_events(
+        [tmp_path / "books.jsonl"],
+        "ETH-USDT-SWAP",
+        0.1,
+        stats,
+        backtest.BookCleaningOptions(),
+        backtest.TimeFilter(),
+        profiler=profiler,
+    )
+
+    event = next(iterator)
+    clock["value"] += 10.0
+    remaining = list(iterator)
+
+    assert event.kind == "book"
+    assert remaining == []
+    assert stats.raw_book_rows == 1
+    assert stats.books == 1
+    assert profiler.book_cleaner_push_sec == pytest.approx(0.003)

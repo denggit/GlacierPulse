@@ -1076,27 +1076,23 @@ def iter_book_events(
         try:
             stats.raw_book_rows += 1
             push_start = time.perf_counter()
-            for book in cleaner.push(raw_book):
-                if profiler is not None:
-                    profiler.book_cleaner_push_sec += time.perf_counter() - push_start
-                    push_start = time.perf_counter()
+            cleaned_books = list(cleaner.push(raw_book))
+            if profiler is not None:
+                profiler.book_cleaner_push_sec += time.perf_counter() - push_start
+            for book in cleaned_books:
                 seq += 1
                 stats.books += 1
                 yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
-            if profiler is not None:
-                profiler.book_cleaner_push_sec += time.perf_counter() - push_start
         except Exception:
             stats.malformed_rows += 1
     push_start = time.perf_counter()
-    for book in cleaner.flush():
-        if profiler is not None:
-            profiler.book_cleaner_push_sec += time.perf_counter() - push_start
-            push_start = time.perf_counter()
+    flushed_books = list(cleaner.flush())
+    if profiler is not None:
+        profiler.book_cleaner_push_sec += time.perf_counter() - push_start
+    for book in flushed_books:
         seq += 1
         stats.books += 1
         yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
-    if profiler is not None:
-        profiler.book_cleaner_push_sec += time.perf_counter() - push_start
 
 
 def iter_normalized_book_rows_from_file(
