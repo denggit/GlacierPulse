@@ -1076,7 +1076,7 @@ def iter_book_events(
         try:
             stats.raw_book_rows += 1
             push_start = time.perf_counter()
-            cleaned_books = list(cleaner.push(raw_book))
+            cleaned_books = cleaner.push(raw_book)
             if profiler is not None:
                 profiler.book_cleaner_push_sec += time.perf_counter() - push_start
             for book in cleaned_books:
@@ -1086,7 +1086,7 @@ def iter_book_events(
         except Exception:
             stats.malformed_rows += 1
     push_start = time.perf_counter()
-    flushed_books = list(cleaner.flush())
+    flushed_books = cleaner.flush()
     if profiler is not None:
         profiler.book_cleaner_push_sec += time.perf_counter() - push_start
     for book in flushed_books:
