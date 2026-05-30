@@ -82,3 +82,81 @@ def test_snapshot_depth_limit_keeps_only_top_400_levels():
     assert len(cleaner.prev_sent_asks_state) == 400
     assert min(cleaner.prev_sent_bids_state) == pytest.approx(601.0)
     assert max(cleaner.prev_sent_asks_state) == pytest.approx(1399.0)
+
+
+def _old_trim_path(state, side, depth_limit):
+    return backtest.levels_to_state(
+        backtest.sort_levels_from_state(state, side=side, depth_limit=depth_limit),
+        side=side,
+        depth_limit=depth_limit,
+    )
+
+
+@pytest.mark.parametrize("side", ["bids", "asks"])
+@pytest.mark.parametrize("depth_limit", [400, 10, 2000, 0, -1])
+def test_trim_state_to_depth_matches_old_sort_and_state_path(side, depth_limit):
+    state = {}
+    for idx in range(1000):
+        price = float(1000 + ((idx * 37) % 1000))
+        if idx % 17 == 0:
+            size = 0.0
+        elif idx % 29 == 0:
+            size = -float(idx + 1)
+        else:
+            size = float(idx + 1) / 10.0
+        state[price] = size
+
+    assert backtest.trim_state_to_depth(state, side=side, depth_limit=depth_limit) == _old_trim_path(state, side, depth_limit)
+
+
+def test_finalize_bucket_matches_old_path_for_snapshot_delta_delete_update_insert():
+    cleaner, _stats = _cleaner(bucket_ms=100.0, depth_limit=3)
+    cleaner.push(
+        _snapshot(
+            0.0,
+            bids=[[100.0, 1.0], [99.0, 2.0], [98.0, 3.0]],
+            asks=[[101.0, 1.0], [102.0, 2.0], [103.0, 3.0]],
+        )
+    )
+    cleaner.push(
+        _delta(
+            0.01,
+            bids=[[100.0, 0.0], [99.0, 5.0], [101.0, 4.0]],
+            asks=[[101.0, 0.0], [102.0, 6.0], [100.5, 7.0]],
+        )
+    )
+
+    expected_bids = _old_trim_path(cleaner.bucket_bids_state, "bids", cleaner.options.depth_limit)
+    expected_asks = _old_trim_path(cleaner.bucket_asks_state, "asks", cleaner.options.depth_limit)
+    expected_bid_delta, _ = backtest.diff_states(cleaner.prev_sent_bids_state, expected_bids, side="bids")
+    expected_ask_delta, _ = backtest.diff_states(cleaner.prev_sent_asks_state, expected_asks, side="asks")
+
+    emitted = cleaner.flush()
+
+    assert len(emitted) == 1
+    assert emitted[0]["bids"] == expected_bid_delta
+    assert emitted[0]["asks"] == expected_ask_delta
+    assert cleaner.prev_sent_bids_state == expected_bids
+    assert cleaner.prev_sent_asks_state == expected_asks
+
+
+def test_parse_levels_and_normalize_book_accept_supported_level_shapes():
+    options = backtest.BookCleaningOptions(event_mode="snapshot", depth_limit=10)
+    row = {
+        "ts": "1700000000000",
+        "bids": [
+            {"px": "100.0", "sz": "2"},
+            ("99.5", "3"),
+            ["99.0", "0", "ignored"],
+            {"price": "bad", "size": "4"},
+            ["98.5", ""],
+        ],
+        "asks": '[["101.0", "1", "0", "1"], {"price": "102.0", "size": "2"}]',
+        "action": "snapshot",
+    }
+
+    normalized = backtest.normalize_book(row, "ETH-USDT-SWAP", 0.1, options)
+
+    assert normalized is not None
+    assert normalized["bids"] == [[100.0, 0.2], [99.5, 0.30000000000000004], [99.0, 0.0], [98.5, 0.0]]
+    assert normalized["asks"] == [[101.0, 0.1], [102.0, 0.2]]

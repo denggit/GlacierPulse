@@ -21,7 +21,7 @@ def _write_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def _patch_empty_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     class Runtime:
-        def __init__(self, symbol, research_events_path):
+        def __init__(self, symbol, research_events_path, write_ignored_engine_returns=False, profiler=None):
             self.symbol = symbol
             self.research_events_path = research_events_path
             self.research_events_file = research_events_path.open("w", encoding="utf-8")
@@ -39,7 +39,7 @@ def _patch_empty_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         backtest,
         "build_events",
-        lambda trades_files, books_files, symbol, multiplier, stats, sort_in_memory, book_cleaning, time_filter: iter(()),
+        lambda trades_files, books_files, symbol, multiplier, stats, sort_in_memory, book_cleaning, time_filter, profiler=None: iter(()),
     )
 
 
@@ -220,6 +220,15 @@ def test_generate_reports_touches_missing_research_jsonl(tmp_path, monkeypatch):
     assert a1_reactions.exists()
     assert a1_reactions.read_text(encoding="utf-8") == ""
     assert str(a1_reactions) in summary["report_generation"]["created_empty_research_inputs"]
+    assert "replay_timing" in summary
+    assert "replay_rates" in summary
+    assert "book_cleaning_profile" in summary
+    assert summary["write_ignored_engine_returns"] is False
+    assert summary["skipped_ignored_engine_return_writes"] == 0
+    assert "book_cleaner_finalize_sec" in summary["replay_timing"]
+    assert "report_generation_sec" in summary["replay_timing"]
+    assert "bucket_push_count" in summary["book_cleaning_profile"]
+    assert "zero_delete_levels_total" in summary["book_cleaning_profile"]
 
 
 def test_generate_reports_failure_returns_nonzero_and_updates_summary(tmp_path, monkeypatch):
@@ -274,3 +283,76 @@ def test_report_generation_does_not_change_replay_runtime():
     assert "process_signal(" not in runtime_source
     assert '"mode": "research_only"' in module_source
     assert '"simulates_pnl": False' in module_source
+
+
+def test_ignored_engine_returns_default_count_only(tmp_path, monkeypatch):
+    path = tmp_path / "research_events.jsonl"
+    runtime = backtest.LocalA1ResearchRuntime.__new__(backtest.LocalA1ResearchRuntime)
+    runtime.research_config = SimpleNamespace(ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS=False)
+    runtime.write_ignored_engine_returns = False
+    runtime.profiler = backtest.ReplayProfiler()
+    runtime.research_events_file = path.open("w", encoding="utf-8")
+    stats = backtest.Stats()
+    try:
+        runtime.handle_research_event({"event_type": "DEBUG_RETURN"}, current_price=100.0, source="trade", stats=stats)
+    finally:
+        runtime.research_events_file.close()
+
+    assert stats.ignored_engine_returns == 1
+    assert stats.skipped_ignored_engine_return_writes == 1
+    assert path.read_text(encoding="utf-8") == ""
+
+
+def test_ignored_engine_returns_can_be_written_with_flag(tmp_path):
+    path = tmp_path / "research_events.jsonl"
+    runtime = backtest.LocalA1ResearchRuntime.__new__(backtest.LocalA1ResearchRuntime)
+    runtime.research_config = SimpleNamespace(ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS=False)
+    runtime.write_ignored_engine_returns = True
+    runtime.profiler = backtest.ReplayProfiler()
+    runtime.research_events_file = path.open("w", encoding="utf-8")
+    stats = backtest.Stats()
+    try:
+        runtime.handle_research_event({"event_type": "DEBUG_RETURN"}, current_price=100.0, source="trade", stats=stats)
+    finally:
+        runtime.research_events_file.close()
+
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert stats.ignored_engine_returns == 1
+    assert stats.skipped_ignored_engine_return_writes == 0
+    assert rows[0]["replay_ignored"] is True
+
+
+def test_iceberg_and_spoofing_events_still_write_research_events(tmp_path, monkeypatch):
+    path = tmp_path / "research_events.jsonl"
+    runtime = backtest.LocalA1ResearchRuntime.__new__(backtest.LocalA1ResearchRuntime)
+    runtime.research_config = SimpleNamespace(
+        ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS=False,
+        V62_LOG_A1_ICEBERG_EVENT_ENABLED=False,
+    )
+    runtime.write_ignored_engine_returns = False
+    runtime.profiler = backtest.ReplayProfiler()
+    runtime.research_events_file = path.open("w", encoding="utf-8")
+    monkeypatch.setattr(backtest, "logger", SimpleNamespace(info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None))
+    stats = backtest.Stats()
+    try:
+        runtime.handle_research_event(
+            {"event_type": "ICEBERG_ABSORPTION", "is_iceberg": True, "trigger_price": 100.0},
+            current_price=100.0,
+            source="trade",
+            stats=stats,
+        )
+        runtime.handle_research_event(
+            {"behavior": "SPOOFING_WITHDRAWAL", "hidden_volume": -10.0},
+            current_price=101.0,
+            source="book",
+            stats=stats,
+        )
+    finally:
+        runtime.research_events_file.close()
+
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["event_type"] == "ICEBERG_ABSORPTION"
+    assert rows[1]["behavior"] == "SPOOFING_WITHDRAWAL"
+    assert stats.a1_iceberg_events == 1
+    assert stats.spoofing_withdrawal_events == 1

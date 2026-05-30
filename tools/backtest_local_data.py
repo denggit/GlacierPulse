@@ -33,10 +33,11 @@ import sys
 import tarfile
 import time
 import zipfile
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -126,6 +127,7 @@ class Stats:
     a1_iceberg_events: int = 0
     spoofing_withdrawal_events: int = 0
     ignored_engine_returns: int = 0
+    skipped_ignored_engine_return_writes: int = 0
     malformed_rows: int = 0
     parsed_files: int = 0
     skipped_files: int = 0
@@ -153,6 +155,7 @@ class Stats:
             "a1_iceberg_events": self.a1_iceberg_events,
             "spoofing_withdrawal_events": self.spoofing_withdrawal_events,
             "ignored_engine_returns": self.ignored_engine_returns,
+            "skipped_ignored_engine_return_writes": self.skipped_ignored_engine_return_writes,
             "malformed_rows": self.malformed_rows,
             "parsed_files": self.parsed_files,
             "skipped_files": self.skipped_files,
@@ -164,10 +167,80 @@ class Stats:
         }
 
 
+@dataclass
+class ReplayProfiler:
+    total_sec: float = 0.0
+    event_loop_sec: float = 0.0
+    trade_tick_sec: float = 0.0
+    book_update_sec: float = 0.0
+    book_cleaner_push_sec: float = 0.0
+    book_cleaner_finalize_sec: float = 0.0
+    book_cleaner_diff_sec: float = 0.0
+    write_research_event_sec: float = 0.0
+    report_generation_sec: float = 0.0
+    bucket_push_count: int = 0
+    finalize_bucket_count: int = 0
+    empty_bucket_count: int = 0
+    finalized_bid_levels_total: int = 0
+    finalized_ask_levels_total: int = 0
+    finalized_bid_levels_max: int = 0
+    finalized_ask_levels_max: int = 0
+    bid_delta_levels_total: int = 0
+    ask_delta_levels_total: int = 0
+
+    def timing_summary(self) -> dict[str, float]:
+        return {
+            "total_sec": round(self.total_sec, 6),
+            "event_loop_sec": round(self.event_loop_sec, 6),
+            "trade_tick_sec": round(self.trade_tick_sec, 6),
+            "book_update_sec": round(self.book_update_sec, 6),
+            "book_cleaner_push_sec": round(self.book_cleaner_push_sec, 6),
+            "book_cleaner_finalize_sec": round(self.book_cleaner_finalize_sec, 6),
+            "book_cleaner_diff_sec": round(self.book_cleaner_diff_sec, 6),
+            "write_research_event_sec": round(self.write_research_event_sec, 6),
+            "report_generation_sec": round(self.report_generation_sec, 6),
+        }
+
+    def rates_summary(self, stats: Stats) -> dict[str, float]:
+        event_sec = self.event_loop_sec if self.event_loop_sec > 0 else self.total_sec
+        return {
+            "events_per_sec": round((stats.trades + stats.books) / event_sec, 3) if event_sec > 0 else 0.0,
+            "trades_per_sec": round(stats.trades / event_sec, 3) if event_sec > 0 else 0.0,
+            "books_per_sec": round(stats.books / event_sec, 3) if event_sec > 0 else 0.0,
+            "raw_book_rows_per_sec": round(stats.raw_book_rows / event_sec, 3) if event_sec > 0 else 0.0,
+            "research_events_per_sec": round(stats.research_events / event_sec, 3) if event_sec > 0 else 0.0,
+        }
+
+    def book_cleaning_summary(self, stats: Stats) -> dict[str, Any]:
+        finalized = self.finalize_bucket_count
+        return {
+            "bucket_push_count": self.bucket_push_count,
+            "finalize_bucket_count": finalized,
+            "empty_bucket_count": self.empty_bucket_count,
+            "bucket_coalesces": stats.book_bucket_coalesces,
+            "snapshot_rebuilds": stats.book_snapshot_rebuilds,
+            "finalized_bid_levels_total": self.finalized_bid_levels_total,
+            "finalized_ask_levels_total": self.finalized_ask_levels_total,
+            "finalized_bid_levels_max": self.finalized_bid_levels_max,
+            "finalized_ask_levels_max": self.finalized_ask_levels_max,
+            "avg_bid_levels_per_finalized_book": round(self.finalized_bid_levels_total / finalized, 6) if finalized else 0.0,
+            "avg_ask_levels_per_finalized_book": round(self.finalized_ask_levels_total / finalized, 6) if finalized else 0.0,
+            "bid_delta_levels_total": self.bid_delta_levels_total,
+            "ask_delta_levels_total": self.ask_delta_levels_total,
+            "zero_delete_levels_total": stats.book_zero_delete_levels,
+        }
+
+
 class LocalA1ResearchRuntime:
     """Offline equivalent of main.py's current research-only callback pipeline."""
 
-    def __init__(self, symbol: str, research_events_path: Path):
+    def __init__(
+        self,
+        symbol: str,
+        research_events_path: Path,
+        write_ignored_engine_returns: bool = False,
+        profiler: ReplayProfiler | None = None,
+    ):
         from config import research_evaluator as research_config
         from src.context.market_context import MarketContext
         from src.detectors.iceberg_detector import IcebergDetector
@@ -179,6 +252,8 @@ class LocalA1ResearchRuntime:
         self.engine = A1AbsorptionEngine(market_context=self.ctx, iceberg_detector=IcebergDetector())
         self.research_events_path = research_events_path
         self.research_events_file = research_events_path.open("w", encoding="utf-8")
+        self.write_ignored_engine_returns = bool(write_ignored_engine_returns)
+        self.profiler = profiler
 
     def close(self) -> None:
         self.research_events_file.close()
@@ -242,6 +317,9 @@ class LocalA1ResearchRuntime:
             return
 
         stats.ignored_engine_returns += 1
+        if not getattr(self, "write_ignored_engine_returns", False):
+            stats.skipped_ignored_engine_return_writes += 1
+            return
         self._write_research_event(event, current_price=current_price, source=source, ignored=True)
 
     def _write_research_event(
@@ -251,27 +329,34 @@ class LocalA1ResearchRuntime:
         source: str,
         ignored: bool = False,
     ) -> None:
-        row = dict(event)
-        row["replay_source"] = source
-        row["replay_current_price"] = current_price
-        row["replay_ignored"] = bool(ignored)
-        row["runtime_mode"] = "local_research_replay"
-        row["execution_enabled"] = False
-        if not _truthy(getattr(self.research_config, "ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS", False)):
-            for field_name in ZONE_V2_INTERNAL_PROFILE_FIELDS:
-                row.pop(field_name, None)
-        else:
-            for field_name in ("_zone_v2_profile_keys", "_zone_v2_scan_lower", "_zone_v2_scan_upper"):
-                row.pop(field_name, None)
-        self.research_events_file.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        start = time.perf_counter()
+        try:
+            row = dict(event)
+            row["replay_source"] = source
+            row["replay_current_price"] = current_price
+            row["replay_ignored"] = bool(ignored)
+            row["runtime_mode"] = "local_research_replay"
+            row["execution_enabled"] = False
+            if not _truthy(getattr(self.research_config, "ZONE_BOUNDARY_V2_WRITE_PROFILE_MAPS", False)):
+                for field_name in ZONE_V2_INTERNAL_PROFILE_FIELDS:
+                    row.pop(field_name, None)
+            else:
+                for field_name in ("_zone_v2_profile_keys", "_zone_v2_scan_lower", "_zone_v2_scan_upper"):
+                    row.pop(field_name, None)
+            self.research_events_file.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        finally:
+            profiler = getattr(self, "profiler", None)
+            if profiler is not None:
+                profiler.write_research_event_sec += time.perf_counter() - start
 
 
 class BookEventCleaner:
     """Normalize historical book rows to live-like OKX `books` update events."""
 
-    def __init__(self, options: BookCleaningOptions, stats: Stats):
+    def __init__(self, options: BookCleaningOptions, stats: Stats, profiler: ReplayProfiler | None = None):
         self.options = options
         self.stats = stats
+        self.profiler = profiler
         self.pending_bucket: int | None = None
         self.bucket_bids_state: dict[float, float] = {}
         self.bucket_asks_state: dict[float, float] = {}
@@ -282,6 +367,9 @@ class BookEventCleaner:
         self.prev_sent_asks_state: dict[float, float] = {}
 
     def push(self, raw_book: dict[str, Any]) -> list[dict[str, Any]]:
+        profiler = self.profiler
+        if profiler is not None:
+            profiler.bucket_push_count += 1
         if self.options.bucket_ms <= 0:
             cleaned = self._clean_immediate(raw_book)
             return [cleaned] if cleaned else []
@@ -339,26 +427,46 @@ class BookEventCleaner:
         self.bucket_recv_ts = float(raw_book.get("recv_ts", raw_book["ts"]))
 
     def _finalize_bucket(self) -> dict[str, Any] | None:
-        current_bids = levels_to_state(
-            sort_levels_from_state(self.bucket_bids_state, side="bids", depth_limit=self.options.depth_limit),
-            side="bids",
-            depth_limit=self.options.depth_limit,
-        )
-        current_asks = levels_to_state(
-            sort_levels_from_state(self.bucket_asks_state, side="asks", depth_limit=self.options.depth_limit),
-            side="asks",
-            depth_limit=self.options.depth_limit,
-        )
+        profiler = self.profiler
+        finalize_start = time.perf_counter()
+        try:
+            current_bids = trim_state_to_depth(
+                self.bucket_bids_state,
+                side="bids",
+                depth_limit=self.options.depth_limit,
+            )
+            current_asks = trim_state_to_depth(
+                self.bucket_asks_state,
+                side="asks",
+                depth_limit=self.options.depth_limit,
+            )
 
-        bid_delta, bid_deletes = diff_states(self.prev_sent_bids_state, current_bids, side="bids")
-        ask_delta, ask_deletes = diff_states(self.prev_sent_asks_state, current_asks, side="asks")
-        self.stats.book_zero_delete_levels += bid_deletes + ask_deletes
+            diff_start = time.perf_counter()
+            bid_delta, bid_deletes = diff_states(self.prev_sent_bids_state, current_bids, side="bids")
+            ask_delta, ask_deletes = diff_states(self.prev_sent_asks_state, current_asks, side="asks")
+            if profiler is not None:
+                profiler.book_cleaner_diff_sec += time.perf_counter() - diff_start
+                profiler.finalize_bucket_count += 1
+                bid_levels = len(current_bids)
+                ask_levels = len(current_asks)
+                profiler.finalized_bid_levels_total += bid_levels
+                profiler.finalized_ask_levels_total += ask_levels
+                profiler.finalized_bid_levels_max = max(profiler.finalized_bid_levels_max, bid_levels)
+                profiler.finalized_ask_levels_max = max(profiler.finalized_ask_levels_max, ask_levels)
+                profiler.bid_delta_levels_total += len(bid_delta)
+                profiler.ask_delta_levels_total += len(ask_delta)
+            self.stats.book_zero_delete_levels += bid_deletes + ask_deletes
 
-        self.prev_sent_bids_state = current_bids
-        self.prev_sent_asks_state = current_asks
-        if not bid_delta and not ask_delta:
-            return None
-        return {"bids": bid_delta, "asks": ask_delta, "ts": self.bucket_ts, "recv_ts": self.bucket_recv_ts}
+            self.prev_sent_bids_state = current_bids
+            self.prev_sent_asks_state = current_asks
+            if not bid_delta and not ask_delta:
+                if profiler is not None:
+                    profiler.empty_bucket_count += 1
+                return None
+            return {"bids": bid_delta, "asks": ask_delta, "ts": self.bucket_ts, "recv_ts": self.bucket_recv_ts}
+        finally:
+            if profiler is not None:
+                profiler.book_cleaner_finalize_sec += time.perf_counter() - finalize_start
 
     def _clean_immediate(self, raw_book: dict[str, Any]) -> dict[str, Any] | None:
         if raw_book.get("_mode", "delta") == "snapshot":
@@ -404,6 +512,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--books-bucket-ms", type=float, default=100.0, help="Coalesce book updates into this many milliseconds to mimic OKX live books cadence. Use 0 to disable. Default: 100.")
     p.add_argument("--books-snapshot-infer-min-levels", type=int, default=100, help="In auto mode, treat a coalesced book event as snapshot once it contains at least this many levels. Default: 100.")
     p.add_argument("--generate-reports", action="store_true", help="Generate unified research reports after replay completes.")
+    p.add_argument("--write-ignored-engine-returns", action="store_true", help="Write ignored A1 engine debug returns to research_events.jsonl. Default: count only.")
     p.add_argument("--kline", type=Path, help="1m kline CSV used by unified research reports.")
     p.add_argument("--report-run-name", help="Report run name under reports/. Default: backtests/<run_name>/research_reports.")
     p.add_argument("--report-min-sample", type=int, default=30)
@@ -470,8 +579,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("[LOCAL-TIME-FILTER] %s", time_filter.to_dict())
     logger.info("[LOCAL-SELECTED-FILES] trades=%s books=%s mode=%s", [str(path) for path in trades_files], [str(path) for path in books_files], selection_mode)
 
-    runtime = LocalA1ResearchRuntime(symbol=str(args.symbol), research_events_path=research_events_path)
     stats = Stats()
+    profiler = ReplayProfiler()
+    total_start = time.perf_counter()
+    runtime = LocalA1ResearchRuntime(
+        symbol=str(args.symbol),
+        research_events_path=research_events_path,
+        write_ignored_engine_returns=bool(args.write_ignored_engine_returns),
+        profiler=profiler,
+    )
     warmup = {
         "book_warmup_rows": 0,
         "book_bootstrap_bid_levels": 0,
@@ -507,7 +623,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fmt_utc(float(time_filter.start_ts)),
             )
 
-    start = time.perf_counter()
+    event_loop_start = time.perf_counter()
     try:
         events = build_events(
             trades_files,
@@ -518,15 +634,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             bool(args.sort_in_memory),
             book_cleaning,
             time_filter,
+            profiler,
         )
         for idx, event in enumerate(events, start=1):
             if args.max_events and idx > args.max_events:
                 break
             stats.touch(event.ts)
             if event.kind == "trade":
+                tick_start = time.perf_counter()
                 runtime.on_trade_tick(event.payload, stats)
+                profiler.trade_tick_sec += time.perf_counter() - tick_start
             elif event.kind == "book":
+                book_start = time.perf_counter()
                 runtime.on_book_update(event.payload, stats)
+                profiler.book_update_sec += time.perf_counter() - book_start
             if args.progress_every and idx % args.progress_every == 0:
                 logger.info(
                     "[LOCAL-A1-RESEARCH-PROGRESS] events=%d trades=%d books=%d raw_book_rows=%d research_events=%d a1_icebergs=%d last=%s",
@@ -541,7 +662,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         runtime.close()
 
-    elapsed = time.perf_counter() - start
+    elapsed = time.perf_counter() - event_loop_start
+    profiler.event_loop_sec = elapsed
     report_generation = build_report_generation_summary(
         enabled=bool(args.generate_reports),
         status="skipped",
@@ -554,11 +676,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     report_exit_code = 0
     if args.generate_reports:
+        report_start = time.perf_counter()
         report_generation, report_exit_code = generate_replay_research_reports(
             args=args,
             research_dir=research_dir,
             report_generation=report_generation,
         )
+        profiler.report_generation_sec = time.perf_counter() - report_start
+    profiler.total_sec = time.perf_counter() - total_start
 
     summary = {
         "run_name": args.run_name,
@@ -590,6 +715,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             for key in LOCAL_REPLAY_LOG_OVERRIDE_ENV_KEYS
         },
         "report_generation": report_generation,
+        "replay_timing": profiler.timing_summary(),
+        "replay_rates": profiler.rates_summary(stats),
+        "book_cleaning_profile": profiler.book_cleaning_summary(stats),
+        "write_ignored_engine_returns": bool(args.write_ignored_engine_returns),
+        "skipped_ignored_engine_return_writes": stats.skipped_ignored_engine_return_writes,
         "elapsed_sec": round(elapsed, 6),
         "events_per_sec": round((stats.trades + stats.books) / elapsed, 3) if elapsed > 0 else 0.0,
         "stats": stats.to_dict(),
@@ -864,9 +994,10 @@ def build_events(
     sort_in_memory: bool,
     book_cleaning: BookCleaningOptions,
     time_filter: TimeFilter,
+    profiler: ReplayProfiler | None = None,
 ) -> Iterator[ReplayEvent]:
     trades = iter_trade_events(trade_files, symbol, multiplier, stats, time_filter)
-    books = iter_book_events(book_files, symbol, multiplier, stats, book_cleaning, time_filter) if book_files else iter(())
+    books = iter_book_events(book_files, symbol, multiplier, stats, book_cleaning, time_filter, profiler=profiler) if book_files else iter(())
     if sort_in_memory:
         all_events = list(trades) + list(books)
         all_events.sort()
@@ -933,9 +1064,10 @@ def iter_book_events(
     options: BookCleaningOptions,
     time_filter: TimeFilter,
     assume_sorted: bool = True,
+    profiler: ReplayProfiler | None = None,
 ) -> Iterator[ReplayEvent]:
     seq = 0
-    cleaner = BookEventCleaner(options=options, stats=stats)
+    cleaner = BookEventCleaner(options=options, stats=stats, profiler=profiler)
     raw_books = merge_many_raw_books(
         iter_normalized_book_rows_from_file(path, symbol, multiplier, stats, options, time_filter, assume_sorted=assume_sorted)
         for path in paths
@@ -943,16 +1075,28 @@ def iter_book_events(
     for raw_book in raw_books:
         try:
             stats.raw_book_rows += 1
+            push_start = time.perf_counter()
             for book in cleaner.push(raw_book):
+                if profiler is not None:
+                    profiler.book_cleaner_push_sec += time.perf_counter() - push_start
+                    push_start = time.perf_counter()
                 seq += 1
                 stats.books += 1
                 yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
+            if profiler is not None:
+                profiler.book_cleaner_push_sec += time.perf_counter() - push_start
         except Exception:
             stats.malformed_rows += 1
+    push_start = time.perf_counter()
     for book in cleaner.flush():
+        if profiler is not None:
+            profiler.book_cleaner_push_sec += time.perf_counter() - push_start
+            push_start = time.perf_counter()
         seq += 1
         stats.books += 1
         yield ReplayEvent(float(book["ts"]), 1_000_000_000 + seq, "book", book)
+    if profiler is not None:
+        profiler.book_cleaner_push_sec += time.perf_counter() - push_start
 
 
 def iter_normalized_book_rows_from_file(
@@ -1331,6 +1475,18 @@ def apply_level_updates_to_state(state: dict[float, float], levels: Sequence[Seq
 def normalize_levels_for_replay(levels: Sequence[Sequence[float]], side: str, depth_limit: int) -> list[list[float]]:
     state = {float(price): float(size) for price, size in levels if float(price) > 0}
     return sort_levels_from_state(state, side=side, depth_limit=depth_limit, keep_zero=True)
+
+
+def trim_state_to_depth(state: Mapping[float, float], *, side: str, depth_limit: int) -> dict[float, float]:
+    if depth_limit <= 0 or len(state) <= depth_limit:
+        return {float(price): float(size) for price, size in state.items() if float(size) > 0}
+
+    valid_items = [(float(price), float(size)) for price, size in state.items() if float(size) > 0]
+    if len(valid_items) <= depth_limit:
+        return dict(valid_items)
+    if side == "bids":
+        return dict(heapq.nlargest(depth_limit, valid_items, key=lambda item: item[0]))
+    return dict(heapq.nsmallest(depth_limit, valid_items, key=lambda item: item[0]))
 
 
 def levels_to_state(levels: Sequence[Sequence[float]], side: str, depth_limit: int) -> dict[float, float]:
