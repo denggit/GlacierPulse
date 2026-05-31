@@ -559,7 +559,7 @@ def _reports(
     return {
         "signals": signals,
         "trades": trades,
-        "by_strategy": [_summary_row(name, [t for t in stats_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
+        "by_strategy": [_summary_row(name, [t for t in default_expiry_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
         "by_strategy_all_expiry_variants": [_summary_row(name, [t for t in stats_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
         "by_strategy_default_expiry": [_summary_row(name, [t for t in default_expiry_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
         "by_vp_setup": _group_summary(stats_trades, "a1_vp_setup_rt"),

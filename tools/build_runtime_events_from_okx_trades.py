@@ -15,6 +15,7 @@ import sys
 import tarfile
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 from zipfile import ZipFile
@@ -37,6 +38,8 @@ RUNTIME_EVENT_FIELDS = [
     "price_velocity_u_per_sec",
     "condition_available_ts",
     "condition_source",
+    "contract_multiplier",
+    "notional_mode",
 ]
 
 
@@ -47,10 +50,18 @@ class NormalizedTrade:
     price: float
     side: str
     notional: float
+    contract_multiplier: float = 1.0
 
 
 @dataclass
 class BuildStats:
+    symbol: str = ""
+    contract_multiplier: float = 0.0
+    notional_mode: str = ""
+    output_mode: str = "single_file"
+    shard_count: int = 0
+    shard_files: list[str] | None = None
+    output_warning: str = ""
     total_trades_read: int = 0
     runtime_events_written: int = 0
     first_ts: float = 0.0
@@ -59,6 +70,13 @@ class BuildStats:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "symbol": self.symbol,
+            "contract_multiplier": self.contract_multiplier,
+            "notional_mode": self.notional_mode,
+            "output_mode": self.output_mode,
+            "shard_count": self.shard_count,
+            "shard_files": list(self.shard_files or []),
+            "output_warning": self.output_warning,
             "total_trades_read": self.total_trades_read,
             "runtime_events_written": self.runtime_events_written,
             "first_ts": self.first_ts,
@@ -71,25 +89,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build runtime_events.jsonl from OKX raw trades.")
     parser.add_argument("--symbol", required=True, help="OKX instrument id, e.g. ETH-USDT-SWAP.")
     parser.add_argument("--trades-dir", required=True, help="Directory or file containing raw OKX trades.")
-    parser.add_argument("--out", required=True, help="Output runtime_events JSONL path.")
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument("--out", help="Output runtime_events JSONL path. Not recommended for long samples; prefer --out-dir --shard-by day.")
+    output.add_argument("--out-dir", help="Output directory for sharded runtime events.")
+    parser.add_argument("--shard-by", choices=["day"], default=None, help="Shard runtime events under --out-dir as runtime_events/YYYY-MM-DD.jsonl.")
     parser.add_argument("--bucket-sec", type=float, default=1.0)
     parser.add_argument("--rolling-sec", type=float, default=3.0)
-    parser.add_argument("--contract-multiplier", type=float, default=1.0, help="Multiplier applied to raw size before notional = price * size.")
+    parser.add_argument("--contract-multiplier", type=float, default=None, help="Multiplier applied to raw size before notional = price * size. Required for SWAP symbols.")
+    parser.add_argument("--merge-sort-files", action="store_true", help="Heap-merge all files by timestamp. Default is sequential to avoid opening many files.")
     parser.add_argument("--summary-out", help="Optional summary JSON path. Default: <out>.summary.json")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    multiplier = _resolve_contract_multiplier(args.symbol, args.contract_multiplier)
+    out_path = Path(args.out) if args.out else None
+    out_dir = Path(args.out_dir) if args.out_dir else None
     summary = build_runtime_events(
         symbol=args.symbol,
         trades_path=Path(args.trades_dir),
-        out_path=Path(args.out),
+        out_path=out_path,
+        out_dir=out_dir,
+        shard_by=args.shard_by,
         bucket_sec=float(args.bucket_sec),
         rolling_sec=float(args.rolling_sec),
-        contract_multiplier=float(args.contract_multiplier),
+        contract_multiplier=multiplier,
+        merge_sort_files=bool(args.merge_sort_files),
     )
-    summary_path = Path(args.summary_out) if args.summary_out else Path(str(args.out) + ".summary.json")
+    summary_path = Path(args.summary_out) if args.summary_out else Path(str(out_path or out_dir) + ".summary.json")
     write_json(summary_path, summary)
     print(
         "[BUILD-RUNTIME-EVENTS] "
@@ -98,7 +126,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"first_ts={summary['first_ts']} "
         f"last_ts={summary['last_ts']} "
         f"peak_rss_mb={summary['peak_rss_mb']} "
-        f"out={args.out}"
+        f"output_mode={summary['output_mode']} "
+        f"shard_count={summary['shard_count']} "
+        f"out={out_path or out_dir}"
     )
     return 0
 
@@ -107,13 +137,34 @@ def build_runtime_events(
     *,
     symbol: str,
     trades_path: Path,
-    out_path: Path,
+    out_path: Path | None = None,
+    out_dir: Path | None = None,
+    shard_by: str | None = None,
     bucket_sec: float = 1.0,
     rolling_sec: float = 3.0,
-    contract_multiplier: float = 1.0,
+    contract_multiplier: float | None = None,
+    merge_sort_files: bool = False,
 ) -> dict[str, Any]:
-    stats = BuildStats()
-    ensure_dir(out_path.parent)
+    if out_path is not None and out_dir is not None:
+        raise SystemExit("--out and --out-dir are mutually exclusive")
+    if out_path is None and out_dir is None:
+        raise SystemExit("one of --out or --out-dir is required")
+    if out_dir is not None and shard_by != "day":
+        raise SystemExit("--out-dir requires --shard-by day")
+    resolved_multiplier = _resolve_contract_multiplier(symbol, contract_multiplier)
+    stats = BuildStats(
+        symbol=symbol,
+        contract_multiplier=float(resolved_multiplier),
+        notional_mode="price_x_size_x_contract_multiplier",
+        output_mode="sharded_by_day" if out_dir is not None else "single_file",
+        shard_files=[],
+        output_warning="single large runtime_events file is not recommended for long samples; use --out-dir --shard-by day" if out_path is not None else "",
+    )
+    writer: _RuntimeEventWriter
+    if out_dir is not None:
+        writer = _ShardedRuntimeEventWriter(out_dir)
+    else:
+        writer = _SingleRuntimeEventWriter(out_path)  # type: ignore[arg-type]
     bucket_sec = max(float(bucket_sec), 0.001)
     rolling_sec = max(float(rolling_sec), 0.001)
     rolling: deque[NormalizedTrade] = deque()
@@ -122,14 +173,19 @@ def build_runtime_events(
     pending_event: dict[str, Any] | None = None
     prev_trade: NormalizedTrade | None = None
 
-    with out_path.open("w", encoding="utf-8") as out:
-        for trade in iter_normalized_trades(discover_trade_files(trades_path), symbol=symbol, contract_multiplier=contract_multiplier):
+    try:
+        for trade in iter_normalized_trades(
+            discover_trade_files(trades_path),
+            symbol=symbol,
+            contract_multiplier=resolved_multiplier,
+            merge_sort_files=merge_sort_files,
+        ):
             stats.total_trades_read += 1
             stats.first_ts = trade.ts if stats.first_ts <= 0 else min(stats.first_ts, trade.ts)
             stats.last_ts = max(stats.last_ts, trade.ts)
             bucket = _bucket_start(trade.ts, bucket_sec)
             if current_bucket is not None and bucket != current_bucket and pending_event is not None:
-                out.write(json.dumps(pending_event, ensure_ascii=False, sort_keys=True) + "\n")
+                writer.write(pending_event)
                 stats.runtime_events_written += 1
             current_bucket = bucket
             rolling.append(trade)
@@ -145,11 +201,15 @@ def build_runtime_events(
             )
             prev_trade = trade
 
+    finally:
         if pending_event is not None:
-            out.write(json.dumps(pending_event, ensure_ascii=False, sort_keys=True) + "\n")
+            writer.write(pending_event)
             stats.runtime_events_written += 1
+        writer.close()
 
     stats.peak_rss_mb = _peak_rss_mb()
+    stats.shard_files = writer.files
+    stats.shard_count = len(writer.files)
     return stats.as_dict()
 
 
@@ -182,7 +242,70 @@ def runtime_event_from_trade(
         "price_velocity_u_per_sec": round(velocity, 8),
         "condition_available_ts": round(trade.ts, 8),
         "condition_source": "okx_raw_trades_builder",
+        "contract_multiplier": round(float(trade.contract_multiplier), 8),
+        "notional_mode": "price_x_size_x_contract_multiplier",
     }
+
+
+class _RuntimeEventWriter:
+    @property
+    def files(self) -> list[str]:
+        raise NotImplementedError
+
+    def write(self, row: Mapping[str, Any]) -> None:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class _SingleRuntimeEventWriter(_RuntimeEventWriter):
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        ensure_dir(self.path.parent)
+        self._handle = self.path.open("w", encoding="utf-8")
+
+    @property
+    def files(self) -> list[str]:
+        return [str(self.path)]
+
+    def write(self, row: Mapping[str, Any]) -> None:
+        self._handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+        ensure_dir(self.root)
+        self._handle: Any | None = None
+        self._current_path: Path | None = None
+        self._seen: set[Path] = set()
+        self._files: list[str] = []
+
+    @property
+    def files(self) -> list[str]:
+        return list(self._files)
+
+    def write(self, row: Mapping[str, Any]) -> None:
+        path = self.root / f"{_utc_day(float(row.get('ts') or 0.0))}.jsonl"
+        if path != self._current_path:
+            self.close()
+            mode = "a" if path in self._seen else "w"
+            ensure_dir(path.parent)
+            self._handle = path.open(mode, encoding="utf-8")
+            self._current_path = path
+            if path not in self._seen:
+                self._seen.add(path)
+                self._files.append(str(path))
+        self._handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+
+    def close(self) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
 
 
 def discover_trade_files(path: Path) -> list[Path]:
@@ -196,7 +319,17 @@ def discover_trade_files(path: Path) -> list[Path]:
     )
 
 
-def iter_normalized_trades(paths: Sequence[Path], *, symbol: str, contract_multiplier: float = 1.0) -> Iterator[NormalizedTrade]:
+def iter_normalized_trades(
+    paths: Sequence[Path],
+    *,
+    symbol: str,
+    contract_multiplier: float = 1.0,
+    merge_sort_files: bool = False,
+) -> Iterator[NormalizedTrade]:
+    if not merge_sort_files:
+        for path in paths:
+            yield from iter_normalized_trades_from_file(path, symbol=symbol, contract_multiplier=contract_multiplier)
+        return
     heap: list[tuple[float, int, NormalizedTrade, Iterator[NormalizedTrade]]] = []
     for seq, path in enumerate(paths):
         iterator = iter_normalized_trades_from_file(path, symbol=symbol, contract_multiplier=contract_multiplier)
@@ -292,7 +425,7 @@ def normalize_trade_row(row: Mapping[str, Any], *, symbol: str, contract_multipl
         notional = price * raw_size * float(contract_multiplier)
     if ts <= 0 or price <= 0 or notional <= 0 or side not in {"BUY", "SELL"}:
         return None
-    return NormalizedTrade(ts=ts, symbol=symbol, price=price, side=side, notional=notional)
+    return NormalizedTrade(ts=ts, symbol=symbol, price=price, side=side, notional=notional, contract_multiplier=float(contract_multiplier))
 
 
 def _bucket_start(ts: float, bucket_sec: float) -> float:
@@ -325,6 +458,16 @@ def _price_velocity(
     if prev_trade is not None and trade.ts > prev_trade.ts:
         return (trade.price - prev_trade.price) / (trade.ts - prev_trade.ts)
     return 0.0
+
+
+def _resolve_contract_multiplier(symbol: str, value: float | None) -> float:
+    if value is None and "-SWAP" in str(symbol).upper():
+        raise SystemExit("--contract-multiplier is required for SWAP symbols to avoid incorrect notional.")
+    return float(1.0 if value is None else value)
+
+
+def _utc_day(ts: float) -> str:
+    return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
 
 
 def _is_supported_inner(path: Path) -> bool:

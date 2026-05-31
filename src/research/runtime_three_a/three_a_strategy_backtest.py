@@ -18,6 +18,7 @@ def build_runtime_strategy_reports(
     target_model: str | None = None,
     next_tick_entry: bool | None = None,
     enable_audit: bool | None = None,
+    a2_rt_max_age_sec: float | None = None,
     a2_rt_min_quiet_sec: float | None = None,
     a2_rt_min_tick_count: int | None = None,
     default_expiry_sec: int | None = None,
@@ -33,6 +34,8 @@ def build_runtime_strategy_reports(
         overrides["next_tick_entry"] = next_tick_entry
     if enable_audit is not None:
         overrides["enable_audit"] = enable_audit
+    if a2_rt_max_age_sec is not None:
+        overrides["a2_rt_max_age_sec"] = a2_rt_max_age_sec
     if a2_rt_min_quiet_sec is not None:
         overrides["a2_rt_min_quiet_sec"] = a2_rt_min_quiet_sec
     if a2_rt_min_tick_count is not None:

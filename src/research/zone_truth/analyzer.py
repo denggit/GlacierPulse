@@ -387,6 +387,7 @@ class ZoneTruthAnalyzer:
             target_model=self.a3_rt_target_model,
             next_tick_entry=self.a3_rt_next_tick_entry,
             enable_audit=self.enable_no_future_audit,
+            a2_rt_max_age_sec=self.a2_rt_max_age_sec,
             a2_rt_min_quiet_sec=self.a2_rt_min_quiet_sec,
             a2_rt_min_tick_count=self.a2_rt_min_tick_count,
             default_expiry_sec=int(self.a2_rt_max_age_sec),

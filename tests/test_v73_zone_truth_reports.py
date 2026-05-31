@@ -11,6 +11,15 @@ from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 BASE_TS = 1_779_373_200
 
 
+def _runtime_ticks() -> list[dict[str, float]]:
+    return [
+        {"ts": BASE_TS + 1, "last_price": 100.0, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
+        {"ts": BASE_TS + 2, "last_price": 100.1, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
+        {"ts": BASE_TS + 3, "last_price": 100.2, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
+        {"ts": BASE_TS + 4, "last_price": 102.0, "active_buy_notional_3s": 250_000, "active_sell_notional_3s": 20_000, "cvd_delta_3s": 50_000, "price_velocity_u_per_sec": 0.5},
+    ]
+
+
 def _inputs(root: Path) -> tuple[Path, Path, Path]:
     phase1 = root / "phase1.jsonl"
     phase1.write_text(
@@ -94,12 +103,7 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
 def test_v73_zone_truth_runtime_reports_use_supplied_trade_events(tmp_path):
     phase1, reactions, kline = _inputs(tmp_path)
     out = tmp_path / "out_rt"
-    ticks = [
-        {"ts": BASE_TS + 1, "last_price": 100.0, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
-        {"ts": BASE_TS + 2, "last_price": 100.1, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
-        {"ts": BASE_TS + 3, "last_price": 100.2, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
-        {"ts": BASE_TS + 4, "last_price": 102.0, "active_buy_notional_3s": 250_000, "active_sell_notional_3s": 20_000, "cvd_delta_3s": 50_000, "price_velocity_u_per_sec": 0.5},
-    ]
+    ticks = _runtime_ticks()
     analyzer = ZoneTruthAnalyzer(
         enable_3a_simulator=False,
         a2_rt_expiry_sweep_secs=[900],
@@ -116,3 +120,39 @@ def test_v73_zone_truth_runtime_reports_use_supplied_trade_events(tmp_path):
     assert trades[0]["entry_ts"] == str(float(BASE_TS + 4))
     assert "trade_blocked_flag" in trades[0]
     assert "ambiguous_flag_sim" in trades[0]
+
+
+def test_default_expiry_sec_plumbed_from_analyzer(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_default_expiry"
+    analyzer = ZoneTruthAnalyzer(
+        enable_3a_simulator=False,
+        a2_rt_max_age_sec=1200,
+        a2_rt_expiry_sweep_secs=[180, 900, 1200],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    analyzer.analyze_files(phase1, reactions, kline, out, runtime_events=_runtime_ticks())
+    with (out / "zone_truth_3a_rt_summary.json").open(encoding="utf-8") as handle:
+        rt_summary = json.load(handle)
+    assert rt_summary["default_expiry_sec"] == 1200
+
+
+def test_by_strategy_uses_default_expiry_not_all_variants(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_strategy_scope"
+    analyzer = ZoneTruthAnalyzer(
+        enable_3a_simulator=False,
+        a2_rt_expiry_sweep_secs=[300, 900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    analyzer.analyze_files(phase1, reactions, kline, out, runtime_events=_runtime_ticks())
+    with (out / "zone_truth_3a_rt_by_strategy.csv").open(encoding="utf-8", newline="") as handle:
+        by_strategy = list(csv.DictReader(handle))
+    with (out / "zone_truth_3a_rt_by_strategy_all_expiry_variants.csv").open(encoding="utf-8", newline="") as handle:
+        by_strategy_all = list(csv.DictReader(handle))
+    baseline = next(row for row in by_strategy if row["strategy_variant"] == "A_CORE_NO_VP")
+    baseline_all = next(row for row in by_strategy_all if row["strategy_variant"] == "A_CORE_NO_VP")
+    assert baseline["trade_count"] == "1"
+    assert baseline_all["trade_count"] == "2"

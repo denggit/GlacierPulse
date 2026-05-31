@@ -83,6 +83,13 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if _runtime_input_provided(args) and (runtime_events is None or not runtime_events.files):
+        print(
+            "Error: No runtime event jsonl/csv files found. "
+            "If using OKX raw trades, run build_runtime_events_from_okx_trades.py first.",
+            file=sys.stderr,
+        )
+        return 2
     analyzer = ZoneTruthAnalyzer(
         price_tolerance_usdt=args.price_tolerance_usdt,
         time_tolerance_sec=args.time_tolerance_sec,
@@ -150,6 +157,10 @@ def _raw_okx_trades_dir_without_runtime_events(trades_dir: str | None, runtime_e
     if not root.is_dir() or (runtime_events is not None and runtime_events.files):
         return False
     return any(path.is_file() and path.name.lower().endswith((".tar.gz", ".tgz", ".tar")) for path in root.rglob("*"))
+
+
+def _runtime_input_provided(args: argparse.Namespace) -> bool:
+    return bool(args.trades_jsonl or args.trades_dir or args.runtime_events)
 
 
 if __name__ == "__main__":

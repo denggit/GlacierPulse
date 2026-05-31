@@ -98,8 +98,11 @@ def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> list[Run
     files: list[Path] = []
     for path in raw_paths:
         if path.is_dir():
-            files.extend(sorted([*path.glob("*.jsonl"), *path.glob("*.csv")]))
-        elif path.exists() and _is_runtime_event_file(path):
+            files.extend(sorted(
+                child for child in [*path.rglob("*.jsonl"), *path.rglob("*.csv")]
+                if not _is_hidden_path(child)
+            ))
+        elif path.exists() and _is_runtime_event_file(path) and not _is_hidden_path(path):
             files.append(path)
     profiled: list[RuntimeEventFile] = []
     for path in sorted(set(files)):
@@ -131,6 +134,10 @@ def _candidate_files(files: list[RuntimeEventFile], start_ts: float, end_ts: flo
 
 def _is_runtime_event_file(path: Path) -> bool:
     return path.suffix.lower() in {".jsonl", ".csv"}
+
+
+def _is_hidden_path(path: Path) -> bool:
+    return any(part.startswith(".") for part in path.parts)
 
 
 def _merge_sorted_files(files: list[RuntimeEventFile]) -> Iterator[dict[str, Any]]:

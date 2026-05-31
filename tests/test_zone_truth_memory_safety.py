@@ -265,6 +265,7 @@ def test_build_runtime_events_from_raw_trades_jsonl(tmp_path):
         out_path=out,
         bucket_sec=1,
         rolling_sec=3,
+        contract_multiplier=1.0,
     )
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert summary["total_trades_read"] == 3
@@ -296,6 +297,7 @@ def test_build_runtime_events_from_okx_trades_tar_gz_data(tmp_path):
         out_path=out,
         bucket_sec=1,
         rolling_sec=3,
+        contract_multiplier=1.0,
     )
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert summary["total_trades_read"] == 2
@@ -310,7 +312,7 @@ def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
     def fake_discover(path):
         return [path]
 
-    def fake_iter(paths, *, symbol, contract_multiplier=1.0):
+    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False):
         for idx in range(5):
             yielded.append(idx)
             yield runtime_builder.NormalizedTrade(
@@ -329,10 +331,138 @@ def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
         out_path=out,
         bucket_sec=1,
         rolling_sec=3,
+        contract_multiplier=1.0,
     )
     assert yielded == [0, 1, 2, 3, 4]
     assert summary["runtime_events_written"] == 5
     assert out.read_text(encoding="utf-8").count("\n") == 5
+
+
+def test_build_runtime_events_sharded_by_day(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        "\n".join(
+            [
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1_778_975_999, "px": 10, "sz": 2, "side": "buy"}),
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1_778_976_000, "px": 11, "sz": 3, "side": "sell"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "runtime_events"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_dir=out_dir,
+        shard_by="day",
+        bucket_sec=1,
+        rolling_sec=3,
+        contract_multiplier=1.0,
+    )
+    assert summary["output_mode"] == "sharded_by_day"
+    assert summary["shard_count"] == 2
+    shard_names = sorted(Path(path).name for path in summary["shard_files"])
+    assert shard_names == ["2026-05-16.jsonl", "2026-05-17.jsonl"]
+    assert (out_dir / "2026-05-16.jsonl").exists()
+    assert (out_dir / "2026-05-17.jsonl").exists()
+
+
+def test_runtime_event_source_discovers_nested_shards(tmp_path):
+    root = tmp_path / "runtime_events"
+    nested = root / "2026" / "05"
+    hidden = root / ".hidden"
+    nested.mkdir(parents=True)
+    hidden.mkdir(parents=True)
+    (nested / "2026-05-17.jsonl").write_text(
+        json.dumps({"ts": BASE_TS, "symbol": "BTC-USDT", "last_price": 100}) + "\n",
+        encoding="utf-8",
+    )
+    (hidden / "2026-05-18.jsonl").write_text(
+        json.dumps({"ts": BASE_TS + 1, "symbol": "BTC-USDT", "last_price": 101}) + "\n",
+        encoding="utf-8",
+    )
+    (nested / ".ignored.jsonl").write_text(
+        json.dumps({"ts": BASE_TS + 2, "symbol": "BTC-USDT", "last_price": 102}) + "\n",
+        encoding="utf-8",
+    )
+    source = RuntimeEventSource(root)
+    assert [file.path.name for file in source.files] == ["2026-05-17.jsonl"]
+    rows = list(source.get_window(BASE_TS - 1, BASE_TS + 10, "BTC-USDT"))
+    assert len(rows) == 1
+
+
+def test_single_large_runtime_file_warning_or_not_recommended(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_path=tmp_path / "runtime_events.jsonl",
+        contract_multiplier=1.0,
+    )
+    assert summary["output_mode"] == "single_file"
+    assert "not recommended" in summary["output_warning"]
+
+
+def test_swap_requires_explicit_contract_multiplier(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades,
+            out_path=out,
+        )
+        assert False, "SWAP builder must require explicit contract multiplier"
+    except SystemExit as exc:
+        assert "contract-multiplier" in str(exc)
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_path=out,
+        contract_multiplier=0.1,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["contract_multiplier"] == 0.1
+    assert rows[0]["contract_multiplier"] == 0.1
+    assert rows[0]["active_buy_notional_3s"] == 2.0
+
+
+def test_sequential_file_reading_does_not_open_all_files(tmp_path, monkeypatch):
+    paths = [tmp_path / f"{idx}.jsonl" for idx in range(3)]
+    calls = []
+
+    def fake_iter(path, *, symbol, contract_multiplier=1.0):
+        calls.append(path.name)
+        yield runtime_builder.NormalizedTrade(
+            ts=1000.0 + len(calls),
+            symbol=symbol,
+            price=10.0,
+            side="BUY",
+            notional=100.0,
+            contract_multiplier=contract_multiplier,
+        )
+
+    monkeypatch.setattr(runtime_builder, "iter_normalized_trades_from_file", fake_iter)
+    iterator = runtime_builder.iter_normalized_trades(
+        paths,
+        symbol="ETH-USDT-SWAP",
+        contract_multiplier=1.0,
+    )
+    first = next(iterator)
+    assert first.ts == 1001.0
+    assert calls == ["0.jsonl"]
+    second = next(iterator)
+    assert second.ts == 1002.0
+    assert calls == ["0.jsonl", "1.jsonl"]
 
 
 def test_analyze_zone_truth_warns_raw_tar_without_runtime_events(tmp_path, capsys):
@@ -355,3 +485,22 @@ def test_analyze_zone_truth_warns_raw_tar_without_runtime_events(tmp_path, capsy
     captured = capsys.readouterr()
     assert rc == 2
     assert "RuntimeEventSource supports jsonl/csv runtime_events" in captured.err
+
+
+def test_runtime_input_wrong_format_errors(tmp_path, capsys):
+    paths = _write_inputs(tmp_path)
+    trades_dir = tmp_path / "wrong_runtime_input"
+    trades_dir.mkdir()
+    (trades_dir / "events.txt").write_text("not runtime events\n", encoding="utf-8")
+    rc = analyze_zone_truth.main(
+        [
+            "--phase1-candidates", str(paths["phase1"]),
+            "--a1-reactions", str(paths["reactions"]),
+            "--kline", str(paths["kline"]),
+            "--out", str(tmp_path / "out_wrong_format"),
+            "--trades-dir", str(trades_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "No runtime event jsonl/csv files found" in captured.err
