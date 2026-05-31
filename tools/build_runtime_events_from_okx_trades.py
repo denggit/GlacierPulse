@@ -83,6 +83,7 @@ class NormalizedTrade:
 class RuntimeReadStats:
     """Mutable stats collected while reading trade files (e.g. inside archives)."""
     skipped_json_file_count: int = 0
+    raw_rows_seen: int = 0
 
 
 @dataclass
@@ -104,7 +105,9 @@ class BuildStats:
     manifest_path: str = ""
     output_warning: str = ""
     non_monotonic_trade_count: int = 0
-    total_trades_read: int = 0
+    raw_rows_seen: int = 0
+    normalized_trades_emitted: int = 0
+    total_trades_read: int = 0  # deprecated alias; prefer normalized_trades_emitted
     runtime_events_written: int = 0
     first_ts: float = 0.0
     last_ts: float = 0.0
@@ -132,6 +135,8 @@ class BuildStats:
             "manifest_path": self.manifest_path,
             "output_warning": self.output_warning,
             "non_monotonic_trade_count": self.non_monotonic_trade_count,
+            "raw_rows_seen": self.raw_rows_seen,
+            "normalized_trades_emitted": self.normalized_trades_emitted,
             "total_trades_read": self.total_trades_read,
             "runtime_events_written": self.runtime_events_written,
             "first_ts": self.first_ts,
@@ -313,6 +318,7 @@ def build_runtime_events(
             **trade_iter_kwargs,
         ):
             stats.total_trades_read += 1
+            stats.normalized_trades_emitted += 1
             if prev_ts is not None and trade.ts < prev_ts:
                 stats.non_monotonic_trade_count += 1
                 if not allow_non_monotonic_output:
@@ -378,6 +384,7 @@ def build_runtime_events(
         writer.close()
 
         stats.skipped_json_file_count += read_stats.skipped_json_file_count
+        stats.raw_rows_seen = read_stats.raw_rows_seen
         if read_stats.skipped_json_file_count > 0:
             stats.output_warning = _join_warning(stats.output_warning, SKIPPED_JSON_WARNING)
 
@@ -730,6 +737,7 @@ def iter_trade_rows(
                         inner.suffix.lower(),
                         max_json_line_bytes=max_json_line_bytes,
                         allow_json_file=allow_json_file,
+                        read_stats=read_stats,
                     )
         return
     if name.endswith(".zip"):
@@ -757,6 +765,7 @@ def iter_trade_rows(
                         inner.suffix.lower(),
                         max_json_line_bytes=max_json_line_bytes,
                         allow_json_file=allow_json_file,
+                        read_stats=read_stats,
                     )
         return
     if name.endswith(".gz"):
@@ -769,6 +778,7 @@ def iter_trade_rows(
                 inner_suffix,
                 max_json_line_bytes=max_json_line_bytes,
                 allow_json_file=allow_json_file,
+                read_stats=read_stats,
             )
         return
     if _is_raw_json_path(path):
@@ -780,6 +790,7 @@ def iter_trade_rows(
             path.suffix.lower(),
             max_json_line_bytes=max_json_line_bytes,
             allow_json_file=allow_json_file,
+            read_stats=read_stats,
         )
 
 
@@ -789,6 +800,7 @@ def iter_text_rows(
     *,
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
     allow_json_file: bool = False,
+    read_stats: RuntimeReadStats | None = None,
 ) -> Iterator[dict[str, Any]]:
     sample = handle.read(4096)
     handle.seek(0)
@@ -801,17 +813,28 @@ def iter_text_rows(
             if not text:
                 continue
             value = json.loads(text)
-            yield from _expand_json(value)
+            for row in _expand_json(value):
+                if read_stats is not None:
+                    read_stats.raw_rows_seen += 1
+                yield row
     elif fmt == "json":
         _ensure_json_file_allowed(allow_json_file)
-        yield from _expand_json(json.load(handle))
+        for row in _expand_json(json.load(handle)):
+            if read_stats is not None:
+                read_stats.raw_rows_seen += 1
+            yield row
     else:
         has_header = _csv_has_header(sample)
         if has_header:
-            yield from csv.DictReader(handle)
+            for row in csv.DictReader(handle):
+                if read_stats is not None:
+                    read_stats.raw_rows_seen += 1
+                yield row
         else:
             for row in csv.reader(handle):
                 if row:
+                    if read_stats is not None:
+                        read_stats.raw_rows_seen += 1
                     yield {str(idx): value for idx, value in enumerate(row)}
 
 

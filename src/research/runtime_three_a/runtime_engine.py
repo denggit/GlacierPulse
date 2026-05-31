@@ -314,15 +314,16 @@ def simulate_runtime_trade_exit_from_normalized_bars(
     end_idx = bisect_right(normalized_bar_ts, end_val)
     if start_idx >= end_idx:
         return _exit_result(entry_ts, entry_price, "NO_FUTURE_BARS", -fee_share_r, 0.0, complete_flag=False)
-    bars_slice = normalized_bars[start_idx:end_idx]
+    # V7.3.0 P2: index-range scan avoids allocating a bars_slice list copy.
     if side == "BUY":
-        mfe_r = (max(float(b["high"]) for b in bars_slice) - entry_price) / risk_u
-        mae_r = (min(float(b["low"]) for b in bars_slice) - entry_price) / risk_u
+        mfe_r = (max(float(normalized_bars[i]["high"]) for i in range(start_idx, end_idx)) - entry_price) / risk_u
+        mae_r = (min(float(normalized_bars[i]["low"]) for i in range(start_idx, end_idx)) - entry_price) / risk_u
     else:
-        mfe_r = (entry_price - min(float(b["low"]) for b in bars_slice)) / risk_u
-        mae_r = (entry_price - max(float(b["high"]) for b in bars_slice)) / risk_u
+        mfe_r = (entry_price - min(float(normalized_bars[i]["low"]) for i in range(start_idx, end_idx))) / risk_u
+        mae_r = (entry_price - max(float(normalized_bars[i]["high"]) for i in range(start_idx, end_idx))) / risk_u
     target_r = abs(target_price - entry_price) / risk_u if target_price > 0 else 0.0
-    for bar in bars_slice:
+    for i in range(start_idx, end_idx):
+        bar = normalized_bars[i]
         high = float(bar["high"])
         low = float(bar["low"])
         if side == "BUY":
@@ -337,10 +338,11 @@ def simulate_runtime_trade_exit_from_normalized_bars(
             return _exit_result(bar["timestamp"], target_price, "TARGET_FIRST", target_r - fee_share_r, mfe_r, mae_r)
         if hit_stop:
             return _exit_result(bar["timestamp"], stop_price, "STOP_FIRST", -1.0 - fee_share_r, mfe_r, mae_r)
-    close = float(bars_slice[-1]["close"])
+    last_bar = normalized_bars[end_idx - 1]
+    close = float(last_bar["close"])
     raw_r = (close - entry_price) / risk_u if side == "BUY" else (entry_price - close) / risk_u
-    complete = float(bars_slice[-1]["timestamp"]) >= end_val
-    return _exit_result(bars_slice[-1]["timestamp"], close, "CLOSE_EXIT", raw_r - fee_share_r, mfe_r, mae_r, complete_flag=complete)
+    complete = float(last_bar["timestamp"]) >= end_val
+    return _exit_result(last_bar["timestamp"], close, "CLOSE_EXIT", raw_r - fee_share_r, mfe_r, mae_r, complete_flag=complete)
 
 
 def normalize_runtime_ticks(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
