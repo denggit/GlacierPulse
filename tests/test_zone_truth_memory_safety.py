@@ -10,6 +10,7 @@ from pathlib import Path
 import tools.generate_research_reports as generator
 from tools import analyze_zone_truth
 from tools import build_runtime_events_from_okx_trades as runtime_builder
+from src.research.runtime_three_a import runtime_event_source as runtime_event_source_mod
 from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
 from src.research.zone_truth import analyzer as analyzer_mod
 from src.research.zone_truth.analyzer import (
@@ -276,6 +277,34 @@ def test_build_runtime_events_from_raw_trades_jsonl(tmp_path):
     assert rows[2]["active_buy_notional_3s"] == 12
     assert rows[2]["active_sell_notional_3s"] == 33
     assert rows[2]["cvd_delta_3s"] == -21
+    assert summary["bucket_sec"] == 1
+    assert summary["rolling_sec"] == 3
+    assert summary["merge_sort_files"] is False
+
+
+def test_data_json_array_lines_do_not_call_json_load(tmp_path, monkeypatch):
+    trades = tmp_path / "trades.data"
+    trades.write_text(
+        json.dumps(
+            [
+                {"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"},
+                {"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"},
+            ]
+        )
+        + "\n"
+        + json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1002, "px": 12, "sz": 1, "side": "buy"}])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_json_load(handle):
+        raise AssertionError(".data must not call json.load")
+
+    monkeypatch.setattr(runtime_builder.json, "load", fail_json_load)
+    rows = list(runtime_builder.iter_trade_rows(trades))
+    assert len(rows) == 3
+    assert rows[0]["ts"] == 1000
+    assert rows[2]["ts"] == 1002
 
 
 def test_build_runtime_events_from_okx_trades_tar_gz_data(tmp_path):
@@ -366,6 +395,43 @@ def test_build_runtime_events_sharded_by_day(tmp_path):
     assert shard_names == ["2026-05-16.jsonl", "2026-05-17.jsonl"]
     assert (out_dir / "2026-05-16.jsonl").exists()
     assert (out_dir / "2026-05-17.jsonl").exists()
+    manifest = json.loads((out_dir / "runtime_events_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["symbol"] == "ETH-USDT-SWAP"
+    assert manifest["bucket_sec"] == 1
+    assert manifest["rolling_sec"] == 3
+    assert manifest["output_mode"] == "sharded_by_day"
+    assert [shard["path"] for shard in manifest["shards"]] == ["2026-05-16.jsonl", "2026-05-17.jsonl"]
+    assert [shard["row_count"] for shard in manifest["shards"]] == [1, 1]
+
+
+def test_runtime_event_source_uses_manifest_without_scanning_bounds(tmp_path, monkeypatch):
+    root = tmp_path / "runtime_events"
+    root.mkdir()
+    shard = root / "2026-05-17.jsonl"
+    shard.write_text(
+        json.dumps({"ts": BASE_TS, "symbol": "BTC-USDT", "last_price": 100}) + "\n",
+        encoding="utf-8",
+    )
+    (root / "runtime_events_manifest.json").write_text(
+        json.dumps(
+            {
+                "symbol": "BTC-USDT",
+                "output_mode": "sharded_by_day",
+                "shards": [{"path": shard.name, "first_ts": BASE_TS, "last_ts": BASE_TS, "row_count": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fail_time_bounds(path):
+        raise AssertionError("manifest-backed source must not scan shard bounds")
+
+    monkeypatch.setattr(runtime_event_source_mod, "_file_time_bounds", fail_time_bounds)
+    source = RuntimeEventSource(root)
+    assert source.memory_profile()["runtime_event_source_manifest_used"] is True
+    assert len(source.files) == 1
+    assert source.files[0].row_count == 1
+    assert list(source.get_window(BASE_TS - 1, BASE_TS + 1, "BTC-USDT"))[0]["last_price"] == 100
 
 
 def test_runtime_event_source_discovers_nested_shards(tmp_path):
@@ -387,6 +453,7 @@ def test_runtime_event_source_discovers_nested_shards(tmp_path):
         encoding="utf-8",
     )
     source = RuntimeEventSource(root)
+    assert source.memory_profile()["runtime_event_source_manifest_used"] is False
     assert [file.path.name for file in source.files] == ["2026-05-17.jsonl"]
     rows = list(source.get_window(BASE_TS - 1, BASE_TS + 10, "BTC-USDT"))
     assert len(rows) == 1
@@ -463,6 +530,47 @@ def test_sequential_file_reading_does_not_open_all_files(tmp_path, monkeypatch):
     second = next(iterator)
     assert second.ts == 1002.0
     assert calls == ["0.jsonl", "1.jsonl"]
+
+
+def test_sequential_non_monotonic_trades_warn_and_reset_rolling(tmp_path):
+    trades_dir = tmp_path / "trades"
+    trades_dir.mkdir()
+    (trades_dir / "a.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1002, "px": 10, "sz": 10, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    (trades_dir / "b.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 1, "side": "sell"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        rolling_sec=3,
+        contract_multiplier=1.0,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["non_monotonic_trade_count"] == 1
+    assert "non-monotonic trades detected" in summary["output_warning"]
+    assert rows[-1]["ts"] == 1000
+    assert rows[-1]["active_buy_notional_3s"] == 0.0
+    assert rows[-1]["active_sell_notional_3s"] == 10.0
+
+    sorted_out = tmp_path / "runtime_events_sorted.jsonl"
+    sorted_summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=sorted_out,
+        rolling_sec=3,
+        contract_multiplier=1.0,
+        merge_sort_files=True,
+    )
+    sorted_rows = [json.loads(line) for line in sorted_out.read_text(encoding="utf-8").splitlines()]
+    assert sorted_summary["merge_sort_files"] is True
+    assert sorted_summary["non_monotonic_trade_count"] == 0
+    assert [row["ts"] for row in sorted_rows] == [1000, 1002]
 
 
 def test_analyze_zone_truth_warns_raw_tar_without_runtime_events(tmp_path, capsys):

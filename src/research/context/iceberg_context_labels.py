@@ -197,6 +197,7 @@ CONTEXT_LABEL_FIELDS = [
     "vp24h_bars_to_reclaim_future",
     "vp24h_reclaim_level",
     "a3_aggression_score",
+    "a3_aggression_quality_future",
     "a3_aggression_quality",
     "a3_body_strength",
     "a3_range_expansion_ratio",
@@ -1180,7 +1181,7 @@ def _ob_unavailable(label: str) -> dict[str, Any]:
 def _aggression_quality_labels(bar: Mapping[str, Any] | None, recent_bars: list[Mapping[str, Any]], direction: str) -> dict[str, Any]:
     if not bar:
         return {
-            "a3_aggression_score": 0.0, "a3_aggression_quality": "UNAVAILABLE", "a3_body_strength": 0.0,
+            "a3_aggression_score": 0.0, "a3_aggression_quality_future": "UNAVAILABLE", "a3_aggression_quality": "UNAVAILABLE", "a3_body_strength": 0.0,
             "a3_range_expansion_ratio": 0.0, "a3_volume_zscore": 0.0, "a3_close_location_score": 0.0,
             "a3_no_quick_return_future_flag": False, "a3_failed_quick_return_future_flag": False,
             "a3_taker_imbalance_score": 0.0, "a3_delta_flip_flag": False, "a3_cvd_pressure_score": 0.0,
@@ -1216,7 +1217,7 @@ def _aggression_quality_labels(bar: Mapping[str, Any] | None, recent_bars: list[
     denom = taker_buy + taker_sell
     imbalance = (taker_buy - taker_sell) / denom if denom > 0 else 0.0
     return {
-        "a3_aggression_score": round(score, 8), "a3_aggression_quality": quality,
+        "a3_aggression_score": round(score, 8), "a3_aggression_quality_future": quality, "a3_aggression_quality": quality,
         "a3_body_strength": round(body_strength, 8), "a3_range_expansion_ratio": round(range_ratio, 8),
         "a3_volume_zscore": round(vol_z, 8), "a3_close_location_score": round(close_loc, 8),
         "a3_no_quick_return_future_flag": False, "a3_failed_quick_return_future_flag": False,

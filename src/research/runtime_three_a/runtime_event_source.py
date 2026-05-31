@@ -18,11 +18,12 @@ class RuntimeEventFile:
     path: Path
     first_ts: float
     last_ts: float
+    row_count: int = 0
 
 
 class RuntimeEventSource:
     def __init__(self, paths: Iterable[str | Path] | str | Path | None = None) -> None:
-        self.files = _discover_files(paths)
+        self.files, self.manifest_used = _discover_files(paths)
         self.mode = _source_mode(self.files, paths)
         self.window_reads = 0
         self.max_window_ticks = 0
@@ -58,13 +59,18 @@ class RuntimeEventSource:
             self.max_window_ticks = max(self.max_window_ticks, count)
 
     def memory_profile(self) -> dict[str, Any]:
-        return {
+        profile = {
             "runtime_event_source_mode": self.mode,
             "runtime_ticks_materialized_count": self.ticks_materialized_count,
             "runtime_window_reads": self.window_reads,
             "runtime_max_window_ticks": self.max_window_ticks,
             "runtime_candidate_file_scans": self.candidate_file_scans,
+            "runtime_event_source_manifest_used": self.manifest_used,
         }
+        warning = runtime_performance_warning(profile)
+        if warning:
+            profile["runtime_performance_warning"] = warning
+        return profile
 
 
 RuntimeEventReader = RuntimeEventSource
@@ -91,13 +97,22 @@ def iter_runtime_event_file(path: Path | str) -> Iterator[dict[str, Any]]:
                 yield value
 
 
-def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> list[RuntimeEventFile]:
+def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> tuple[list[RuntimeEventFile], bool]:
     if paths is None:
-        return []
+        return [], False
     raw_paths = _coerce_paths(paths)
     files: list[Path] = []
+    manifest_files: list[RuntimeEventFile] = []
+    manifest_used = False
     for path in raw_paths:
         if path.is_dir():
+            manifest = path / "runtime_events_manifest.json"
+            if manifest.exists() and not _is_hidden_path(manifest):
+                loaded = _files_from_manifest(path, manifest)
+                if loaded:
+                    manifest_files.extend(loaded)
+                    manifest_used = True
+                    continue
             files.extend(sorted(
                 child for child in [*path.rglob("*.jsonl"), *path.rglob("*.csv")]
                 if not _is_hidden_path(child)
@@ -105,11 +120,42 @@ def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> list[Run
         elif path.exists() and _is_runtime_event_file(path) and not _is_hidden_path(path):
             files.append(path)
     profiled: list[RuntimeEventFile] = []
+    profiled.extend(manifest_files)
     for path in sorted(set(files)):
         first_ts, last_ts = _file_time_bounds(path)
         if first_ts > 0:
             profiled.append(RuntimeEventFile(path=path, first_ts=first_ts, last_ts=last_ts or first_ts))
-    return sorted(profiled, key=lambda item: (item.first_ts, str(item.path)))
+    return sorted(profiled, key=lambda item: (item.first_ts, str(item.path))), manifest_used
+
+
+def _files_from_manifest(root: Path, manifest_path: Path) -> list[RuntimeEventFile]:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    out: list[RuntimeEventFile] = []
+    for shard in manifest.get("shards") or []:
+        if not isinstance(shard, Mapping):
+            continue
+        rel = str(shard.get("path") or "")
+        if not rel:
+            continue
+        path = root / rel
+        if _is_hidden_path(path) or not path.exists() or not _is_runtime_event_file(path):
+            continue
+        first_ts = parse_float(shard.get("first_ts"))
+        last_ts = parse_float(shard.get("last_ts"))
+        if first_ts <= 0:
+            continue
+        out.append(
+            RuntimeEventFile(
+                path=path,
+                first_ts=first_ts,
+                last_ts=last_ts or first_ts,
+                row_count=int(parse_float(shard.get("row_count"))),
+            )
+        )
+    return out
 
 
 def _source_mode(files: list[RuntimeEventFile], paths: object) -> str:
@@ -138,6 +184,16 @@ def _is_runtime_event_file(path: Path) -> bool:
 
 def _is_hidden_path(path: Path) -> bool:
     return any(part.startswith(".") for part in path.parts)
+
+
+def runtime_performance_warning(profile: Mapping[str, Any]) -> str:
+    if (
+        parse_float(profile.get("runtime_window_reads")) > 1000
+        or parse_float(profile.get("runtime_candidate_file_scans")) > 2000
+        or parse_float(profile.get("runtime_max_window_ticks")) > 200000
+    ):
+        return "Runtime event source is memory-safe but repeated window scans may be slow; consider indexed runtime event source."
+    return ""
 
 
 def _merge_sorted_files(files: list[RuntimeEventFile]) -> Iterator[dict[str, Any]]:

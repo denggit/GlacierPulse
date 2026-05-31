@@ -58,10 +58,14 @@ class BuildStats:
     symbol: str = ""
     contract_multiplier: float = 0.0
     notional_mode: str = ""
+    bucket_sec: float = 0.0
+    rolling_sec: float = 0.0
+    merge_sort_files: bool = False
     output_mode: str = "single_file"
     shard_count: int = 0
     shard_files: list[str] | None = None
     output_warning: str = ""
+    non_monotonic_trade_count: int = 0
     total_trades_read: int = 0
     runtime_events_written: int = 0
     first_ts: float = 0.0
@@ -73,10 +77,14 @@ class BuildStats:
             "symbol": self.symbol,
             "contract_multiplier": self.contract_multiplier,
             "notional_mode": self.notional_mode,
+            "bucket_sec": self.bucket_sec,
+            "rolling_sec": self.rolling_sec,
+            "merge_sort_files": self.merge_sort_files,
             "output_mode": self.output_mode,
             "shard_count": self.shard_count,
             "shard_files": list(self.shard_files or []),
             "output_warning": self.output_warning,
+            "non_monotonic_trade_count": self.non_monotonic_trade_count,
             "total_trades_read": self.total_trades_read,
             "runtime_events_written": self.runtime_events_written,
             "first_ts": self.first_ts,
@@ -152,10 +160,15 @@ def build_runtime_events(
     if out_dir is not None and shard_by != "day":
         raise SystemExit("--out-dir requires --shard-by day")
     resolved_multiplier = _resolve_contract_multiplier(symbol, contract_multiplier)
+    bucket_sec = max(float(bucket_sec), 0.001)
+    rolling_sec = max(float(rolling_sec), 0.001)
     stats = BuildStats(
         symbol=symbol,
         contract_multiplier=float(resolved_multiplier),
         notional_mode="price_x_size_x_contract_multiplier",
+        bucket_sec=bucket_sec,
+        rolling_sec=rolling_sec,
+        merge_sort_files=bool(merge_sort_files),
         output_mode="sharded_by_day" if out_dir is not None else "single_file",
         shard_files=[],
         output_warning="single large runtime_events file is not recommended for long samples; use --out-dir --shard-by day" if out_path is not None else "",
@@ -165,13 +178,12 @@ def build_runtime_events(
         writer = _ShardedRuntimeEventWriter(out_dir)
     else:
         writer = _SingleRuntimeEventWriter(out_path)  # type: ignore[arg-type]
-    bucket_sec = max(float(bucket_sec), 0.001)
-    rolling_sec = max(float(rolling_sec), 0.001)
     rolling: deque[NormalizedTrade] = deque()
     price_window: deque[tuple[float, float]] = deque()
     current_bucket: float | None = None
     pending_event: dict[str, Any] | None = None
     prev_trade: NormalizedTrade | None = None
+    prev_ts: float | None = None
 
     try:
         for trade in iter_normalized_trades(
@@ -181,6 +193,21 @@ def build_runtime_events(
             merge_sort_files=merge_sort_files,
         ):
             stats.total_trades_read += 1
+            if prev_ts is not None and trade.ts < prev_ts:
+                stats.non_monotonic_trade_count += 1
+                if "non-monotonic trades detected" not in stats.output_warning:
+                    stats.output_warning = _join_warning(
+                        stats.output_warning,
+                        "non-monotonic trades detected; consider --merge-sort-files",
+                    )
+                if pending_event is not None:
+                    writer.write(pending_event)
+                    stats.runtime_events_written += 1
+                    pending_event = None
+                rolling.clear()
+                price_window.clear()
+                current_bucket = None
+                prev_trade = None
             stats.first_ts = trade.ts if stats.first_ts <= 0 else min(stats.first_ts, trade.ts)
             stats.last_ts = max(stats.last_ts, trade.ts)
             bucket = _bucket_start(trade.ts, bucket_sec)
@@ -200,6 +227,7 @@ def build_runtime_events(
                 rolling_sec=rolling_sec,
             )
             prev_trade = trade
+            prev_ts = trade.ts
 
     finally:
         if pending_event is not None:
@@ -210,6 +238,15 @@ def build_runtime_events(
     stats.peak_rss_mb = _peak_rss_mb()
     stats.shard_files = writer.files
     stats.shard_count = len(writer.files)
+    if isinstance(writer, _ShardedRuntimeEventWriter):
+        writer.write_manifest(
+            symbol=symbol,
+            bucket_sec=bucket_sec,
+            rolling_sec=rolling_sec,
+            contract_multiplier=resolved_multiplier,
+            notional_mode=stats.notional_mode,
+            output_mode=stats.output_mode,
+        )
     return stats.as_dict()
 
 
@@ -284,6 +321,7 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
         self._current_path: Path | None = None
         self._seen: set[Path] = set()
         self._files: list[str] = []
+        self._shards: dict[Path, dict[str, Any]] = {}
 
     @property
     def files(self) -> list[str]:
@@ -301,11 +339,40 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
                 self._seen.add(path)
                 self._files.append(str(path))
         self._handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
+        ts = float(row.get("ts") or 0.0)
+        shard = self._shards.setdefault(
+            path,
+            {"path": path.name, "first_ts": ts, "last_ts": ts, "row_count": 0},
+        )
+        shard["first_ts"] = ts if float(shard.get("first_ts") or 0.0) <= 0 else min(float(shard["first_ts"]), ts)
+        shard["last_ts"] = max(float(shard.get("last_ts") or 0.0), ts)
+        shard["row_count"] = int(shard.get("row_count") or 0) + 1
 
     def close(self) -> None:
         if self._handle is not None:
             self._handle.close()
             self._handle = None
+
+    def write_manifest(
+        self,
+        *,
+        symbol: str,
+        bucket_sec: float,
+        rolling_sec: float,
+        contract_multiplier: float,
+        notional_mode: str,
+        output_mode: str,
+    ) -> None:
+        manifest = {
+            "symbol": symbol,
+            "bucket_sec": bucket_sec,
+            "rolling_sec": rolling_sec,
+            "contract_multiplier": contract_multiplier,
+            "notional_mode": notional_mode,
+            "output_mode": output_mode,
+            "shards": [self._shards[path] for path in sorted(self._shards)],
+        }
+        write_json(self.root / "runtime_events_manifest.json", manifest)
 
 
 def discover_trade_files(path: Path) -> list[Path]:
@@ -466,6 +533,10 @@ def _resolve_contract_multiplier(symbol: str, value: float | None) -> float:
     return float(1.0 if value is None else value)
 
 
+def _join_warning(existing: str, warning: str) -> str:
+    return warning if not existing else f"{existing}; {warning}"
+
+
 def _utc_day(ts: float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
 
@@ -488,9 +559,11 @@ def _detect_format(suffix: str, sample: str) -> str:
     if suffix in {".jsonl", ".ndjson"}:
         return "jsonl"
     if suffix == ".json":
-        return "json" if first == "[" else "jsonl"
+        return "json"
+    if suffix == ".data":
+        return "jsonl" if first in {"{", "["} else "csv"
     if first in {"{", "["}:
-        return "json" if first == "[" else "jsonl"
+        return "jsonl"
     return "csv"
 
 

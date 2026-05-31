@@ -192,6 +192,32 @@ def test_runtime_engine_windowed_reads():
     assert reports["summary"]["runtime_3a_memory_profile"]["runtime_event_source_mode"] == "test_source"
 
 
+def test_runtime_engine_adds_repeated_scan_warning():
+    class Source:
+        def get_window(self, start_ts, end_ts, symbol=None):
+            return iter([*_quiet_ticks(), _burst_tick()])
+
+        def memory_profile(self):
+            return {
+                "runtime_event_source_mode": "test_source",
+                "runtime_ticks_materialized_count": 0,
+                "runtime_window_reads": 1001,
+                "runtime_max_window_ticks": 4,
+                "runtime_candidate_file_scans": 0,
+            }
+
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=Source(),
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    profile = reports["summary"]["runtime_3a_memory_profile"]
+    assert "repeated window scans may be slow" in profile["runtime_performance_warning"]
+
+
 def test_runtime_engine_does_not_copy_full_ticks_per_zone(monkeypatch):
     ranges = []
     ticks = [

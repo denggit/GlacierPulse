@@ -163,7 +163,7 @@ CONTEXT_COMBO_FIELDS = [
     "failed_auction_1h_future_flag",
     "order_block_15m_type",
     "order_block_15m_fresh_flag",
-    "a3_aggression_quality",
+    "a3_aggression_quality_future",
 ]
 
 SHADOW_EVIDENCE_EVENT_FIELDS = [
@@ -434,6 +434,7 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_shadow_evidence.csv", self.group_rows(rows, "a1_evidence_types"), ["a1_evidence_types"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_shadow_evidence_events.csv", self.shadow_evidence_rows(rows), SHADOW_EVIDENCE_EVENT_FIELDS)
         write_csv(out / "zone_truth_by_a2_accumulation_path_v2.csv", self.group_rows(rows, "a2_accumulation_path_v2"), ["a2_accumulation_path_v2"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_quality_future_type_v2.csv", self.group_rows(rows, "a3_quality_future_type_v2"), ["a3_quality_future_type_v2"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_aggression_type_v2.csv", self.group_rows(rows, "a3_quality_future_type_v2"), ["a3_quality_future_type_v2"] + GROUP_METRIC_FIELDS)
         write_csv(
             out / "zone_truth_by_boll_context.csv",
@@ -468,7 +469,8 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_vp_node_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"]), ["direction", "vp24h_proxy_node_context", "vpsession_proxy_node_context"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_value_edge_reclaim_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_future_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_future_flag"]), ["direction", "vpsession_value_edge_side", "vpsession_reclaim_value_future_flag", "vp24h_value_edge_side", "vp24h_reclaim_value_future_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_sweep_failed_auction_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "failed_auction_15m_future_flag", "failed_auction_1h_future_flag"]), ["direction", "failed_auction_15m_future_flag", "failed_auction_1h_future_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_aggression_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "a3_aggression_quality"]), ["direction", "a3_aggression_quality"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_aggression_quality_future_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "a3_aggression_quality_future"]), ["direction", "a3_aggression_quality_future"] + CONTEXT_SUMMARY_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_aggression_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "a3_aggression_quality_future"]), ["direction", "a3_aggression_quality_future"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_session_context.csv", build_context_summary_rows(iceberg_rows, ["session_utc", "session_bucket", "is_weekend_flag"]), ["session_utc", "session_bucket", "is_weekend_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_ob_quality_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"]), ["direction", "order_block_15m_type", "order_block_15m_fresh_flag", "order_block_15m_invalidated_flag", "order_block_1h_type", "order_block_1h_fresh_flag", "order_block_1h_invalidated_flag"] + CONTEXT_SUMMARY_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_poc_risk_context.csv", build_context_summary_rows(iceberg_rows, ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"]), ["direction", "vp24h_proxy_location", "vp24h_proxy_nearest_node_type", "vpsession_proxy_location", "vpsession_proxy_nearest_node_type"] + CONTEXT_SUMMARY_METRIC_FIELDS)
@@ -516,6 +518,11 @@ class ZoneTruthAnalyzer:
             "simulator_written_trade_count": simulator_stats.written_trade_count,
             "simulator_combo_valid_trade_count": stream_summary["valid_trade_count"],
             "memory_profile": memory_profile,
+            "deprecated_report_aliases": {
+                "zone_truth_by_a3_aggression_type_v2.csv": "zone_truth_by_a3_quality_future_type_v2.csv",
+                "zone_truth_by_aggression_quality_context.csv": "zone_truth_by_aggression_quality_future_context.csv",
+                "a3_aggression_quality": "a3_aggression_quality_future",
+            },
             **field_hygiene_summary(ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS),
             "no_future_schema_audit": audit_report_schema(ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS),
             "runtime_3a_report_summary": rt_reports["summary"],
@@ -1021,8 +1028,13 @@ class ZoneTruthAnalyzer:
             lines.append(f"- runtime_window_reads: {rt_memory.get('runtime_window_reads')}")
             lines.append(f"- runtime_candidate_file_scans: {rt_memory.get('runtime_candidate_file_scans')}")
             lines.append(f"- runtime_max_window_ticks: {rt_memory.get('runtime_max_window_ticks')}")
-            if int(parse_float(rt_memory.get("runtime_window_reads"))) >= 1000:
-                lines.append("- WARNING: Runtime event source is memory-safe but may be slow due to repeated file scans.")
+            if rt_memory.get("runtime_performance_warning"):
+                lines.append(f"- WARNING: {rt_memory.get('runtime_performance_warning')}")
+        deprecated_aliases = dict(summary.get("deprecated_report_aliases") or {})
+        if deprecated_aliases:
+            lines.extend(["", "## Deprecated Report Aliases", ""])
+            for old, new in deprecated_aliases.items():
+                lines.append(f"- `{old}` -> `{new}`")
         lines.append(f"- a3_after_a2_future_fee_positive_1h_count: {summary.get('a3_after_a2_future_fee_positive_1h_count')}")
         lines.append(f"- a3_after_a2_future_fee_positive_1h_rate: {summary.get('a3_after_a2_future_fee_positive_1h_rate')}")
         lines.append(f"- a3_after_a2_future_realized_r_proxy_1h_avg: {summary.get('a3_after_a2_future_realized_r_proxy_1h_avg')}")

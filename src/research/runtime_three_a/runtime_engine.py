@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping
 from config import research_evaluator as cfg
 from src.research.a1_edge.schema import parse_bool, parse_float
 from src.research.no_future_audit import validate_entry_conditions, validate_trade_row
-from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
+from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource, runtime_performance_warning
 
 from .a2_runtime_state import (
     A2RuntimeConfig,
@@ -415,15 +415,24 @@ def _a2_snapshot_for_expiry(a2: Mapping[str, Any], expiry: int) -> dict[str, Any
 
 def _runtime_memory_profile(event_source: Any | None, ticks: list[dict[str, Any]] | None) -> dict[str, Any]:
     if event_source is not None and hasattr(event_source, "memory_profile"):
-        return dict(event_source.memory_profile())
+        profile = dict(event_source.memory_profile())
+        warning = runtime_performance_warning(profile)
+        if warning:
+            profile["runtime_performance_warning"] = warning
+        return profile
     count = len(ticks or [])
-    return {
+    profile = {
         "runtime_event_source_mode": "materialized_iterable" if count else "empty",
         "runtime_ticks_materialized_count": count,
         "runtime_window_reads": 0,
         "runtime_max_window_ticks": 0,
         "runtime_candidate_file_scans": 0,
+        "runtime_event_source_manifest_used": False,
     }
+    warning = runtime_performance_warning(profile)
+    if warning:
+        profile["runtime_performance_warning"] = warning
+    return profile
 
 
 def _signal_row(zone: Mapping[str, Any], a2: Mapping[str, Any], a3: Mapping[str, Any], expiry_sec: int) -> dict[str, Any]:

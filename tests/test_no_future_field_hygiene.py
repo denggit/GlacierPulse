@@ -21,6 +21,8 @@ from src.research.no_future_audit import validate_entry_conditions
         "mae_15m_u_future",
         "PRICE_BREAKOUT_PERSISTENT",
         "A2_COMPRESSION",
+        "a3_aggression_quality",
+        "a3_aggression_quality_future",
     ],
 )
 def test_no_future_audit_rejects_future_offline_sim_and_aliases(field):

@@ -120,6 +120,7 @@ def _register_defaults() -> None:
         "a3_future_persistence_3m_flag": ["a3_preview_persistence_3m_flag"],
         "a3_future_no_quick_return_3m_flag": ["a3_preview_no_quick_return_3m_flag"],
         "a3_quality_future_type_v2": ["a3_aggression_type_v2", "PRICE_BREAKOUT_PERSISTENT"],
+        "a3_aggression_quality_future": ["a3_aggression_quality"],
         "a3_future_realized_r_proxy_1h": ["a3_preview_realized_r_proxy_1h", "realized_r_proxy"],
     }
     for name, aliases in future_aliases.items():
