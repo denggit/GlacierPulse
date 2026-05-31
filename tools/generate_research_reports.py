@@ -35,6 +35,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-sample", type=int, default=30)
     parser.add_argument("--snapshot", action="store_true")
     parser.add_argument("--zip", action="store_true", dest="zip_enabled")
+    parser.add_argument("--enable-3a-simulator", choices=["true", "false"], default=None)
+    parser.add_argument("--simulator-input-scope", choices=["iceberg_only", "all"], default=None)
+    parser.add_argument("--simulator-include-unavailable", choices=["true", "false"], default=None)
+    parser.add_argument("--simulator-max-trades", type=int, default=None)
     return parser
 
 
@@ -139,6 +143,14 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
             str(args.vp_value_area_ratio),
         ],
     }
+    if args.enable_3a_simulator is not None:
+        commands["zone_truth"].extend(["--enable-3a-simulator", args.enable_3a_simulator])
+    if args.simulator_input_scope is not None:
+        commands["zone_truth"].extend(["--simulator-input-scope", args.simulator_input_scope])
+    if args.simulator_include_unavailable is not None:
+        commands["zone_truth"].extend(["--simulator-include-unavailable", args.simulator_include_unavailable])
+    if args.simulator_max_trades is not None:
+        commands["zone_truth"].extend(["--simulator-max-trades", str(args.simulator_max_trades)])
     if "kline" in active_paths:
         commands["zone_truth"][6:6] = ["--kline", str(active_paths["kline"])]
     else:
@@ -185,7 +197,7 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
 
 
 def _run_subprocess(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=str(ROOT), text=True, capture_output=True, check=False)
+    return subprocess.run(command, cwd=str(ROOT), text=True, check=False)
 
 
 def _run_report(report_name: str, command: list[str], runner: ReportRunner) -> str:
@@ -195,10 +207,12 @@ def _run_report(report_name: str, command: list[str], runner: ReportRunner) -> s
     except Exception as exc:
         print(f"[REPORT] {report_name} failed: {exc}", file=sys.stderr)
         return "failed"
-    if result.stdout:
-        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-    if result.stderr:
-        print(result.stderr, file=sys.stderr, end="" if result.stderr.endswith("\n") else "\n")
+    stdout = getattr(result, "stdout", None)
+    stderr = getattr(result, "stderr", None)
+    if stdout:
+        print(stdout, end="" if stdout.endswith("\n") else "\n")
+    if stderr:
+        print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
     if result.returncode == 0:
         return "success"
     print(f"[REPORT] {report_name} failed with exit_code={result.returncode}", file=sys.stderr)

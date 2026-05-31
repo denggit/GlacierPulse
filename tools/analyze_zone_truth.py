@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from config import research_evaluator as cfg
 from src.research.a1_edge.io_utils import parse_windows
 from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
@@ -29,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-context-labels", default="true")
     parser.add_argument("--vp-bin-size-u", type=float, default=1.0)
     parser.add_argument("--vp-value-area-ratio", type=float, default=0.70)
+    parser.add_argument("--enable-3a-simulator", default=str(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True)).lower())
+    parser.add_argument("--simulator-input-scope", default=str(getattr(cfg, "V7_3A_SIMULATOR_INPUT_SCOPE", "ICEBERG_ONLY")).lower(), choices=["iceberg_only", "all"])
+    parser.add_argument("--simulator-include-unavailable", default=str(getattr(cfg, "V7_3A_SIMULATOR_INCLUDE_UNAVAILABLE", False)).lower())
+    parser.add_argument("--simulator-max-trades", type=int, default=int(getattr(cfg, "V7_3A_SIMULATOR_MAX_TRADES", 0)))
     return parser
 
 
@@ -61,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
         enable_context_labels=_parse_bool(args.enable_context_labels),
         vp_bin_size_u=args.vp_bin_size_u,
         vp_value_area_ratio=args.vp_value_area_ratio,
+        enable_3a_simulator=_parse_bool(args.enable_3a_simulator),
+        simulator_input_scope=args.simulator_input_scope,
+        simulator_include_unavailable=_parse_bool(args.simulator_include_unavailable),
+        simulator_max_trades=args.simulator_max_trades,
     )
     summary = analyzer.analyze_files(phase1_path, reactions_path, kline_path, args.out)
     print(
@@ -69,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
         f"a2_pre_pool_zone_count={summary.get('a2_pre_pool_zone_count')} "
         f"synthetic_zones={summary.get('synthetic_zones')} "
         f"context_labels_status={summary.get('context_labels_status')} "
+        f"simulator_enabled={summary.get('simulator_enabled')} "
+        f"simulator_input_scope={summary.get('simulator_input_scope')} "
+        f"simulator_written_trade_count={summary.get('simulator_written_trade_count')} "
         f"out={args.out}"
     )
     return 0

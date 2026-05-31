@@ -4,13 +4,26 @@
 from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
-from typing import Any, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, Iterable, Iterator, Mapping
 
 from config import research_evaluator as cfg
 from src.research.a1_edge.schema import parse_bool, parse_float
 
 
 BarIndex = dict[str, Any]
+
+
+@dataclass
+class SimulatorStats:
+    input_rows: int = 0
+    valid_trade_count: int = 0
+    written_trade_count: int = 0
+    unavailable_entry_count: int = 0
+    unavailable_stop_count: int = 0
+    capped: bool = False
+    max_trades: int = 0
+
 
 ENTRY_MODELS = (
     "BREAKOUT",
@@ -22,7 +35,7 @@ ENTRY_MODELS = (
 STOP_MODELS = ("V1_ZONE_WIDTH", "STRUCTURAL_PROXY", "ZONE_BOUNDARY_V2")
 
 
-def simulate_3a_proxy_trades(
+def iter_3a_proxy_trades(
     rows: Iterable[Mapping[str, Any]],
     bars: Iterable[Mapping[str, Any]],
     *,
@@ -31,16 +44,41 @@ def simulate_3a_proxy_trades(
     target_r_list: Iterable[float] | None = None,
     window_sec: int = 3600,
     fee_pct: float | None = None,
-) -> list[dict[str, Any]]:
+    include_unavailable: bool = False,
+    max_trades: int = 0,
+    stats: SimulatorStats | None = None,
+) -> Iterator[dict[str, Any]]:
     bar_index = build_bar_index(bars)
     targets = [float(x) for x in (target_r_list or getattr(cfg, "V7_3A_TARGET_R_LIST", [1.0, 1.5, 2.0])) if float(x) >= 1.0]
     fee = float(fee_pct if fee_pct is not None else getattr(cfg, "V7_3A_ROUNDTRIP_FEE_PCT", 0.001))
-    trades: list[dict[str, Any]] = []
+    cap = max(0, int(max_trades or 0))
+    if stats is not None:
+        stats.max_trades = cap
+    yielded = 0
+
+    def can_yield() -> bool:
+        nonlocal yielded
+        if cap and yielded >= cap:
+            if stats is not None:
+                stats.capped = True
+            return False
+        yielded += 1
+        if stats is not None:
+            stats.written_trade_count += 1
+        return True
+
     for row in rows or []:
+        if stats is not None:
+            stats.input_rows += 1
         for entry_model in entry_models:
             entry = resolve_entry(row, bar_index, entry_model)
             if not entry["available"]:
-                trades.append(_unavailable(row, entry_model, "NO_ENTRY", entry.get("reason", "NO_ENTRY")))
+                if stats is not None:
+                    stats.unavailable_entry_count += 1
+                if include_unavailable:
+                    if not can_yield():
+                        return
+                    yield _unavailable(row, entry_model, "NO_ENTRY", entry.get("reason", "NO_ENTRY"))
                 continue
             future_bars = _future_bars(
                 bar_index,
@@ -52,37 +90,67 @@ def simulate_3a_proxy_trades(
             for stop_model in stop_models:
                 stop = resolve_stop(row, entry, stop_model)
                 if not stop["available"]:
-                    trades.append(
-                        _unavailable(
+                    if stats is not None:
+                        stats.unavailable_stop_count += 1
+                    if include_unavailable:
+                        if not can_yield():
+                            return
+                        yield _unavailable(
                             row,
                             entry_model,
                             stop_model,
                             stop.get("reason", "INVALID_STOP"),
                             stop.get("stop_basis_reason", ""),
                         )
-                    )
                     continue
                 for target_r in targets:
-                    trades.append(
-                        simulate_single_trade_with_future_bars(
-                            row,
-                            future_bars,
-                            entry_model=entry_model,
-                            stop_model=stop_model,
-                            target_r=target_r,
-                            entry_ts=entry["entry_ts"],
-                            entry_price=entry["entry_price"],
-                            entry_bar_ts=entry.get("entry_bar_ts", 0.0),
-                            entry_price_source=entry.get("entry_price_source", ""),
-                            stop_price=stop["stop_price"],
-                            risk_u=stop["risk_u"],
-                            stop_basis_reason=stop.get("stop_basis_reason", ""),
-                            window_sec=window_sec,
-                            fee_pct=fee,
-                        )
+                    if stats is not None:
+                        stats.valid_trade_count += 1
+                    if not can_yield():
+                        return
+                    yield simulate_single_trade_with_future_bars(
+                        row,
+                        future_bars,
+                        entry_model=entry_model,
+                        stop_model=stop_model,
+                        target_r=target_r,
+                        entry_ts=entry["entry_ts"],
+                        entry_price=entry["entry_price"],
+                        entry_bar_ts=entry.get("entry_bar_ts", 0.0),
+                        entry_price_source=entry.get("entry_price_source", ""),
+                        stop_price=stop["stop_price"],
+                        risk_u=stop["risk_u"],
+                        stop_basis_reason=stop.get("stop_basis_reason", ""),
+                        window_sec=window_sec,
+                        fee_pct=fee,
                     )
-    return trades
 
+
+def simulate_3a_proxy_trades(
+    rows: Iterable[Mapping[str, Any]],
+    bars: Iterable[Mapping[str, Any]],
+    *,
+    entry_models: Iterable[str] = ENTRY_MODELS,
+    stop_models: Iterable[str] = STOP_MODELS,
+    target_r_list: Iterable[float] | None = None,
+    window_sec: int = 3600,
+    fee_pct: float | None = None,
+    include_unavailable: bool = True,
+    max_trades: int = 0,
+) -> list[dict[str, Any]]:
+    return list(
+        iter_3a_proxy_trades(
+            rows,
+            bars,
+            entry_models=entry_models,
+            stop_models=stop_models,
+            target_r_list=target_r_list,
+            window_sec=window_sec,
+            fee_pct=fee_pct,
+            include_unavailable=include_unavailable,
+            max_trades=max_trades,
+        )
+    )
 
 def resolve_entry(row: Mapping[str, Any], bar_index: BarIndex, entry_model: str) -> dict[str, Any]:
     model = str(entry_model).upper()

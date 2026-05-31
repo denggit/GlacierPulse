@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import bisect
+import csv
+import gc
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -18,11 +21,11 @@ from .a2_accumulation_v2 import attach_a2_accumulation_path_v2
 from .a3_aggression_v2 import attach_a3_aggression_v2
 from .aggregator import ZoneTruthAggregator
 from .a2_state import ZoneA2StateClassifier
-from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, bad_combos, build_combo_matrix, combo_summary, group_stats, is_valid_simulated_trade, top_combos
+from .combo_matrix import COMBO_KEY_FIELDS, COMBO_METRIC_FIELDS, ComboStatsAccumulator, TradeGroupStatsAccumulator, bad_combos, build_combo_matrix, combo_summary, group_stats, is_valid_simulated_trade, top_combos
 from .forward import ZoneForwardMetricsCalculator
 from .market_context import ZoneMarketContextCalculator
 from .models import SOURCE_SYNTHETIC, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS
-from .trade_simulator import simulate_3a_proxy_trades
+from .trade_simulator import SimulatorStats, iter_3a_proxy_trades
 
 
 FEE_AWARE_GROUP_METRIC_FIELDS = [
@@ -134,6 +137,69 @@ SHADOW_EVIDENCE_EVENT_FIELDS = [
 ]
 
 
+
+def write_simulated_trades_streaming(
+    path: Path | str,
+    trade_iter: Iterable[Mapping[str, Any]],
+    fieldnames: Iterable[str],
+    combo_accumulator: ComboStatsAccumulator,
+    group_accumulators: Mapping[str, TradeGroupStatsAccumulator],
+) -> dict[str, Any]:
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fields = list(fieldnames)
+    written = 0
+    valid = 0
+    with p.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for trade in trade_iter:
+            writer.writerow({name: trade.get(name, "") for name in fields})
+            written += 1
+            if is_valid_simulated_trade(trade):
+                valid += 1
+            combo_accumulator.add(trade)
+            for accumulator in group_accumulators.values():
+                accumulator.add(trade)
+    return {"written_trade_count": written, "valid_trade_count": valid}
+
+
+def _normalize_simulator_input_scope(value: object) -> str:
+    text = str(value or "ICEBERG_ONLY").strip().upper()
+    if text in {"ALL", "FULL"}:
+        return "ALL"
+    return "ICEBERG_ONLY"
+
+
+def _new_memory_profile() -> dict[str, float]:
+    keys = [
+        "peak_rss_mb",
+        "after_read_inputs_rss_mb",
+        "after_aggregate_rss_mb",
+        "after_forward_metrics_rss_mb",
+        "after_market_context_rss_mb",
+        "after_a2_a3_rss_mb",
+        "after_context_labels_rss_mb",
+        "after_post_event_labels_rss_mb",
+        "after_simulator_rss_mb",
+        "after_csv_write_rss_mb",
+    ]
+    return {key: 0.0 for key in keys}
+
+
+def _peak_rss_mb() -> float:
+    try:
+        import resource
+
+        rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    except Exception:
+        return 0.0
+    if sys.platform == "darwin":
+        rss /= 1024.0 * 1024.0
+    else:
+        rss /= 1024.0
+    return round(rss, 4)
+
 class ZoneTruthAnalyzer:
     def __init__(
         self,
@@ -144,6 +210,10 @@ class ZoneTruthAnalyzer:
         enable_context_labels: bool = True,
         vp_bin_size_u: float = 1.0,
         vp_value_area_ratio: float = 0.70,
+        enable_3a_simulator: bool | None = None,
+        simulator_input_scope: str = "ICEBERG_ONLY",
+        simulator_include_unavailable: bool | None = None,
+        simulator_max_trades: int | None = None,
     ) -> None:
         self.price_tolerance_usdt = float(price_tolerance_usdt)
         self.time_tolerance_sec = float(time_tolerance_sec)
@@ -155,6 +225,10 @@ class ZoneTruthAnalyzer:
             vp_bin_size_u=float(vp_bin_size_u),
             vp_value_area_ratio=float(vp_value_area_ratio),
         )
+        self.enable_3a_simulator = bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True)) if enable_3a_simulator is None else bool(enable_3a_simulator)
+        self.simulator_input_scope = _normalize_simulator_input_scope(simulator_input_scope or getattr(cfg, "V7_3A_SIMULATOR_INPUT_SCOPE", "ICEBERG_ONLY"))
+        self.simulator_include_unavailable = bool(getattr(cfg, "V7_3A_SIMULATOR_INCLUDE_UNAVAILABLE", False)) if simulator_include_unavailable is None else bool(simulator_include_unavailable)
+        self.simulator_max_trades = max(0, int(getattr(cfg, "V7_3A_SIMULATOR_MAX_TRADES", 0) if simulator_max_trades is None else simulator_max_trades))
 
     def analyze_files(
         self,
@@ -177,27 +251,58 @@ class ZoneTruthAnalyzer:
     ) -> dict[str, Any]:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
+        memory_profile = _new_memory_profile()
         kline_records = list(kline_records or [])
+        memory_profile["after_read_inputs_rss_mb"] = _peak_rss_mb()
         aggregator = ZoneTruthAggregator(
             price_tolerance_usdt=self.price_tolerance_usdt,
             time_tolerance_sec=self.time_tolerance_sec,
             timezone=self.timezone,
         )
         rows = aggregator.aggregate(phase1_records, reaction_records)
+        memory_profile["after_aggregate_rss_mb"] = _peak_rss_mb()
+        gc.collect()
         rows = ZoneForwardMetricsCalculator(self.windows_sec, kline_timezone=self.timezone).attach_forward_metrics(rows, kline_records)
+        memory_profile["after_forward_metrics_rss_mb"] = _peak_rss_mb()
         rows = ZoneMarketContextCalculator(kline_timezone=self.timezone).attach_market_context(rows, kline_records)
+        memory_profile["after_market_context_rss_mb"] = _peak_rss_mb()
         rows = ZoneA2StateClassifier().attach_a2_state(rows)
         rows = [attach_a2_accumulation_path_v2(row) for row in rows]
         rows = [attach_a3_aggression_v2(row) for row in rows]
+        memory_profile["after_a2_a3_rss_mb"] = _peak_rss_mb()
         rows = self.attach_context_labels(rows, kline_records)
+        memory_profile["after_context_labels_rss_mb"] = _peak_rss_mb()
         normalized_bars = normalize_klines(kline_records, kline_timezone=self.timezone) if kline_records else []
         rows = self.attach_post_event_context_labels(rows, normalized_bars)
-        simulated_trades = (
-            simulate_3a_proxy_trades(rows, normalized_bars)
-            if bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True))
-            else []
+        memory_profile["after_post_event_labels_rss_mb"] = _peak_rss_mb()
+        iceberg_rows = self.iceberg_context_rows(rows)
+        simulator_rows = rows if self.simulator_input_scope == "ALL" else iceberg_rows
+        combo_accumulator = ComboStatsAccumulator()
+        group_accumulators = {
+            "entry_model": TradeGroupStatsAccumulator("entry_model"),
+            "stop_model": TradeGroupStatsAccumulator("stop_model"),
+            "target_r": TradeGroupStatsAccumulator("target_r"),
+        }
+        simulator_stats = SimulatorStats(max_trades=self.simulator_max_trades)
+        if self.enable_3a_simulator:
+            trade_iter = iter_3a_proxy_trades(
+                simulator_rows,
+                normalized_bars,
+                include_unavailable=self.simulator_include_unavailable,
+                max_trades=self.simulator_max_trades,
+                stats=simulator_stats,
+            )
+        else:
+            trade_iter = iter(())
+        write_simulated_trades_streaming(
+            out / "zone_truth_3a_simulated_trades.csv",
+            trade_iter,
+            V7_SIMULATED_TRADE_FIELDS,
+            combo_accumulator,
+            group_accumulators,
         )
-        combo_matrix_rows = build_combo_matrix(simulated_trades)
+        memory_profile["after_simulator_rss_mb"] = _peak_rss_mb()
+        combo_matrix_rows = combo_accumulator.to_rows()
         top_combo_rows = top_combos(combo_matrix_rows)
         bad_combo_rows = bad_combos(combo_matrix_rows)
         write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
@@ -240,7 +345,6 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_shadow_evidence_events.csv", self.shadow_evidence_rows(rows), SHADOW_EVIDENCE_EVENT_FIELDS)
         write_csv(out / "zone_truth_by_a2_accumulation_path_v2.csv", self.group_rows(rows, "a2_accumulation_path_v2"), ["a2_accumulation_path_v2"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_aggression_type_v2.csv", self.group_rows(rows, "a3_aggression_type_v2"), ["a3_aggression_type_v2"] + GROUP_METRIC_FIELDS)
-        iceberg_rows = self.iceberg_context_rows(rows)
         write_csv(
             out / "zone_truth_by_boll_context.csv",
             build_context_summary_rows(iceberg_rows, ["direction", "boll_15m_position", "boll_1h_position"]),
@@ -287,15 +391,32 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_volatility_regime_1h.csv", self.group_rows(rows, "volatility_regime_1h"), ["volatility_regime_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_top_cases.csv", self.top_cases(rows), ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_match_quality.csv", self.match_quality(rows, aggregator.unmatched_pie_count), ["match_quality"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_3a_simulated_trades.csv", simulated_trades, V7_SIMULATED_TRADE_FIELDS)
-        write_csv(out / "zone_truth_by_entry_model.csv", self.group_simulated_trades(simulated_trades, "entry_model"), ["entry_model"] + COMBO_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_stop_model.csv", self.group_simulated_trades(simulated_trades, "stop_model"), ["stop_model"] + COMBO_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_target_r.csv", self.group_simulated_trades(simulated_trades, "target_r"), ["target_r"] + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_entry_model.csv", group_accumulators["entry_model"].to_rows(), ["entry_model"] + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_stop_model.csv", group_accumulators["stop_model"].to_rows(), ["stop_model"] + COMBO_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_target_r.csv", group_accumulators["target_r"].to_rows(), ["target_r"] + COMBO_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_3a_combo_matrix.csv", combo_matrix_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_3a_combo_top.csv", top_combo_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_3a_combo_bad.csv", bad_combo_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
+        memory_profile["after_csv_write_rss_mb"] = _peak_rss_mb()
+        memory_profile["peak_rss_mb"] = _peak_rss_mb()
         summary = self.summary(rows, aggregator.unmatched_pie_count)
-        summary.update(combo_summary(combo_matrix_rows, simulated_trades))
+        summary.update(combo_summary(combo_matrix_rows, valid_trade_count=simulator_stats.valid_trade_count))
+        summary.update({
+            "v7_enabled": self.enable_3a_simulator,
+            "simulator_enabled": self.enable_3a_simulator,
+            "simulator_input_scope": self.simulator_input_scope,
+            "simulator_input_rows": len(simulator_rows),
+            "total_rows": len(rows),
+            "iceberg_rows": len(iceberg_rows),
+            "simulator_include_unavailable": self.simulator_include_unavailable,
+            "simulator_max_trades": self.simulator_max_trades,
+            "simulator_capped": simulator_stats.capped,
+            "simulator_unavailable_entry_count": simulator_stats.unavailable_entry_count,
+            "simulator_unavailable_stop_count": simulator_stats.unavailable_stop_count,
+            "simulator_valid_trade_count": simulator_stats.valid_trade_count,
+            "simulator_written_trade_count": simulator_stats.written_trade_count,
+            "memory_profile": memory_profile,
+        })
         write_json(out / "summary.json", summary)
         self._write_summary_md(out / "zone_truth_summary.md", summary)
         return summary
