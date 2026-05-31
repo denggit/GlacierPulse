@@ -108,8 +108,8 @@ def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> tuple[li
         if path.is_dir():
             manifest = path / "runtime_events_manifest.json"
             if manifest.exists() and not _is_hidden_path(manifest):
-                loaded = _files_from_manifest(path, manifest)
-                if loaded:
+                loaded, parsed = _load_manifest_files(path, manifest)
+                if parsed:
                     manifest_files.extend(loaded)
                     manifest_used = True
                     continue
@@ -128,11 +128,16 @@ def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> tuple[li
     return sorted(profiled, key=lambda item: (item.first_ts, str(item.path))), manifest_used
 
 
-def _files_from_manifest(root: Path, manifest_path: Path) -> list[RuntimeEventFile]:
+def _load_manifest_files(root: Path, manifest_path: Path) -> tuple[list[RuntimeEventFile], bool]:
+    """Parse manifest and return (files, parsed).
+
+    Returns (files, True) when the manifest is valid JSON and was parsed,
+    even if shards is empty.  Returns ([], False) only on parse failure.
+    """
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
+        return [], False
     out: list[RuntimeEventFile] = []
     for shard in manifest.get("shards") or []:
         if not isinstance(shard, Mapping):
@@ -155,7 +160,13 @@ def _files_from_manifest(root: Path, manifest_path: Path) -> list[RuntimeEventFi
                 row_count=int(parse_float(shard.get("row_count"))),
             )
         )
-    return out
+    return out, True
+
+
+def _files_from_manifest(root: Path, manifest_path: Path) -> list[RuntimeEventFile]:
+    """Backward-compat shim: returns only the file list."""
+    files, _ = _load_manifest_files(root, manifest_path)
+    return files
 
 
 def _source_mode(files: list[RuntimeEventFile], paths: object) -> str:

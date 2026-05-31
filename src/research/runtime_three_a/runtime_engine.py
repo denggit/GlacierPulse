@@ -30,6 +30,7 @@ from .target_models import build_target_candidates
 RUNTIME_STATUS_SKIPPED_NO_TRADE_EVENTS = "SKIPPED_NO_TRADE_EVENTS"
 RUNTIME_STATUS_NO_RT_A3_SIGNALS = "NO_RT_A3_SIGNALS"
 RUNTIME_STATUS_OK = "OK"
+RUNTIME_TICK_ENTRY_BUFFER_SEC = 5.0
 
 
 VARIANTS = {
@@ -89,7 +90,7 @@ class RuntimeThreeABacktestEngine:
 
         for zone in zones_sorted:
             start_ts = _zone_start_ts(zone)
-            end_ts = start_ts + float(max_expiry) + float(self.config.outcome_window_sec)
+            end_ts = start_ts + float(max_expiry) + RUNTIME_TICK_ENTRY_BUFFER_SEC
             symbol = str(zone.get("symbol") or "")
             tick_iter = _zone_window_ticks(
                 event_source=event_source,

@@ -189,7 +189,7 @@ def test_runtime_engine_windowed_reads():
     assert len(source.calls) == 1
     start, end, symbol = source.calls[0]
     assert start == 1000.0
-    assert end == 5500.0
+    assert end == 1905.0  # start_ts(1000) + max_expiry(900) + RUNTIME_TICK_ENTRY_BUFFER_SEC(5.0)
     assert symbol == "BTC-USDT"
     assert reports["summary"]["runtime_3a_memory_profile"]["runtime_event_source_mode"] == "test_source"
 
