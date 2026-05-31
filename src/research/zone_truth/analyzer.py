@@ -87,15 +87,31 @@ V73_RT_TRADE_FIELDS = [
     "trade_id", "zone_id", "direction", "a1_ts", "a1_price", "a1_vp_setup_rt",
     "a1_vp_context_prefix", "a2_rt_start_ts", "a2_rt_ready_ts", "a2_rt_expiry_sec",
     "a2_rt_state", "entry_ts", "entry_price", "entry_reason", "condition_available_ts_max",
-    "condition_source", "uses_future_field_flag", "future_field_names", "stop_model", "stop_price", "risk_u",
+    "condition_source", "uses_future_field_flag", "future_field_names", "trade_blocked_flag", "trade_blocked_reason",
+    "stop_model", "stop_price", "risk_u",
     "stop_reason", "fee_share_r", "target_model", "target_price", "target_r", "exit_ts",
     "exit_price", "exit_reason", "realized_r_sim", "mfe_r_future", "mae_r_future",
+    "target_first_flag_sim", "stop_first_flag_sim", "ambiguous_flag_sim", "complete_flag_sim",
     "a3_quality_future_type_v2", "a3_quality_future_score_v2",
     "target_fixed_2r_price_sim", "target_poc_price_rt", "target_hvn_directional_price_rt",
     "target_opposite_value_edge_price_rt", "target_next_lvn_price_rt", "target_poc_r_rt",
     "target_hvn_r_rt", "target_opposite_value_edge_r_rt", "target_next_lvn_r_rt",
     "target_hybrid_min_2r_available_rt", "target_hybrid_min_2r_price_rt", "target_hybrid_min_2r_r_rt",
 ]
+
+V73_RT_SUMMARY_METRIC_FIELDS = [
+    "trade_count", "avg_realized_r_sim", "median_realized_r_sim", "win_rate",
+    "profit_factor", "max_drawdown_r", "max_consecutive_losses", "trades_per_day",
+    "fee_share_r_avg", "long_short_split", "a1_vp_setup_split", "a2_expiry_split",
+    "target_candidate_split",
+]
+
+V73_RT_BY_STRATEGY_FIELDS = ["strategy_variant"] + V73_RT_SUMMARY_METRIC_FIELDS
+V73_RT_BY_VP_SETUP_FIELDS = ["a1_vp_setup_rt"] + V73_RT_SUMMARY_METRIC_FIELDS
+V73_RT_BY_EXPIRY_FIELDS = ["expiry_sec"] + V73_RT_SUMMARY_METRIC_FIELDS + [
+    "expired_count", "invalidated_count", "a3_triggered_count",
+]
+V73_RT_BY_TARGET_CANDIDATE_FIELDS = ["target_model"] + V73_RT_SUMMARY_METRIC_FIELDS
 
 GROUP_METRIC_FIELDS = [
     "count",
@@ -357,6 +373,9 @@ class ZoneTruthAnalyzer:
         combo_matrix_rows = combo_accumulator.to_rows()
         top_combo_rows = top_combos(combo_matrix_rows)
         bad_combo_rows = bad_combos(combo_matrix_rows)
+        runtime_3a_memory_profile = {
+            "before_runtime_events_rss_mb": _peak_rss_mb(),
+        }
         rt_reports = build_runtime_strategy_reports(
             iceberg_rows if self.enable_3a_rt_backtest else [],
             normalized_bars,
@@ -369,6 +388,9 @@ class ZoneTruthAnalyzer:
             a2_rt_min_quiet_sec=self.a2_rt_min_quiet_sec,
             a2_rt_min_tick_count=self.a2_rt_min_tick_count,
         )
+        runtime_3a_memory_profile.update(rt_reports["summary"].get("runtime_3a_memory_profile", {}))
+        runtime_3a_memory_profile["after_runtime_engine_rss_mb"] = _peak_rss_mb()
+        rt_reports["summary"]["runtime_3a_memory_profile"] = runtime_3a_memory_profile
         write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_final_reaction.csv", self.group_rows(rows, "final_reaction_type"), ["final_reaction_type"] + GROUP_METRIC_FIELDS)
@@ -463,10 +485,10 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_3a_combo_bad.csv", bad_combo_rows, COMBO_KEY_FIELDS + COMBO_METRIC_FIELDS)
         write_csv(out / "zone_truth_3a_rt_signals.csv", rt_reports["signals"], V73_RT_SIGNAL_FIELDS)
         write_csv(out / "zone_truth_3a_rt_trades.csv", rt_reports["trades"], V73_RT_TRADE_FIELDS)
-        write_csv(out / "zone_truth_3a_rt_by_strategy.csv", rt_reports["by_strategy"], ["A_CORE_NO_VP"] if False else list((rt_reports["by_strategy"][0].keys() if rt_reports["by_strategy"] else ["strategy_variant", "trade_count"])))
-        write_csv(out / "zone_truth_3a_rt_by_vp_setup.csv", rt_reports["by_vp_setup"], list((rt_reports["by_vp_setup"][0].keys() if rt_reports["by_vp_setup"] else ["a1_vp_setup_rt", "trade_count"])))
-        write_csv(out / "zone_truth_3a_rt_by_expiry.csv", rt_reports["by_expiry"], list((rt_reports["by_expiry"][0].keys() if rt_reports["by_expiry"] else ["expiry_sec", "trade_count"])))
-        write_csv(out / "zone_truth_3a_rt_by_target_candidate.csv", rt_reports["by_target_candidate"], list((rt_reports["by_target_candidate"][0].keys() if rt_reports["by_target_candidate"] else ["target_model", "trade_count"])))
+        write_csv(out / "zone_truth_3a_rt_by_strategy.csv", rt_reports["by_strategy"], V73_RT_BY_STRATEGY_FIELDS)
+        write_csv(out / "zone_truth_3a_rt_by_vp_setup.csv", rt_reports["by_vp_setup"], V73_RT_BY_VP_SETUP_FIELDS)
+        write_csv(out / "zone_truth_3a_rt_by_expiry.csv", rt_reports["by_expiry"], V73_RT_BY_EXPIRY_FIELDS)
+        write_csv(out / "zone_truth_3a_rt_by_target_candidate.csv", rt_reports["by_target_candidate"], V73_RT_BY_TARGET_CANDIDATE_FIELDS)
         write_json(out / "zone_truth_3a_rt_summary.json", rt_reports["summary"])
         memory_profile["after_csv_write_rss_mb"] = _peak_rss_mb()
         memory_profile["peak_rss_mb"] = _peak_rss_mb()
@@ -491,6 +513,7 @@ class ZoneTruthAnalyzer:
             **field_hygiene_summary(ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS),
             "no_future_schema_audit": audit_report_schema(ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS),
             "runtime_3a_report_summary": rt_reports["summary"],
+            "runtime_3a_memory_profile": runtime_3a_memory_profile,
         })
         write_json(out / "summary.json", summary)
         self._write_summary_md(out / "zone_truth_summary.md", summary)

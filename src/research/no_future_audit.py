@@ -28,7 +28,7 @@ def invalid_entry_fields(fields: list[str]) -> list[str]:
     for field in fields or []:
         name = str(field)
         availability = infer_availability(name)
-        if availability in {"future", "offline", "sim"} or is_deprecated_lookahead_alias(name):
+        if availability != "rt" or is_deprecated_lookahead_alias(name):
             invalid.append(name)
     return invalid
 

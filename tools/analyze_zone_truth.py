@@ -13,7 +13,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import research_evaluator as cfg
-from src.research.a1_edge.io_utils import parse_windows, read_csv, read_jsonl
+from src.research.a1_edge.io_utils import parse_windows
+from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
 from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
 
@@ -127,23 +128,12 @@ def _parse_int_list(value: object) -> list[int]:
     return result or [180, 300, 600, 900, 1200, 1800]
 
 
-def _load_runtime_events(trades_jsonl: str | None, trades_dir: str | None, runtime_events: str | None) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for path_text in (trades_jsonl, runtime_events):
-        if path_text:
-            rows.extend(_read_runtime_event_file(Path(path_text)))
-    if trades_dir:
-        root = Path(trades_dir)
-        for path in sorted([*root.glob("*.jsonl"), *root.glob("*.csv")]):
-            rows.extend(_read_runtime_event_file(path))
-    return rows
-
-
-def _read_runtime_event_file(path: Path) -> list[dict[str, object]]:
-    suffix = path.suffix.lower()
-    if suffix == ".csv":
-        return [dict(row) for row in read_csv(path)]
-    return [dict(row) for row in read_jsonl(path)]
+def _load_runtime_events(
+    trades_jsonl: str | None,
+    trades_dir: str | None,
+    runtime_events: str | None,
+) -> RuntimeEventSource | None:
+    return RuntimeEventSource.from_paths(trades_jsonl, trades_dir, runtime_events)
 
 
 if __name__ == "__main__":

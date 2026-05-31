@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import statistics
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
@@ -11,6 +12,7 @@ from typing import Any, Iterable, Mapping
 from config import research_evaluator as cfg
 from src.research.a1_edge.schema import parse_bool, parse_float
 from src.research.no_future_audit import validate_entry_conditions, validate_trade_row
+from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
 
 from .a2_runtime_state import (
     A2RuntimeConfig,
@@ -68,9 +70,9 @@ class RuntimeThreeABacktestEngine:
         trade_events: Iterable[Mapping[str, Any]] | None,
         bars: Iterable[Mapping[str, Any]] | None = None,
     ) -> dict[str, list[dict[str, Any]] | dict[str, Any]]:
-        ticks = normalize_runtime_ticks(trade_events or [])
         expiry_values = sorted({int(x) for x in self.config.expiry_secs})
-        if not ticks:
+        event_source, ticks, tick_ts = _prepare_runtime_events(trade_events)
+        if (event_source is None and not ticks) or (isinstance(event_source, RuntimeEventSource) and not event_source.files):
             return _empty_reports(expiry_values, RUNTIME_STATUS_SKIPPED_NO_TRADE_EVENTS, self.config)
 
         bars_norm = normalize_runtime_bars(bars or [])
@@ -81,21 +83,22 @@ class RuntimeThreeABacktestEngine:
             expiry: {"expired_count": 0, "invalidated_count": 0, "a3_triggered_count": 0}
             for expiry in expiry_values
         }
+        max_expiry = max(expiry_values) if expiry_values else 0
 
-        for expiry in expiry_values:
-            expiry_config = RuntimeThreeAEngineConfig(
-                expiry_secs=[expiry],
-                a2=_a2_with_expiry(self.config.a2, expiry),
-                a3=self.config.a3,
-                stop_model=self.config.stop_model,
-                target_model=self.config.target_model,
-                next_tick_entry=self.config.next_tick_entry,
-                enable_audit=self.config.enable_audit,
-                max_fee_share_r=self.config.max_fee_share_r,
-                outcome_window_sec=self.config.outcome_window_sec,
+        for zone in zones_sorted:
+            start_ts = _zone_start_ts(zone)
+            end_ts = start_ts + float(max_expiry) + float(self.config.outcome_window_sec)
+            symbol = str(zone.get("symbol") or "")
+            tick_iter = _zone_window_ticks(
+                event_source=event_source,
+                ticks=ticks,
+                tick_ts=tick_ts,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                symbol=symbol,
             )
-            for zone in zones_sorted:
-                outcome = self._run_zone_for_expiry(zone, ticks, bars_norm, expiry, expiry_config)
+            outcomes = self._run_zone_for_expiries(zone, tick_iter, bars_norm, expiry_values, max_expiry)
+            for expiry, outcome in outcomes.items():
                 status = str(outcome.get("status") or "")
                 if status == A2_EXPIRED:
                     expiry_counters[expiry]["expired_count"] += 1
@@ -107,52 +110,94 @@ class RuntimeThreeABacktestEngine:
                     trade = outcome.get("trade")
                     if isinstance(signal, dict):
                         all_signals.append(signal)
-                    if isinstance(trade, dict) and not parse_bool(trade.get("uses_future_field_flag")):
+                    if isinstance(trade, dict):
                         all_trades.append(trade)
 
         runtime_status = RUNTIME_STATUS_OK if all_signals or all_trades else RUNTIME_STATUS_NO_RT_A3_SIGNALS
-        return _reports(all_signals, all_trades, expiry_values, expiry_counters, runtime_status, self.config)
+        return _reports(
+            all_signals,
+            all_trades,
+            expiry_values,
+            expiry_counters,
+            runtime_status,
+            self.config,
+            _runtime_memory_profile(event_source, ticks),
+        )
 
-    def _run_zone_for_expiry(
+    def _run_zone_for_expiries(
         self,
         zone: Mapping[str, Any],
-        ticks: list[dict[str, Any]],
+        ticks: Iterable[Mapping[str, Any]],
         bars: list[dict[str, float]],
-        expiry: int,
-        config: RuntimeThreeAEngineConfig,
-    ) -> dict[str, Any]:
+        expiry_values: list[int],
+        max_expiry: int,
+    ) -> dict[int, dict[str, Any]]:
         start_ts = _zone_start_ts(zone)
-        symbol = str(zone.get("symbol") or "")
-        machine = A2RuntimeStateMachine(zone, expiry_sec=expiry, config=config.a2)
-        relevant = [tick for tick in ticks if tick["ts"] >= start_ts and _symbol_matches(symbol, tick)]
-        if not relevant:
-            return {"status": ""}
-        for idx, tick in enumerate(relevant):
-            if float(tick["ts"]) - start_ts > float(expiry):
-                machine.update(tick)
-                return {"status": A2_EXPIRED}
-            pre = machine.snapshot()
-            if pre.get("a2_rt_state") == A2_READY_FOR_A3 or parse_bool(pre.get("a2_rt_ready_for_a3_flag")):
-                entry_tick = relevant[idx + 1] if config.next_tick_entry and idx + 1 < len(relevant) else tick
+        machine = A2RuntimeStateMachine(zone, expiry_sec=max_expiry, config=_a2_with_expiry(self.config.a2, max_expiry))
+        max_seen_ts = 0.0
+        invalidated_ts = 0.0
+        trigger_a2: dict[str, Any] | None = None
+        trigger_a3: dict[str, Any] | None = None
+        pending_next_a2: Mapping[str, Any] | None = None
+
+        for tick in ticks:
+            ts = float(tick["ts"])
+            max_seen_ts = max(max_seen_ts, ts)
+            if pending_next_a2 is not None:
                 a3 = evaluate_a3_runtime_entry(
-                    pre,
-                    entry_tick,
+                    pending_next_a2,
+                    tick,
                     direction=str(zone.get("direction") or ""),
                     inherited_a1_vp_setup=_vp_setup(zone),
-                    config=config.a3,
+                    config=self.config.a3,
                 )
                 if parse_bool(a3.get("a3_entry_rt_flag")):
-                    a2 = machine.mark_a3_triggered()
-                    signal = _signal_row(zone, a2, a3, expiry)
-                    trade = _trade_row(zone, a2, a3, expiry, bars, config)
-                    return {"status": A2_A3_TRIGGERED, "signal": signal, "trade": trade}
+                    trigger_a2 = machine.mark_a3_triggered()
+                    trigger_a3 = a3
+                    break
+                pending_next_a2 = None
+            if ts - start_ts > float(max_expiry):
+                machine.update(tick)
+                break
+            pre = machine.snapshot()
+            if pre.get("a2_rt_state") == A2_READY_FOR_A3 or parse_bool(pre.get("a2_rt_ready_for_a3_flag")):
+                if self.config.next_tick_entry:
+                    pending_next_a2 = pre
+                    continue
+                a3 = evaluate_a3_runtime_entry(
+                    pre,
+                    tick,
+                    direction=str(zone.get("direction") or ""),
+                    inherited_a1_vp_setup=_vp_setup(zone),
+                    config=self.config.a3,
+                )
+                if parse_bool(a3.get("a3_entry_rt_flag")):
+                    trigger_a2 = machine.mark_a3_triggered()
+                    trigger_a3 = a3
+                    break
             snap = machine.update(tick)
-            if snap.get("a2_rt_state") in {A2_INVALIDATED, A2_EXPIRED}:
-                return {"status": snap.get("a2_rt_state")}
-        final = machine.snapshot()
-        if final.get("a2_rt_state") in {A2_INVALIDATED, A2_EXPIRED}:
-            return {"status": final.get("a2_rt_state")}
-        return {"status": ""}
+            if snap.get("a2_rt_state") == A2_INVALIDATED:
+                invalidated_ts = parse_float(snap.get("a2_rt_last_update_ts"))
+                break
+            if snap.get("a2_rt_state") == A2_EXPIRED:
+                break
+
+        outcomes: dict[int, dict[str, Any]] = {}
+        trigger_ts = parse_float(trigger_a3.get("a3_entry_rt_ts")) if trigger_a3 else 0.0
+        for expiry in expiry_values:
+            if trigger_a2 is not None and trigger_a3 is not None and trigger_ts - start_ts <= float(expiry):
+                a2 = _a2_snapshot_for_expiry(trigger_a2, expiry)
+                a3 = dict(trigger_a3)
+                signal = _signal_row(zone, a2, a3, expiry)
+                trade = _trade_row(zone, a2, a3, expiry, bars, self.config)
+                outcomes[expiry] = {"status": A2_A3_TRIGGERED, "signal": signal, "trade": trade}
+            elif invalidated_ts > 0 and invalidated_ts - start_ts <= float(expiry):
+                outcomes[expiry] = {"status": A2_INVALIDATED}
+            elif max_seen_ts > 0 and max_seen_ts - start_ts > float(expiry):
+                outcomes[expiry] = {"status": A2_EXPIRED}
+            else:
+                outcomes[expiry] = {"status": ""}
+        return outcomes
 
 
 def default_runtime_engine_config(**overrides: Any) -> RuntimeThreeAEngineConfig:
@@ -208,9 +253,9 @@ def simulate_runtime_trade_exit(
     ]
     side = str(direction or "").upper()
     if risk_u <= 0 or entry_price <= 0 or side not in {"BUY", "SELL"}:
-        return _exit_result(0.0, 0.0, "INVALID_RISK", 0.0, 0.0)
+        return _exit_result(0.0, 0.0, "INVALID_RISK", 0.0, 0.0, complete_flag=False)
     if not bars:
-        return _exit_result(entry_ts, entry_price, "NO_FUTURE_BARS", -fee_share_r, 0.0)
+        return _exit_result(entry_ts, entry_price, "NO_FUTURE_BARS", -fee_share_r, 0.0, complete_flag=False)
     if side == "BUY":
         mfe_r = (max(float(b["high"]) for b in bars) - entry_price) / risk_u
         mae_r = (min(float(b["low"]) for b in bars) - entry_price) / risk_u
@@ -235,7 +280,8 @@ def simulate_runtime_trade_exit(
             return _exit_result(bar["timestamp"], stop_price, "STOP_FIRST", -1.0 - fee_share_r, mfe_r, mae_r)
     close = float(bars[-1]["close"])
     raw_r = (close - entry_price) / risk_u if side == "BUY" else (entry_price - close) / risk_u
-    return _exit_result(bars[-1]["timestamp"], close, "CLOSE_EXIT", raw_r - fee_share_r, mfe_r, mae_r)
+    complete = float(bars[-1]["timestamp"]) >= float(entry_ts) + float(window_sec)
+    return _exit_result(bars[-1]["timestamp"], close, "CLOSE_EXIT", raw_r - fee_share_r, mfe_r, mae_r, complete_flag=complete)
 
 
 def normalize_runtime_ticks(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -243,38 +289,45 @@ def normalize_runtime_ticks(events: Iterable[Mapping[str, Any]]) -> list[dict[st
     prev_price = 0.0
     prev_ts = 0.0
     for event in events or []:
-        ts = _first_positive(event, "ts", "timestamp", "event_ts", "recv_ts")
-        if ts > 10_000_000_000:
-            ts /= 1000.0
-        price = _first_positive(event, "last_price", "price", "trade_price", "close", "px")
-        if ts <= 0 or price <= 0:
+        tick = normalize_runtime_tick(event, prev_price=prev_price, prev_ts=prev_ts)
+        if tick is None:
             continue
-        side = str(event.get("side") or event.get("direction") or "").upper()
-        notional = _first_positive(event, "notional", "trade_notional", "sz_usdt", "amount_usdt")
-        buy = _first_positive(event, "active_buy_notional_3s", "active_buy_notional_1s", "buy_notional")
-        sell = _first_positive(event, "active_sell_notional_3s", "active_sell_notional_1s", "sell_notional")
-        if buy <= 0 and side in {"BUY", "BID"}:
-            buy = notional
-        if sell <= 0 and side in {"SELL", "ASK"}:
-            sell = notional
-        velocity = parse_float(event.get("price_velocity_u_per_sec"))
-        if velocity == 0 and prev_price > 0 and ts > prev_ts:
-            velocity = (price - prev_price) / (ts - prev_ts)
-        out.append({
-            **dict(event),
-            "ts": ts,
-            "last_price": price,
-            "active_buy_notional_3s": buy,
-            "active_sell_notional_3s": sell,
-            "cvd_delta_3s": parse_float(event.get("cvd_delta_3s") or event.get("cvd_delta_1s") or event.get("cvd_delta")),
-            "price_velocity_u_per_sec": velocity,
-            "condition_available_ts": _first_positive(event, "condition_available_ts", "field_available_ts") or ts,
-            "condition_source": str(event.get("condition_source") or "tick_at_entry"),
-        })
-        prev_price = price
-        prev_ts = ts
+        out.append(tick)
+        prev_price = float(tick["last_price"])
+        prev_ts = float(tick["ts"])
     out.sort(key=lambda row: float(row["ts"]))
     return out
+
+
+def normalize_runtime_tick(event: Mapping[str, Any], *, prev_price: float = 0.0, prev_ts: float = 0.0) -> dict[str, Any] | None:
+    ts = _first_positive(event, "ts", "timestamp", "event_ts", "recv_ts")
+    if ts > 10_000_000_000:
+        ts /= 1000.0
+    price = _first_positive(event, "last_price", "price", "trade_price", "close", "px")
+    if ts <= 0 or price <= 0:
+        return None
+    side = str(event.get("side") or event.get("direction") or "").upper()
+    notional = _first_positive(event, "notional", "trade_notional", "sz_usdt", "amount_usdt")
+    buy = _first_positive(event, "active_buy_notional_3s", "active_buy_notional_1s", "buy_notional")
+    sell = _first_positive(event, "active_sell_notional_3s", "active_sell_notional_1s", "sell_notional")
+    if buy <= 0 and side in {"BUY", "BID"}:
+        buy = notional
+    if sell <= 0 and side in {"SELL", "ASK"}:
+        sell = notional
+    velocity = parse_float(event.get("price_velocity_u_per_sec"))
+    if velocity == 0 and prev_price > 0 and ts > prev_ts:
+        velocity = (price - prev_price) / (ts - prev_ts)
+    return {
+        **dict(event),
+        "ts": ts,
+        "last_price": price,
+        "active_buy_notional_3s": buy,
+        "active_sell_notional_3s": sell,
+        "cvd_delta_3s": parse_float(event.get("cvd_delta_3s") or event.get("cvd_delta_1s") or event.get("cvd_delta")),
+        "price_velocity_u_per_sec": velocity,
+        "condition_available_ts": _first_positive(event, "condition_available_ts", "field_available_ts") or ts,
+        "condition_source": str(event.get("condition_source") or "tick_at_entry"),
+    }
 
 
 def normalize_runtime_bars(bars: Iterable[Mapping[str, Any]]) -> list[dict[str, float]]:
@@ -305,6 +358,69 @@ def _a2_with_expiry(config: A2RuntimeConfig, expiry: int) -> A2RuntimeConfig:
         cvd_stall_ratio_max=config.cvd_stall_ratio_max,
         invalidation_buffer_u=config.invalidation_buffer_u,
     )
+
+
+def _prepare_runtime_events(
+    trade_events: Iterable[Mapping[str, Any]] | None,
+) -> tuple[Any | None, list[dict[str, Any]], list[float]]:
+    if trade_events is None:
+        return None, [], []
+    if hasattr(trade_events, "get_window"):
+        return trade_events, [], []
+    ticks = normalize_runtime_ticks(trade_events)
+    return None, ticks, [float(tick["ts"]) for tick in ticks]
+
+
+def _zone_window_ticks(
+    *,
+    event_source: Any | None,
+    ticks: list[dict[str, Any]],
+    tick_ts: list[float],
+    start_ts: float,
+    end_ts: float,
+    symbol: str,
+) -> Iterable[dict[str, Any]]:
+    if event_source is not None:
+        return _iter_normalized_window(event_source.get_window(start_ts, end_ts, symbol))
+    left = bisect_left(tick_ts, float(start_ts))
+    right = bisect_right(tick_ts, float(end_ts))
+    return (tick for tick in _iter_index_range_ticks(ticks, left, right) if _symbol_matches(symbol, tick))
+
+
+def _iter_index_range_ticks(ticks: list[dict[str, Any]], left: int, right: int) -> Iterable[dict[str, Any]]:
+    for idx in range(left, right):
+        yield ticks[idx]
+
+
+def _iter_normalized_window(events: Iterable[Mapping[str, Any]]) -> Iterable[dict[str, Any]]:
+    prev_price = 0.0
+    prev_ts = 0.0
+    for event in events:
+        tick = normalize_runtime_tick(event, prev_price=prev_price, prev_ts=prev_ts)
+        if tick is None:
+            continue
+        prev_price = float(tick["last_price"])
+        prev_ts = float(tick["ts"])
+        yield tick
+
+
+def _a2_snapshot_for_expiry(a2: Mapping[str, Any], expiry: int) -> dict[str, Any]:
+    out = dict(a2)
+    out["a2_rt_expiry_sec"] = expiry
+    out["a2_rt_expiry_bucket"] = f"{int(round(float(expiry) / 60.0))}m"
+    return out
+
+
+def _runtime_memory_profile(event_source: Any | None, ticks: list[dict[str, Any]] | None) -> dict[str, Any]:
+    if event_source is not None and hasattr(event_source, "memory_profile"):
+        return dict(event_source.memory_profile())
+    count = len(ticks or [])
+    return {
+        "runtime_event_source_mode": "materialized_iterable" if count else "empty",
+        "runtime_ticks_materialized_count": count,
+        "runtime_window_reads": 0,
+        "runtime_max_window_ticks": 0,
+    }
 
 
 def _signal_row(zone: Mapping[str, Any], a2: Mapping[str, Any], a3: Mapping[str, Any], expiry_sec: int) -> dict[str, Any]:
@@ -371,6 +487,8 @@ def _trade_row(
         "condition_source": a3.get("a3_entry_rt_condition_source") or "tick_at_entry",
         "uses_future_field_flag": parse_bool(a3.get("a3_entry_rt_uses_future_field_flag")),
         "future_field_names": "",
+        "trade_blocked_flag": False,
+        "trade_blocked_reason": "",
         "entry_condition_fields": a3.get("a3_entry_rt_condition_fields") or "|".join(ENTRY_CONDITION_FIELDS),
         **stop,
         "target_model": config.target_model,
@@ -382,14 +500,23 @@ def _trade_row(
         "a3_quality_future_score_v2": zone.get("a3_quality_future_score_v2") or 0.0,
     }
     if risk <= 0 or parse_float(stop.get("fee_share_r")) > config.max_fee_share_r:
-        trade["uses_future_field_flag"] = True
-        trade["future_field_names"] = "BLOCKED_INVALID_RISK_OR_FEE"
+        trade["trade_blocked_flag"] = True
+        trade["trade_blocked_reason"] = "INVALID_RISK_OR_FEE"
     if config.enable_audit:
         trade = validate_trade_row(trade)
     return trade
 
 
-def _exit_result(exit_ts: float, exit_price: float, exit_reason: str, realized_r: float, mfe_r: float, mae_r: float | None = None) -> dict[str, Any]:
+def _exit_result(
+    exit_ts: float,
+    exit_price: float,
+    exit_reason: str,
+    realized_r: float,
+    mfe_r: float,
+    mae_r: float | None = None,
+    *,
+    complete_flag: bool = True,
+) -> dict[str, Any]:
     return {
         "exit_ts": round(exit_ts, 8),
         "exit_price": round(exit_price, 8),
@@ -397,6 +524,10 @@ def _exit_result(exit_ts: float, exit_price: float, exit_reason: str, realized_r
         "realized_r_sim": round(realized_r, 8),
         "mfe_r_future": round(mfe_r, 8),
         "mae_r_future": round(mae_r if mae_r is not None else 0.0, 8),
+        "target_first_flag_sim": exit_reason == "TARGET_FIRST",
+        "stop_first_flag_sim": exit_reason == "STOP_FIRST",
+        "ambiguous_flag_sim": exit_reason == "AMBIGUOUS_BOTH_HIT",
+        "complete_flag_sim": bool(complete_flag),
     }
 
 
@@ -407,29 +538,37 @@ def _reports(
     expiry_counters: dict[int, dict[str, int]],
     runtime_status: str,
     config: RuntimeThreeAEngineConfig,
+    memory_profile: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]] | dict[str, Any]]:
+    stats_trades = [
+        trade for trade in trades
+        if not parse_bool(trade.get("uses_future_field_flag")) and not parse_bool(trade.get("trade_blocked_flag"))
+    ]
     return {
         "signals": signals,
         "trades": trades,
-        "by_strategy": [_summary_row(name, [t for t in trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
-        "by_vp_setup": _group_summary(trades, "a1_vp_setup_rt"),
-        "by_expiry": _expiry_summary(trades, expiry_values, expiry_counters),
-        "by_target_candidate": _group_summary(trades, "target_model"),
+        "by_strategy": [_summary_row(name, [t for t in stats_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
+        "by_vp_setup": _group_summary(stats_trades, "a1_vp_setup_rt"),
+        "by_expiry": _expiry_summary(stats_trades, expiry_values, expiry_counters),
+        "by_target_candidate": _group_summary(stats_trades, "target_model"),
         "summary": {
             "runtime_3a_strategy_version": "v7.3.0",
             "runtime_3a_status": runtime_status,
             "signal_count": len(signals),
-            "trade_count": len(trades),
+            "trade_count": len(stats_trades),
+            "trade_candidate_count": len(trades),
+            "trade_blocked_count": sum(1 for trade in trades if parse_bool(trade.get("trade_blocked_flag"))),
             "expiry_secs": expiry_values,
             "stop_model": config.stop_model,
             "target_model": config.target_model,
+            "runtime_3a_memory_profile": dict(memory_profile or {}),
         },
     }
 
 
 def _empty_reports(expiry_values: list[int], status: str, config: RuntimeThreeAEngineConfig) -> dict[str, list[dict[str, Any]] | dict[str, Any]]:
     counters = {expiry: {"expired_count": 0, "invalidated_count": 0, "a3_triggered_count": 0} for expiry in expiry_values}
-    return _reports([], [], expiry_values, counters, status, config)
+    return _reports([], [], expiry_values, counters, status, config, _runtime_memory_profile(None, []))
 
 
 def _summary_row(name: str, trades: list[Mapping[str, Any]], label: str | None = None) -> dict[str, Any]:

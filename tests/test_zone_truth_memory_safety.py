@@ -7,8 +7,14 @@ import subprocess
 from pathlib import Path
 
 import tools.generate_research_reports as generator
+from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
 from src.research.zone_truth import analyzer as analyzer_mod
-from src.research.zone_truth.analyzer import V7_SIMULATED_TRADE_FIELDS, ZoneTruthAnalyzer
+from src.research.zone_truth.analyzer import (
+    V73_RT_BY_STRATEGY_FIELDS,
+    V73_RT_BY_VP_SETUP_FIELDS,
+    V7_SIMULATED_TRADE_FIELDS,
+    ZoneTruthAnalyzer,
+)
 
 BASE_TS = 1_779_373_200
 
@@ -197,3 +203,40 @@ def test_generate_reports_passes_zone_truth_simulator_args(tmp_path, monkeypatch
         "--simulator-include-unavailable", "true",
         "--simulator-max-trades", "1",
     ]
+
+
+def test_runtime_event_source_streams_directory_without_full_list(tmp_path):
+    events_dir = tmp_path / "events"
+    events_dir.mkdir()
+    (events_dir / "b.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"ts": BASE_TS + 20, "symbol": "BTC-USDT", "last_price": 102}),
+                json.dumps({"ts": BASE_TS + 30, "symbol": "ETH-USDT", "last_price": 103}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (events_dir / "a.csv").write_text(
+        "ts,symbol,last_price\n"
+        f"{BASE_TS + 10},BTC-USDT,101\n"
+        f"{BASE_TS + 40},BTC-USDT,104\n",
+        encoding="utf-8",
+    )
+    source = RuntimeEventSource(events_dir)
+    rows = list(source.get_window(BASE_TS + 5, BASE_TS + 25, "BTC-USDT"))
+    assert [float(row["ts"]) for row in rows] == [BASE_TS + 10, BASE_TS + 20]
+    assert source.memory_profile()["runtime_event_source_mode"] == "directory_stream"
+    assert source.memory_profile()["runtime_ticks_materialized_count"] == 0
+    assert source.memory_profile()["runtime_window_reads"] == 1
+
+
+def test_rt_report_headers_stable_when_empty(tmp_path):
+    paths = _write_inputs(tmp_path)
+    out = tmp_path / "headers"
+    ZoneTruthAnalyzer(enable_3a_simulator=False).analyze_files(paths["phase1"], paths["reactions"], paths["kline"], out)
+    with (out / "zone_truth_3a_rt_by_strategy.csv").open(encoding="utf-8", newline="") as handle:
+        assert next(csv.reader(handle)) == V73_RT_BY_STRATEGY_FIELDS
+    with (out / "zone_truth_3a_rt_by_vp_setup.csv").open(encoding="utf-8", newline="") as handle:
+        assert next(csv.reader(handle)) == V73_RT_BY_VP_SETUP_FIELDS

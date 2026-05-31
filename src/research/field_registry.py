@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 
-FieldAvailability = Literal["rt", "future", "offline", "sim"]
+FieldAvailability = Literal["rt", "future", "offline", "sim", "unknown"]
 
 
 @dataclass(frozen=True)
@@ -76,12 +76,12 @@ def infer_availability(name: str) -> FieldAvailability:
         return "sim"
     if text.endswith("_rt") or "_rt_" in text:
         return "rt"
-    return "rt"
+    return "unknown"
 
 
 def field_hygiene_summary(fieldnames: list[str] | None = None) -> dict[str, int | str]:
     names = list(fieldnames or FIELD_SPECS.keys())
-    counts = {"future": 0, "offline": 0, "sim": 0, "rt": 0}
+    counts = {"future": 0, "offline": 0, "sim": 0, "rt": 0, "unknown": 0}
     for name in names:
         counts[infer_availability(name)] += 1
     return {
@@ -90,6 +90,7 @@ def field_hygiene_summary(fieldnames: list[str] | None = None) -> dict[str, int 
         "offline_field_count": counts["offline"],
         "sim_field_count": counts["sim"],
         "rt_field_count": counts["rt"],
+        "unknown_field_count": counts["unknown"],
         "deprecated_lookahead_alias_count": len(DEPRECATED_LOOKAHEAD_ALIASES),
     }
 
@@ -135,9 +136,15 @@ def _register_defaults() -> None:
         register(_spec(name, "offline", "zone_truth", "offline audit label", aliases=aliases))
 
     for name in (
+        "active_buy_notional_3s",
+        "active_sell_notional_3s",
+        "cvd_delta_3s",
+        "price_velocity_u_per_sec",
         "a1_vp_setup_rt",
         "vp24h_a1_vp_setup_rt",
         "a2_rt_ready_for_a3_flag",
+        "a2_rt_box_high",
+        "a2_rt_box_low",
         "a3_entry_rt_flag",
         "a3_entry_rt_price",
         "a3_entry_rt_ts",

@@ -84,6 +84,7 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
     with (out / "zone_truth_3a_rt_summary.json").open(encoding="utf-8") as handle:
         rt_summary = json.load(handle)
     assert rt_summary["runtime_3a_status"] == "SKIPPED_NO_TRADE_EVENTS"
+    assert "runtime_3a_memory_profile" in rt_summary
     assert summary["no_future_field_hygiene_version"] == "v7.3.0.no_future_field_registry"
 
 
@@ -110,3 +111,5 @@ def test_v73_zone_truth_runtime_reports_use_supplied_trade_events(tmp_path):
         trades = list(csv.DictReader(handle))
     assert len(trades) == 1
     assert trades[0]["entry_ts"] == str(float(BASE_TS + 4))
+    assert "trade_blocked_flag" in trades[0]
+    assert "ambiguous_flag_sim" in trades[0]

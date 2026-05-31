@@ -49,3 +49,7 @@ def test_field_hygiene_counts_suffixes_and_aliases():
     assert summary["sim_field_count"] == 1
     assert is_deprecated_lookahead_alias("a3_preview_ignition_quality")
 
+
+def test_unknown_entry_field_fails_audit():
+    with pytest.raises(ValueError):
+        validate_entry_conditions(["unknown_field"])

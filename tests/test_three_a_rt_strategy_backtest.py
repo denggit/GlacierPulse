@@ -3,6 +3,7 @@
 
 from src.research.runtime_three_a.runtime_engine import (
     RuntimeThreeABacktestEngine,
+    RuntimeThreeAEngineConfig,
     default_runtime_engine_config,
     simulate_runtime_trade_exit,
 )
@@ -137,3 +138,101 @@ def test_runtime_engine_config_uses_cli_min_quiet_and_tick_count_values():
     engine = RuntimeThreeABacktestEngine(cfg)
     assert engine.config.a2.min_quiet_sec == 7
     assert engine.config.a2.min_tick_count == 9
+
+
+def test_runtime_engine_windowed_reads():
+    class Source:
+        def __init__(self):
+            self.calls = []
+
+        def get_window(self, start_ts, end_ts, symbol=None):
+            self.calls.append((start_ts, end_ts, symbol))
+            return iter([*_quiet_ticks(), _burst_tick()])
+
+        def memory_profile(self):
+            return {
+                "runtime_event_source_mode": "test_source",
+                "runtime_ticks_materialized_count": 0,
+                "runtime_window_reads": len(self.calls),
+                "runtime_max_window_ticks": 4,
+            }
+
+    source = Source()
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=source,
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert len(source.calls) == 1
+    start, end, symbol = source.calls[0]
+    assert start == 1000.0
+    assert end == 5500.0
+    assert symbol == "BTC-USDT"
+    assert reports["summary"]["runtime_3a_memory_profile"]["runtime_event_source_mode"] == "test_source"
+
+
+def test_runtime_engine_does_not_copy_full_ticks_per_zone(monkeypatch):
+    ranges = []
+    ticks = [
+        {"symbol": "BTC-USDT", "ts": 1.0, "last_price": 90.0},
+        *_quiet_ticks(),
+        _burst_tick(),
+        {"symbol": "BTC-USDT", "ts": 999999.0, "last_price": 120.0},
+    ]
+    from src.research.runtime_three_a import runtime_engine as engine_mod
+
+    original = engine_mod._iter_index_range_ticks
+
+    def wrapped(all_ticks, left, right):
+        ranges.append((len(all_ticks), left, right))
+        yield from original(all_ticks, left, right)
+
+    monkeypatch.setattr(engine_mod, "_iter_index_range_ticks", wrapped)
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=ticks,
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert reports["summary"]["runtime_3a_status"] == "OK"
+    assert ranges
+    assert all((right - left) < total for total, left, right in ranges)
+
+
+def test_blocked_trade_not_marked_future():
+    cfg = RuntimeThreeAEngineConfig(
+        expiry_secs=[900],
+        a2=default_runtime_engine_config(a2_rt_min_quiet_sec=3, a2_rt_min_tick_count=3).a2,
+        a3=default_runtime_engine_config().a3,
+        max_fee_share_r=0.0,
+    )
+    reports = RuntimeThreeABacktestEngine(cfg).run([_zone()], [*_quiet_ticks(), _burst_tick()], _bars())
+    assert reports["summary"]["trade_count"] == 0
+    assert reports["summary"]["trade_blocked_count"] == 1
+    trade = reports["trades"][0]
+    assert trade["trade_blocked_flag"] is True
+    assert trade["trade_blocked_reason"] == "INVALID_RISK_OR_FEE"
+    assert trade["uses_future_field_flag"] is False
+    assert trade["future_field_names"] == ""
+
+
+def test_ambiguous_exit_flags():
+    result = simulate_runtime_trade_exit(
+        entry_ts=1004,
+        entry_price=102,
+        stop_price=99,
+        target_price=108,
+        direction="BUY",
+        future_bars=[{"timestamp": 1004, "open": 102, "high": 109, "low": 98, "close": 101}],
+        fee_share_r=0.1,
+        risk_u=3,
+    )
+    assert result["exit_reason"] == "AMBIGUOUS_BOTH_HIT"
+    assert result["ambiguous_flag_sim"] is True
+    assert result["target_first_flag_sim"] is False
+    assert result["stop_first_flag_sim"] is False
