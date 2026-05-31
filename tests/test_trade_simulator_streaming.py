@@ -73,6 +73,49 @@ def test_iter_3a_proxy_trades_max_trades_caps_written_rows():
     assert stats.capped is True
 
 
+def test_iter_3a_proxy_trades_max_trades_cap_csv_valid_trade_count_matches_written():
+    """When max_trades=1 caps output, v7_3a_simulated_trade_count must reflect actual CSV rows, not the theoretical combo count."""
+    rows = [_row(a3_aggression_type_v2="PRICE_BREAKOUT_PERSISTENT")]
+    bars = [{"timestamp": 1000, "high": 102, "low": 99.5, "close": 101, "open": 100}]
+    stats = SimulatorStats()
+    trades = list(
+        iter_3a_proxy_trades(
+            rows,
+            bars,
+            entry_models=["BREAKOUT"],
+            stop_models=["V1_ZONE_WIDTH"],
+            target_r_list=[1.0, 1.5, 2.0],
+            max_trades=1,
+            stats=stats,
+        )
+    )
+    # stats.valid_trade_count counts every (entry, stop, target_r) combo attempted before cap — 2 here
+    # (target_r=1.0 yielded; target_r=1.5 incremented then capped; target_r=2.0 never reached)
+    assert stats.valid_trade_count == 2
+    # But max_trades=1 caps written rows
+    assert stats.written_trade_count == 1
+    assert stats.capped is True
+    assert len(trades) == 1
+    from src.research.zone_truth.combo_matrix import is_valid_simulated_trade
+
+    valid = [t for t in trades if is_valid_simulated_trade(t)]
+    assert len(valid) == 1
+
+
+def test_row_identity_preserves_original_a1_evidence_types():
+    """a1_primary_evidence_type is mainline ICEBERG, but a1_evidence_types preserves original shadow evidence."""
+    from src.research.zone_truth.trade_simulator import _row_identity
+
+    row = {
+        "a1_primary_evidence_type": "LADDER_ABSORPTION",
+        "a1_evidence_types": "HIDDEN_RELOAD_ICEBERG|LADDER_ABSORPTION",
+        "iceberg_pie_count": 1,
+    }
+    identity = _row_identity(row)
+    assert identity["a1_primary_evidence_type"] == "ICEBERG"
+    assert identity["a1_evidence_types"] == "HIDDEN_RELOAD_ICEBERG|LADDER_ABSORPTION"
+
+
 def test_simulate_3a_proxy_trades_keeps_legacy_unavailable_behavior():
     trades = simulate_3a_proxy_trades(
         [_row(a3_preview_breakout_raw_flag=False)],

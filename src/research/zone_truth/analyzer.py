@@ -237,10 +237,12 @@ class ZoneTruthAnalyzer:
         kline: str | Path | None,
         out_dir: str | Path,
     ) -> dict[str, Any]:
-        phase1_records = read_jsonl(phase1_candidates)
-        reaction_records = read_jsonl(a1_reactions)
-        kline_records = read_csv(kline) if kline else []
-        return self.export(phase1_records, reaction_records, kline_records, out_dir)
+        return self.export(
+            read_jsonl(phase1_candidates),
+            read_jsonl(a1_reactions),
+            read_csv(kline) if kline else [],
+            out_dir,
+        )
 
     def export(
         self,
@@ -261,6 +263,8 @@ class ZoneTruthAnalyzer:
         )
         rows = aggregator.aggregate(phase1_records, reaction_records)
         memory_profile["after_aggregate_rss_mb"] = _peak_rss_mb()
+        phase1_records = None
+        reaction_records = None
         gc.collect()
         rows = ZoneForwardMetricsCalculator(self.windows_sec, kline_timezone=self.timezone).attach_forward_metrics(rows, kline_records)
         memory_profile["after_forward_metrics_rss_mb"] = _peak_rss_mb()
@@ -273,6 +277,8 @@ class ZoneTruthAnalyzer:
         rows = self.attach_context_labels(rows, kline_records)
         memory_profile["after_context_labels_rss_mb"] = _peak_rss_mb()
         normalized_bars = normalize_klines(kline_records, kline_timezone=self.timezone) if kline_records else []
+        kline_records = None
+        gc.collect()
         rows = self.attach_post_event_context_labels(rows, normalized_bars)
         memory_profile["after_post_event_labels_rss_mb"] = _peak_rss_mb()
         iceberg_rows = self.iceberg_context_rows(rows)
@@ -294,7 +300,7 @@ class ZoneTruthAnalyzer:
             )
         else:
             trade_iter = iter(())
-        write_simulated_trades_streaming(
+        stream_summary = write_simulated_trades_streaming(
             out / "zone_truth_3a_simulated_trades.csv",
             trade_iter,
             V7_SIMULATED_TRADE_FIELDS,
@@ -400,7 +406,7 @@ class ZoneTruthAnalyzer:
         memory_profile["after_csv_write_rss_mb"] = _peak_rss_mb()
         memory_profile["peak_rss_mb"] = _peak_rss_mb()
         summary = self.summary(rows, aggregator.unmatched_pie_count)
-        summary.update(combo_summary(combo_matrix_rows, valid_trade_count=simulator_stats.valid_trade_count))
+        summary.update(combo_summary(combo_matrix_rows, valid_trade_count=stream_summary["valid_trade_count"]))
         summary.update({
             "v7_enabled": self.enable_3a_simulator,
             "simulator_enabled": self.enable_3a_simulator,
@@ -415,6 +421,7 @@ class ZoneTruthAnalyzer:
             "simulator_unavailable_stop_count": simulator_stats.unavailable_stop_count,
             "simulator_valid_trade_count": simulator_stats.valid_trade_count,
             "simulator_written_trade_count": simulator_stats.written_trade_count,
+            "simulator_combo_valid_trade_count": stream_summary["valid_trade_count"],
             "memory_profile": memory_profile,
         })
         write_json(out / "summary.json", summary)

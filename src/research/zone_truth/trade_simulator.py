@@ -467,7 +467,7 @@ def _row_identity(row: Mapping[str, Any]) -> dict[str, Any]:
         "symbol": str(row.get("symbol") or ""),
         "direction": str(row.get("direction") or "UNKNOWN"),
         "a1_primary_evidence_type": _mainline_a1(row),
-        "a1_evidence_types": _mainline_a1(row),
+        "a1_evidence_types": str(row.get("a1_evidence_types") or _mainline_a1(row)),
         "a1_strength_tier": str(row.get("strong_a1_tier") or row.get("a1_strength_tier") or "UNKNOWN"),
         "a1_best_horizon": str(row.get("a1_best_horizon") or "UNKNOWN"),
         "a2_accumulation_path_v2": _mainline_a2(row),
