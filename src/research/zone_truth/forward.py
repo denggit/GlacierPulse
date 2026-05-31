@@ -507,11 +507,11 @@ def compute_a2_fee_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
     for lbl in ("15m","1h","4h"):
         mfe=parse_float(row.get(f"mfe_{lbl}_u_future"))
         mae=parse_float(row.get(f"mae_{lbl}_u_future"))
-        out[f"a2_net_mfe_{lbl}_r"]=round(mfe/risk_u-fee_share,8)
-        out[f"a2_net_mae_{lbl}_r"]=round(mae/risk_u-fee_share,8)
-    out["a2_net_hit_1r_15m"]=out["a2_net_mfe_15m_r"]>=1.0
-    out["a2_net_hit_1r_1h"]=out["a2_net_mfe_1h_r"]>=1.0
-    out["a2_net_hit_2r_1h"]=out["a2_net_mfe_1h_r"]>=2.0
+        out[f"a2_net_mfe_{lbl}_r_future"]=round(mfe/risk_u-fee_share,8)
+        out[f"a2_net_mae_{lbl}_r_future"]=round(mae/risk_u-fee_share,8)
+    out["a2_net_hit_1r_15m_future"]=out["a2_net_mfe_15m_r_future"]>=1.0
+    out["a2_net_hit_1r_1h_future"]=out["a2_net_mfe_1h_r_future"]>=1.0
+    out["a2_net_hit_2r_1h_future"]=out["a2_net_mfe_1h_r_future"]>=2.0
     return out
 
 def compute_a2_pre_ignition_metrics(row: Mapping[str, Any], bars:list[dict[str,float]])->dict[str,Any]:

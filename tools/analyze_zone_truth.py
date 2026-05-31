@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from config import research_evaluator as cfg
-from src.research.a1_edge.io_utils import parse_windows
+from src.research.a1_edge.io_utils import parse_windows, read_csv, read_jsonl
 from src.research.zone_truth.analyzer import ZoneTruthAnalyzer
 
 
@@ -43,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--a3-rt-stop-model", default=str(getattr(cfg, "V7_3A_RT_STOP_MODEL", "STOP_STRUCTURAL_ZONE_V2")))
     parser.add_argument("--a3-rt-next-tick-entry", default=str(getattr(cfg, "V7_3A_RT_NEXT_TICK_ENTRY", False)).lower())
     parser.add_argument("--enable-no-future-audit", default=str(getattr(cfg, "V7_3A_RT_ENABLE_NO_FUTURE_AUDIT", True)).lower())
+    parser.add_argument("--trades-jsonl", help="Runtime trade tick JSONL used by V7.3 no-future 3A backtest")
+    parser.add_argument("--trades-dir", help="Directory containing runtime trade tick JSONL/CSV files")
+    parser.add_argument("--runtime-events", help="Runtime tick bucket JSONL/CSV used by V7.3 no-future 3A backtest")
     return parser
 
 
@@ -66,7 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     if kline_path is not None and not kline_path.exists():
         print(f"Error: kline path does not exist: {kline_path}", file=sys.stderr)
         return 2
+    for label, raw_path in (("trades-jsonl", args.trades_jsonl), ("trades-dir", args.trades_dir), ("runtime-events", args.runtime_events)):
+        if raw_path and not Path(raw_path).exists():
+            print(f"Error: {label} path does not exist: {raw_path}", file=sys.stderr)
+            return 2
     windows = parse_windows(args.windows_sec)
+    runtime_events = _load_runtime_events(args.trades_jsonl, args.trades_dir, args.runtime_events)
     analyzer = ZoneTruthAnalyzer(
         price_tolerance_usdt=args.price_tolerance_usdt,
         time_tolerance_sec=args.time_tolerance_sec,
@@ -82,12 +90,14 @@ def main(argv: list[str] | None = None) -> int:
         enable_3a_rt_backtest=_parse_bool(args.enable_3a_rt_backtest),
         a2_rt_max_age_sec=args.a2_rt_max_age_sec,
         a2_rt_expiry_sweep_secs=_parse_int_list(args.a2_rt_expiry_sweep_secs),
+        a2_rt_min_quiet_sec=args.a2_rt_min_quiet_sec,
+        a2_rt_min_tick_count=args.a2_rt_min_tick_count,
         a3_rt_target_model=args.a3_rt_target_model,
         a3_rt_stop_model=args.a3_rt_stop_model,
         a3_rt_next_tick_entry=_parse_bool(args.a3_rt_next_tick_entry),
         enable_no_future_audit=_parse_bool(args.enable_no_future_audit),
     )
-    summary = analyzer.analyze_files(phase1_path, reactions_path, kline_path, args.out)
+    summary = analyzer.analyze_files(phase1_path, reactions_path, kline_path, args.out, runtime_events=runtime_events)
     print(
         "[ZONE-TRUTH] "
         f"total_zones={summary.get('total_zones')} "
@@ -115,6 +125,25 @@ def _parse_int_list(value: object) -> list[int]:
         except ValueError:
             continue
     return result or [180, 300, 600, 900, 1200, 1800]
+
+
+def _load_runtime_events(trades_jsonl: str | None, trades_dir: str | None, runtime_events: str | None) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for path_text in (trades_jsonl, runtime_events):
+        if path_text:
+            rows.extend(_read_runtime_event_file(Path(path_text)))
+    if trades_dir:
+        root = Path(trades_dir)
+        for path in sorted([*root.glob("*.jsonl"), *root.glob("*.csv")]):
+            rows.extend(_read_runtime_event_file(path))
+    return rows
+
+
+def _read_runtime_event_file(path: Path) -> list[dict[str, object]]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return [dict(row) for row in read_csv(path)]
+    return [dict(row) for row in read_jsonl(path)]
 
 
 if __name__ == "__main__":

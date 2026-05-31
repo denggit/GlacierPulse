@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--a3-rt-stop-model", default=None)
     parser.add_argument("--a3-rt-next-tick-entry", choices=["true", "false"], default=None)
     parser.add_argument("--enable-no-future-audit", choices=["true", "false"], default=None)
+    parser.add_argument("--trades-jsonl", default=None)
+    parser.add_argument("--trades-dir", default=None)
+    parser.add_argument("--runtime-events", default=None)
     return parser
 
 
@@ -68,6 +71,12 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
         inputs["kline"] = Path(args.kline)
     if args.nohup:
         inputs["nohup"] = Path(args.nohup)
+    if args.trades_jsonl:
+        inputs["trades_jsonl"] = Path(args.trades_jsonl)
+    if args.runtime_events:
+        inputs["runtime_events"] = Path(args.runtime_events)
+    if args.trades_dir:
+        inputs["trades_dir"] = Path(args.trades_dir)
 
     for label, path in inputs.items():
         if not path.exists():
@@ -87,10 +96,16 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
             "phase1_candidates": "phase1_candidates.jsonl",
             "a1_reactions": "a1_reaction_events.jsonl",
             "nohup": "nohup.out",
+            "trades_jsonl": "runtime_trades.jsonl",
+            "runtime_events": "runtime_events.jsonl",
         }
         if "kline" in inputs:
             snapshot_names["kline"] = "kline.csv"
         for label, original in inputs.items():
+            if original.is_dir():
+                active_paths[label] = original
+                file_inputs[label] = _file_manifest(original, None)
+                continue
             snapshot_path = snapshot_dir / snapshot_names[label]
             shutil.copy2(original, snapshot_path)
             active_paths[label] = snapshot_path
@@ -178,6 +193,12 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
         commands["zone_truth"].extend(["--a3-rt-next-tick-entry", args.a3_rt_next_tick_entry])
     if args.enable_no_future_audit is not None:
         commands["zone_truth"].extend(["--enable-no-future-audit", args.enable_no_future_audit])
+    if args.trades_jsonl is not None:
+        commands["zone_truth"].extend(["--trades-jsonl", str(active_paths["trades_jsonl"])])
+    if args.trades_dir is not None:
+        commands["zone_truth"].extend(["--trades-dir", str(active_paths["trades_dir"])])
+    if args.runtime_events is not None:
+        commands["zone_truth"].extend(["--runtime-events", str(active_paths["runtime_events"])])
     if "kline" in active_paths:
         commands["zone_truth"][6:6] = ["--kline", str(active_paths["kline"])]
     else:
@@ -209,6 +230,9 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
         "phase1_candidates_path": str(active_paths["phase1_candidates"]),
         "a1_reactions_path": str(active_paths["a1_reactions"]),
         "kline_path": str(active_paths["kline"]) if "kline" in active_paths else "",
+        "trades_jsonl_path": str(active_paths["trades_jsonl"]) if "trades_jsonl" in active_paths else "",
+        "trades_dir_path": str(active_paths["trades_dir"]) if "trades_dir" in active_paths else "",
+        "runtime_events_path": str(active_paths["runtime_events"]) if "runtime_events" in active_paths else "",
         "context_labels_status": "ENABLED" if _parse_bool(args.enable_context_labels) and "kline" in active_paths else "KLINE_UNAVAILABLE",
         "nohup_path": str(active_paths["nohup"]) if "nohup" in active_paths else "",
         "snapshot_enabled": bool(args.snapshot),
@@ -258,6 +282,15 @@ def _ensure_a1_summary_alias(out_dir: Path) -> None:
 def _file_manifest(original_path: Path, snapshot_path: Path | None) -> dict[str, Any]:
     active = snapshot_path or original_path
     stat = active.stat()
+    if active.is_dir():
+        return {
+            "original_path": str(original_path),
+            "snapshot_path": str(snapshot_path) if snapshot_path else "",
+            "size_bytes": 0,
+            "file_size_bytes": 0,
+            "modified_time": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "sha256": "DIRECTORY",
+        }
     return {
         "original_path": str(original_path),
         "snapshot_path": str(snapshot_path) if snapshot_path else "",

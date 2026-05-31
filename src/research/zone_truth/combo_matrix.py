@@ -27,8 +27,8 @@ COMBO_KEY_FIELDS = [
 COMBO_METRIC_FIELDS = [
     "count",
     "count_per_day",
-    "avg_realized_r",
-    "median_realized_r",
+    "avg_realized_r_sim",
+    "median_realized_r_sim",
     "sum_positive_r",
     "sum_negative_r_abs",
     "profit_factor_proxy",
@@ -38,8 +38,8 @@ COMBO_METRIC_FIELDS = [
     "ambiguous_rate",
     "avg_fee_share_r",
     "avg_risk_u",
-    "avg_mfe_r",
-    "avg_mae_r",
+    "avg_mfe_r_sim",
+    "avg_mae_r_sim",
     "complete_rate",
 ]
 INVALID_SIMULATED_OUTCOMES = {
@@ -79,7 +79,7 @@ class ComboStatsAccumulator:
             row = {field: key[idx] for idx, field in enumerate(self.key_fields)}
             row.update(bucket.to_metrics())
             rows.append(row)
-        rows.sort(key=lambda r: (parse_float(r.get("avg_realized_r")), parse_float(r.get("profit_factor_proxy")), parse_float(r.get("count"))), reverse=True)
+        rows.sort(key=lambda r: (parse_float(r.get("avg_realized_r_sim")), parse_float(r.get("profit_factor_proxy")), parse_float(r.get("count"))), reverse=True)
         return rows
 
 
@@ -141,8 +141,8 @@ class _StatsBucket:
         return {
             "count": count,
             "count_per_day": round(count / days, 8),
-            "avg_realized_r": round(self.sum_realized_r / count, 8) if count else 0.0,
-            "median_realized_r": round(statistics.median(self.realized_r_values), 8) if self.realized_r_values else 0.0,
+            "avg_realized_r_sim": round(self.sum_realized_r / count, 8) if count else 0.0,
+            "median_realized_r_sim": round(statistics.median(self.realized_r_values), 8) if self.realized_r_values else 0.0,
             "sum_positive_r": round(self.sum_positive_r, 8),
             "sum_negative_r_abs": round(self.sum_negative_r_abs, 8),
             "profit_factor_proxy": round(self.sum_positive_r / self.sum_negative_r_abs, 8) if self.sum_negative_r_abs else (round(self.sum_positive_r, 8) if self.sum_positive_r else 0.0),
@@ -152,8 +152,8 @@ class _StatsBucket:
             "ambiguous_rate": round(self.ambiguous_count / count, 8) if count else 0.0,
             "avg_fee_share_r": round(self.sum_fee_share_r / count, 8) if count else 0.0,
             "avg_risk_u": round(self.sum_risk_u / count, 8) if count else 0.0,
-            "avg_mfe_r": round(self.sum_mfe_r / count, 8) if count else 0.0,
-            "avg_mae_r": round(self.sum_mae_r / count, 8) if count else 0.0,
+            "avg_mfe_r_sim": round(self.sum_mfe_r / count, 8) if count else 0.0,
+            "avg_mae_r_sim": round(self.sum_mae_r / count, 8) if count else 0.0,
             "complete_rate": round(self.complete_count / count, 8) if count else 0.0,
         }
 
@@ -186,8 +186,8 @@ def group_stats(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     return {
         "count": len(rows),
         "count_per_day": round(len(rows) / days, 8),
-        "avg_realized_r": round(sum(values) / len(values), 8) if values else 0.0,
-        "median_realized_r": round(statistics.median(values), 8) if values else 0.0,
+        "avg_realized_r_sim": round(sum(values) / len(values), 8) if values else 0.0,
+        "median_realized_r_sim": round(statistics.median(values), 8) if values else 0.0,
         "sum_positive_r": round(sum(positive), 8),
         "sum_negative_r_abs": round(sum(negative), 8),
         "profit_factor_proxy": round(sum(positive) / sum(negative), 8) if negative else (round(sum(positive), 8) if positive else 0.0),
@@ -197,8 +197,8 @@ def group_stats(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "ambiguous_rate": _rate(rows, lambda row: parse_bool(row.get("ambiguous_flag_sim"))),
         "avg_fee_share_r": _avg(rows, "fee_share_r"),
         "avg_risk_u": _avg(rows, "risk_u"),
-        "avg_mfe_r": _avg(rows, "mfe_r_1h_sim"),
-        "avg_mae_r": _avg(rows, "mae_r_1h_sim"),
+        "avg_mfe_r_sim": _avg(rows, "mfe_r_1h_sim"),
+        "avg_mae_r_sim": _avg(rows, "mae_r_1h_sim"),
         "complete_rate": _rate(rows, lambda row: parse_bool(row.get("complete_flag_sim"))),
     }
 
@@ -209,7 +209,7 @@ def top_combos(matrix: list[Mapping[str, Any]], limit: int | None = None) -> lis
     filtered = [dict(row) for row in matrix if int(parse_float(row.get("count"))) >= min_sample]
     filtered.sort(
         key=lambda row: (
-            parse_float(row.get("avg_realized_r")),
+            parse_float(row.get("avg_realized_r_sim")),
             parse_float(row.get("profit_factor_proxy")),
             parse_float(row.get("count_per_day")),
         ),
@@ -224,18 +224,18 @@ def bad_combos(matrix: list[Mapping[str, Any]], limit: int | None = None) -> lis
     rows = [
         dict(row) for row in matrix
         if int(parse_float(row.get("count"))) >= min_sample
-        and parse_float(row.get("avg_realized_r")) < 0
+        and parse_float(row.get("avg_realized_r_sim")) < 0
         and parse_float(row.get("profit_factor_proxy")) < 1
         and parse_float(row.get("fee_positive_rate")) < 0.4
     ]
-    rows.sort(key=lambda row: (parse_float(row.get("avg_realized_r")), parse_float(row.get("profit_factor_proxy"))))
+    rows.sort(key=lambda row: (parse_float(row.get("avg_realized_r_sim")), parse_float(row.get("profit_factor_proxy"))))
     return rows[:cap]
 
 
 def combo_summary(matrix: list[Mapping[str, Any]], trades: Iterable[Mapping[str, Any]] | None = None, valid_trade_count: int | None = None) -> dict[str, Any]:
     top = top_combos(matrix, limit=10)
     bad = bad_combos(matrix, limit=10)
-    positive = [row for row in matrix if parse_float(row.get("avg_realized_r")) > 0 and int(parse_float(row.get("count"))) >= int(getattr(cfg, "V7_3A_MIN_SAMPLE", 10))]
+    positive = [row for row in matrix if parse_float(row.get("avg_realized_r_sim")) > 0 and int(parse_float(row.get("count"))) >= int(getattr(cfg, "V7_3A_MIN_SAMPLE", 10))]
     return {
         "v7_enabled": bool(getattr(cfg, "V7_3A_SIMULATOR_ENABLED", True)),
         "v7_3a_simulated_trade_count": int(valid_trade_count) if valid_trade_count is not None else len([t for t in (trades or []) if is_valid_simulated_trade(t)]),
@@ -256,7 +256,7 @@ def _compact_top(rows: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
             {
                 **{field: row.get(field, "") for field in COMBO_KEY_FIELDS},
                 "count": int(parse_float(row.get("count"))),
-                "avg_realized_r": parse_float(row.get("avg_realized_r")),
+                "avg_realized_r_sim": parse_float(row.get("avg_realized_r_sim")),
                 "profit_factor_proxy": parse_float(row.get("profit_factor_proxy")),
                 "fee_positive_rate": parse_float(row.get("fee_positive_rate")),
             }

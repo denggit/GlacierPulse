@@ -68,6 +68,9 @@ class A2RuntimeStateMachine:
             self.state = A2_INVALIDATED
             self.reason = "defended_level_broken"
             return self.snapshot()
+        if self.state == A2_READY_FOR_A3:
+            self.reason = "ready_waiting_for_a3"
+            return self.snapshot()
 
         self.tick_count += 1
         self.box_low = price if self.box_low <= 0 else min(self.box_low, price)
@@ -118,6 +121,13 @@ class A2RuntimeStateMachine:
             "a2_rt_duration_sec": round(duration, 8),
             "a2_rt_tick_count": int(self.tick_count),
             "a2_rt_quiet_volume_ratio": round(quiet_ratio, 8),
+            "a2_rt_quiet_buy_avg": round(buy_avg, 8),
+            "a2_rt_quiet_sell_avg": round(sell_avg, 8),
+            "a2_rt_quiet_total_avg": round(buy_avg + sell_avg, 8),
+            "a2_rt_a1_buy_peak": round(self.a1_buy_peak, 8),
+            "a2_rt_a1_sell_peak": round(self.a1_sell_peak, 8),
+            "a2_rt_active_buy_sum": round(self.buy_notional_sum, 8),
+            "a2_rt_active_sell_sum": round(self.sell_notional_sum, 8),
             "a2_rt_active_sell_exhaustion_flag": self.direction == "BUY" and sell_avg <= self.a1_sell_peak * self.config.quiet_volume_ratio_max,
             "a2_rt_active_buy_exhaustion_flag": self.direction == "SELL" and buy_avg <= self.a1_buy_peak * self.config.quiet_volume_ratio_max,
             "a2_rt_cvd_stall_flag": self._cvd_stall(),

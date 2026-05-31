@@ -21,12 +21,14 @@ class A3RuntimeConfig:
 
 
 ENTRY_CONDITION_FIELDS = [
+    "active_buy_notional_3s",
+    "active_sell_notional_3s",
+    "cvd_delta_3s",
+    "price_velocity_u_per_sec",
     "a2_rt_ready_for_a3_flag",
     "a2_rt_box_high",
     "a2_rt_box_low",
-    "a3_entry_rt_price",
-    "a3_entry_rt_ts",
-    "a3_entry_rt_direction",
+    "a1_vp_setup_rt",
 ]
 
 
@@ -83,6 +85,7 @@ def evaluate_a3_runtime_entry(
     if velocity_ok:
         reasons.append("price_velocity")
     invalid_fields = invalid_entry_fields(ENTRY_CONDITION_FIELDS)
+    source_ts = _first_float(tick, "condition_available_ts", "field_available_ts", "ts", "timestamp", "event_ts", "recv_ts")
     return {
         "a3_entry_rt_flag": flag,
         "a3_entry_rt_ts": round(ts, 8) if flag else 0.0,
@@ -96,6 +99,9 @@ def evaluate_a3_runtime_entry(
         "a3_entry_rt_price_velocity_u_per_sec": round(velocity, 8),
         "a3_entry_rt_inherited_a1_vp_setup": inherited_a1_vp_setup,
         "a3_entry_rt_uses_future_field_flag": bool(invalid_fields),
+        "a3_entry_rt_condition_fields": "|".join(ENTRY_CONDITION_FIELDS),
+        "a3_entry_rt_condition_available_ts_max": round(source_ts, 8),
+        "a3_entry_rt_condition_source": "tick_at_entry",
     }
 
 
@@ -105,4 +111,3 @@ def _first_float(row: Mapping[str, Any], *names: str) -> float:
         if value != 0:
             return value
     return 0.0
-

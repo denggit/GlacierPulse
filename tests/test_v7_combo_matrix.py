@@ -31,14 +31,23 @@ def test_combo_key_generation():
 def test_group_stats_count_avg_median_positive_rate():
     stats = group_stats([{**BASE, "realized_r_1h_sim": 1.0}, {**BASE, "realized_r_1h_sim": -0.5}])
     assert stats["count"] == 2
-    assert stats["avg_realized_r"] == 0.25
-    assert stats["median_realized_r"] == 0.25
+    assert stats["avg_realized_r_sim"] == 0.25
+    assert stats["median_realized_r_sim"] == 0.25
     assert stats["fee_positive_rate"] == 0.5
 
 
 def test_profit_factor_proxy():
     stats = group_stats([{**BASE, "realized_r_1h_sim": 1.0}, {**BASE, "realized_r_1h_sim": -0.5}])
     assert stats["profit_factor_proxy"] == 2.0
+
+
+def test_combo_metrics_are_sim_fields():
+    matrix = build_combo_matrix([{**BASE, "realized_r_1h_sim": 1.0}])
+    assert "avg_realized_r_sim" in matrix[0]
+    assert "median_realized_r_sim" in matrix[0]
+    assert "avg_mfe_r_sim" in matrix[0]
+    assert "avg_mae_r_sim" in matrix[0]
+    assert "avg_realized_r" not in matrix[0]
 
 
 def test_top_combo_min_sample_filter(monkeypatch):

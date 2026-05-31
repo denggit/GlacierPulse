@@ -134,7 +134,7 @@ def test_zone_truth_schema_version_updated(tmp_path):
     ZoneTruthAnalyzer().export(phase1, reactions, klines, out)
     with (out / "zone_truth_events.csv").open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
-    assert rows[0]["schema_version"] == "v6.3.12.zone_truth.2"
+    assert rows[0]["schema_version"] == "v7.2.1.zone_truth.context"
 
 
 def test_group_stats_complete_only_forward_averages():
@@ -159,7 +159,7 @@ def test_group_stats_complete_only_forward_averages():
         },
     ]
     stats = ZoneTruthAnalyzer()._group_stats("all", rows)
-    assert stats["mfe_1h_avg"] == 55
-    assert stats["mfe_1h_complete_avg"] == 10
-    assert stats["mae_1h_avg"] == -11
-    assert stats["mae_1h_complete_avg"] == -2
+    assert stats["mfe_1h_future_avg"] == 55
+    assert stats["mfe_1h_future_complete_avg"] == 10
+    assert stats["mae_1h_future_avg"] == -11
+    assert stats["mae_1h_future_complete_avg"] == -2

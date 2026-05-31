@@ -125,6 +125,36 @@ def test_generate_research_reports_zip_includes_v7_files(tmp_path, monkeypatch):
         assert "v7_unit/zone_truth/zone_truth_3a_simulated_trades.csv" in zf.namelist()
 
 
+def test_generate_reports_passes_runtime_tick_and_a2_cli_args(tmp_path, monkeypatch):
+    monkeypatch.setattr(generator, "ROOT", tmp_path)
+    paths = _write_inputs(tmp_path)
+    ticks = tmp_path / "ticks.jsonl"
+    ticks.write_text('{"ts": 1, "last_price": 100}\n', encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    rc = generator.main(
+        [
+            "--run-name", "v73_cli",
+            "--phase1-candidates", str(paths["phase1"]),
+            "--a1-reactions", str(paths["reactions"]),
+            "--kline", str(paths["kline"]),
+            "--trades-jsonl", str(ticks),
+            "--a2-rt-min-quiet-sec", "7",
+            "--a2-rt-min-tick-count", "9",
+        ],
+        runner=runner,
+    )
+    assert rc == 0
+    zone_truth_cmd = next(cmd for cmd in commands if Path(cmd[1]).name == "analyze_zone_truth.py")
+    assert zone_truth_cmd[zone_truth_cmd.index("--trades-jsonl") + 1] == str(ticks)
+    assert zone_truth_cmd[zone_truth_cmd.index("--a2-rt-min-quiet-sec") + 1] == "7.0"
+    assert zone_truth_cmd[zone_truth_cmd.index("--a2-rt-min-tick-count") + 1] == "9"
+
+
 def test_v721_context_combo_prunes_book_proxy_and_writes_new_summaries(tmp_path):
     paths = _write_inputs(tmp_path)
     out = tmp_path / "zone_truth_v721"

@@ -42,7 +42,8 @@ def validate_trade_row(row: Mapping[str, Any]) -> dict[str, Any]:
         invalid.append("condition_available_ts_max")
     out = dict(row)
     out["uses_future_field_flag"] = bool(invalid) or parse_bool(out.get("uses_future_field_flag"))
-    out["future_field_names"] = "|".join(sorted(set(invalid)))
+    existing = [part.strip() for part in str(out.get("future_field_names") or "").replace(",", "|").split("|") if part.strip()]
+    out["future_field_names"] = "|".join(sorted(set([*existing, *invalid])))
     if invalid:
         out["audit_status"] = INVALID_LOOKAHEAD
     else:
@@ -72,4 +73,3 @@ def _looks_like_entry_condition(name: str) -> bool:
     if text in DEPRECATED_LOOKAHEAD_ALIASES:
         return True
     return text.startswith(("a2_rt_", "a3_entry_rt_", "a1_vp_", "vp24h_a1_vp_"))
-

@@ -32,12 +32,12 @@ from src.research.runtime_three_a.three_a_strategy_backtest import build_runtime
 
 
 FEE_AWARE_GROUP_METRIC_FIELDS = [
-    "a2_net_mfe_15m_r_avg",
-    "a2_net_mfe_1h_r_avg",
-    "a2_net_mae_15m_r_avg",
-    "a2_net_mae_1h_r_avg",
-    "a2_net_hit_1r_15m_rate",
-    "a2_net_hit_1r_1h_rate",
+    "a2_net_mfe_15m_r_future_avg",
+    "a2_net_mfe_1h_r_future_avg",
+    "a2_net_mae_15m_r_future_avg",
+    "a2_net_mae_1h_r_future_avg",
+    "a2_net_hit_1r_15m_future_rate",
+    "a2_net_hit_1r_1h_future_rate",
     "a3_future_net_mfe_15m_r_avg",
     "a3_future_net_mfe_1h_r_avg",
     "a3_future_net_mae_15m_r_avg",
@@ -87,7 +87,7 @@ V73_RT_TRADE_FIELDS = [
     "trade_id", "zone_id", "direction", "a1_ts", "a1_price", "a1_vp_setup_rt",
     "a1_vp_context_prefix", "a2_rt_start_ts", "a2_rt_ready_ts", "a2_rt_expiry_sec",
     "a2_rt_state", "entry_ts", "entry_price", "entry_reason", "condition_available_ts_max",
-    "uses_future_field_flag", "future_field_names", "stop_model", "stop_price", "risk_u",
+    "condition_source", "uses_future_field_flag", "future_field_names", "stop_model", "stop_price", "risk_u",
     "stop_reason", "fee_share_r", "target_model", "target_price", "target_r", "exit_ts",
     "exit_price", "exit_reason", "realized_r_sim", "mfe_r_future", "mae_r_future",
     "a3_quality_future_type_v2", "a3_quality_future_score_v2",
@@ -240,6 +240,8 @@ class ZoneTruthAnalyzer:
         enable_3a_rt_backtest: bool | None = None,
         a2_rt_max_age_sec: float | None = None,
         a2_rt_expiry_sweep_secs: Iterable[int] | None = None,
+        a2_rt_min_quiet_sec: float | None = None,
+        a2_rt_min_tick_count: int | None = None,
         a3_rt_target_model: str | None = None,
         a3_rt_stop_model: str | None = None,
         a3_rt_next_tick_entry: bool | None = None,
@@ -264,6 +266,8 @@ class ZoneTruthAnalyzer:
         self.a2_rt_expiry_sweep_secs = [int(x) for x in (a2_rt_expiry_sweep_secs or getattr(cfg, "A2_RT_EXPIRY_SWEEP_SECS", [180, 300, 600, 900, 1200, 1800]))]
         if int(self.a2_rt_max_age_sec) not in self.a2_rt_expiry_sweep_secs:
             self.a2_rt_expiry_sweep_secs.append(int(self.a2_rt_max_age_sec))
+        self.a2_rt_min_quiet_sec = float(getattr(cfg, "A2_RT_MIN_QUIET_SEC", 3.0) if a2_rt_min_quiet_sec is None else a2_rt_min_quiet_sec)
+        self.a2_rt_min_tick_count = int(getattr(cfg, "A2_RT_MIN_TICK_COUNT", 20) if a2_rt_min_tick_count is None else a2_rt_min_tick_count)
         self.a3_rt_target_model = str(a3_rt_target_model or getattr(cfg, "V7_3A_RT_TARGET_MODEL", "TARGET_FIXED_2R"))
         self.a3_rt_stop_model = str(a3_rt_stop_model or getattr(cfg, "V7_3A_RT_STOP_MODEL", "STOP_STRUCTURAL_ZONE_V2"))
         self.a3_rt_next_tick_entry = bool(getattr(cfg, "V7_3A_RT_NEXT_TICK_ENTRY", False)) if a3_rt_next_tick_entry is None else bool(a3_rt_next_tick_entry)
@@ -275,12 +279,14 @@ class ZoneTruthAnalyzer:
         a1_reactions: str | Path,
         kline: str | Path | None,
         out_dir: str | Path,
+        runtime_events: Iterable[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return self.export(
             read_jsonl(phase1_candidates),
             read_jsonl(a1_reactions),
             read_csv(kline) if kline else [],
             out_dir,
+            runtime_events=runtime_events,
         )
 
     def export(
@@ -289,6 +295,7 @@ class ZoneTruthAnalyzer:
         reaction_records: Iterable[Mapping[str, Any]],
         kline_records: Iterable[Mapping[str, Any]],
         out_dir: str | Path,
+        runtime_events: Iterable[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -353,10 +360,14 @@ class ZoneTruthAnalyzer:
         rt_reports = build_runtime_strategy_reports(
             iceberg_rows if self.enable_3a_rt_backtest else [],
             normalized_bars,
+            trade_events=runtime_events,
             expiry_secs=self.a2_rt_expiry_sweep_secs,
             stop_model=self.a3_rt_stop_model,
             target_model=self.a3_rt_target_model,
+            next_tick_entry=self.a3_rt_next_tick_entry,
             enable_audit=self.enable_no_future_audit,
+            a2_rt_min_quiet_sec=self.a2_rt_min_quiet_sec,
+            a2_rt_min_tick_count=self.a2_rt_min_tick_count,
         )
         write_csv(out / "zone_truth_events.csv", rows, ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS)
         write_csv(out / "zone_truth_by_reaction.csv", self.group_rows(rows, "reaction_type"), ["reaction_type"] + GROUP_METRIC_FIELDS)
@@ -377,14 +388,14 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_by_a2_compression_state.csv", self.group_rows(rows, "a2_compression_state_future"), ["a2_compression_state_future"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a2_ready_for_a3_watch.csv", self.group_rows(rows, "a2_ready_for_a3_watch_flag"), ["a2_ready_for_a3_watch_flag"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_watch_priority.csv", self.group_rows(rows, "a3_watch_priority"), ["a3_watch_priority"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_breakout_after_a2.csv", self.group_rows(rows, "a3_future_breakout_after_a2_flag"), ["a3_future_breakout_after_a2_flag"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_latency_bucket.csv", self.group_rows(rows, "a3_future_latency_bucket"), ["a3_future_latency_bucket"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_ignition_quality.csv", self.group_rows(rows, "a3_future_ignition_quality"), ["a3_future_ignition_quality"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_breakout_after_a2.csv", self.group_rows(rows, "a3_future_breakout_after_a2_flag"), ["a3_future_breakout_after_a2_flag"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_latency_bucket.csv", self.group_rows(rows, "a3_future_latency_bucket"), ["a3_future_latency_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_ignition_quality.csv", self.group_rows(rows, "a3_future_ignition_quality"), ["a3_future_ignition_quality"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a2_pre_ignition_compression_state.csv", self.group_rows(rows, "a2_pre_ignition_compression_state_future"), ["a2_pre_ignition_compression_state_future"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_realized_outcome_15m.csv", self.group_rows(rows, "a3_future_realized_outcome_15m"), ["a3_future_realized_outcome_15m"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_realized_outcome_1h.csv", self.group_rows(rows, "a3_future_realized_outcome_1h"), ["a3_future_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_net_mfe_1h_bucket.csv", self.group_rows(rows, "a3_future_net_mfe_1h_bucket"), ["a3_future_net_mfe_1h_bucket"] + GROUP_METRIC_FIELDS)
-        write_csv(out / "zone_truth_by_a3_preview_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_future_realized_r_proxy_1h_bucket"), ["a3_future_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_realized_outcome_15m.csv", self.group_rows(rows, "a3_future_realized_outcome_15m"), ["a3_future_realized_outcome_15m"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_realized_outcome_1h.csv", self.group_rows(rows, "a3_future_realized_outcome_1h"), ["a3_future_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_net_mfe_1h_bucket.csv", self.group_rows(rows, "a3_future_net_mfe_1h_bucket"), ["a3_future_net_mfe_1h_bucket"] + GROUP_METRIC_FIELDS)
+        write_csv(out / "zone_truth_by_a3_future_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_future_realized_r_proxy_1h_bucket"), ["a3_future_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_realized_outcome_1h.csv", self.group_rows(rows, "a3_after_a2_future_realized_outcome_1h"), ["a3_after_a2_future_realized_outcome_1h"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_net_mfe_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_future_net_mfe_1h_bucket"), ["a3_after_a2_future_net_mfe_1h_bucket"] + GROUP_METRIC_FIELDS)
         write_csv(out / "zone_truth_by_a3_after_a2_realized_r_proxy_1h_bucket.csv", self.group_rows(rows, "a3_after_a2_future_realized_r_proxy_1h_bucket"), ["a3_after_a2_future_realized_r_proxy_1h_bucket"] + GROUP_METRIC_FIELDS)
@@ -798,12 +809,12 @@ class ZoneTruthAnalyzer:
             "complete_15m_future_count": sum(1 for row in rows if parse_bool(row.get("is_complete_15m_future"))),
             "complete_1h_future_count": sum(1 for row in rows if parse_bool(row.get("is_complete_1h_future"))),
             "complete_4h_future_count": sum(1 for row in rows if parse_bool(row.get("is_complete_4h_future"))),
-            "a2_net_mfe_15m_r_avg": self._avg(rows, "a2_net_mfe_15m_r"),
-            "a2_net_mfe_1h_r_avg": self._avg(rows, "a2_net_mfe_1h_r"),
-            "a2_net_mae_15m_r_avg": self._avg(rows, "a2_net_mae_15m_r"),
-            "a2_net_mae_1h_r_avg": self._avg(rows, "a2_net_mae_1h_r"),
-            "a2_net_hit_1r_15m_rate": self._rate(rows, lambda row: parse_bool(row.get("a2_net_hit_1r_15m"))),
-            "a2_net_hit_1r_1h_rate": self._rate(rows, lambda row: parse_bool(row.get("a2_net_hit_1r_1h"))),
+            "a2_net_mfe_15m_r_future_avg": self._avg(rows, "a2_net_mfe_15m_r_future"),
+            "a2_net_mfe_1h_r_future_avg": self._avg(rows, "a2_net_mfe_1h_r_future"),
+            "a2_net_mae_15m_r_future_avg": self._avg(rows, "a2_net_mae_15m_r_future"),
+            "a2_net_mae_1h_r_future_avg": self._avg(rows, "a2_net_mae_1h_r_future"),
+            "a2_net_hit_1r_15m_future_rate": self._rate(rows, lambda row: parse_bool(row.get("a2_net_hit_1r_15m_future"))),
+            "a2_net_hit_1r_1h_future_rate": self._rate(rows, lambda row: parse_bool(row.get("a2_net_hit_1r_1h_future"))),
             "a3_future_net_mfe_15m_r_avg": self._avg(rows, "a3_future_net_mfe_15m_r"),
             "a3_future_net_mfe_1h_r_avg": self._avg(rows, "a3_future_net_mfe_1h_r"),
             "a3_future_net_mae_15m_r_avg": self._avg(rows, "a3_future_net_mae_15m_r"),
@@ -1048,7 +1059,7 @@ class ZoneTruthAnalyzer:
             "stop_model",
             "target_r",
             "count",
-            "avg_realized_r",
+            "avg_realized_r_sim",
             "profit_factor_proxy",
             "fee_positive_rate",
         ]

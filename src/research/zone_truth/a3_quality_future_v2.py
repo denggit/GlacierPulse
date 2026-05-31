@@ -10,11 +10,17 @@ from src.research.a1_edge.schema import parse_bool, parse_float
 
 def classify_a3_quality_future_v2(row: Mapping[str, Any]) -> dict[str, Any]:
     direction = str(row.get("direction") or row.get("a3_future_breakout_direction") or "").upper()
-    price_breakout = parse_bool(row.get("a3_future_breakout_seen_flag"))
-    volume_boost = parse_float(row.get("a3_future_volume_boost")) >= 2.0
-    body_strength = parse_float(row.get("a3_future_body_strength")) >= 0.5
-    no_quick_return = parse_bool(row.get("a3_future_no_quick_return_3m_flag")) or parse_bool(row.get("a3_future_no_quick_return_5m_flag"))
-    persistence = parse_bool(row.get("a3_future_persistence_3m_flag")) or parse_bool(row.get("a3_future_persistence_5m_flag"))
+    price_breakout = _first_bool(row, "a3_future_breakout_seen_flag", "a3_preview_breakout_raw_flag")
+    volume_boost = _first_float(row, "a3_future_volume_boost", "a3_preview_volume_boost") >= 2.0
+    body_strength = _first_float(row, "a3_future_body_strength", "a3_preview_body_strength") >= 0.5
+    no_quick_return = (
+        _first_bool(row, "a3_future_no_quick_return_3m_flag", "a3_preview_no_quick_return_3m_flag")
+        or _first_bool(row, "a3_future_no_quick_return_5m_flag", "a3_preview_no_quick_return_5m_flag")
+    )
+    persistence = (
+        _first_bool(row, "a3_future_persistence_3m_flag", "a3_preview_persistence_3m_flag")
+        or _first_bool(row, "a3_future_persistence_5m_flag", "a3_preview_persistence_5m_flag")
+    )
     orderflow = _orderflow_aligned(row, direction)
     reclaim = (parse_bool(row.get("has_reclaimed_boundary")) or parse_bool(row.get("a2_reclaim_flag"))) and orderflow
 
@@ -87,3 +93,9 @@ def _first_float(row: Mapping[str, Any], *names: str) -> float:
             return value
     return 0.0
 
+
+def _first_bool(row: Mapping[str, Any], *names: str) -> bool:
+    for name in names:
+        if name in row:
+            return parse_bool(row.get(name))
+    return False

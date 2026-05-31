@@ -130,14 +130,14 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "zone_truth_by_a2_compression_state.csv",
         "zone_truth_by_a2_ready_for_a3_watch.csv",
         "zone_truth_by_a3_watch_priority.csv",
-        "zone_truth_by_a3_preview_breakout_after_a2.csv",
-        "zone_truth_by_a3_preview_realized_r_proxy_1h_bucket.csv",
-        "zone_truth_by_a3_preview_net_mfe_1h_bucket.csv",
-        "zone_truth_by_a3_preview_realized_outcome_1h.csv",
-        "zone_truth_by_a3_preview_realized_outcome_15m.csv",
+        "zone_truth_by_a3_future_breakout_after_a2.csv",
+        "zone_truth_by_a3_future_realized_r_proxy_1h_bucket.csv",
+        "zone_truth_by_a3_future_net_mfe_1h_bucket.csv",
+        "zone_truth_by_a3_future_realized_outcome_1h.csv",
+        "zone_truth_by_a3_future_realized_outcome_15m.csv",
         "zone_truth_by_a2_pre_ignition_compression_state.csv",
-        "zone_truth_by_a3_preview_ignition_quality.csv",
-        "zone_truth_by_a3_preview_latency_bucket.csv",
+        "zone_truth_by_a3_future_ignition_quality.csv",
+        "zone_truth_by_a3_future_latency_bucket.csv",
         "zone_truth_by_a3_after_a2_realized_outcome_1h.csv",
         "zone_truth_by_a3_after_a2_net_mfe_1h_bucket.csv",
         "zone_truth_by_a3_after_a2_realized_r_proxy_1h_bucket.csv",
@@ -150,7 +150,7 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     ):
         assert (out / name).exists()
 
-    with (out / "zone_truth_by_a3_preview_ignition_quality.csv").open("r", encoding="utf-8", newline="") as f:
+    with (out / "zone_truth_by_a3_future_ignition_quality.csv").open("r", encoding="utf-8", newline="") as f:
         header = next(csv.reader(f))
     assert "a3_future_realized_r_proxy_1h_avg" in header
     assert "a3_future_fee_positive_1h_rate" in header

@@ -105,6 +105,15 @@ def _register_defaults() -> None:
         "a2_compression_state_future": ["a2_compression_state", "A2_COMPRESSION"],
         "a2_compression_ratio_15m_future": ["a2_compression_ratio_15m"],
         "a2_compression_ratio_1h_future": ["a2_compression_ratio_1h"],
+        "a2_net_mfe_15m_r_future": ["a2_net_mfe_15m_r"],
+        "a2_net_mae_15m_r_future": ["a2_net_mae_15m_r"],
+        "a2_net_mfe_1h_r_future": ["a2_net_mfe_1h_r"],
+        "a2_net_mae_1h_r_future": ["a2_net_mae_1h_r"],
+        "a2_net_mfe_4h_r_future": ["a2_net_mfe_4h_r"],
+        "a2_net_mae_4h_r_future": ["a2_net_mae_4h_r"],
+        "a2_net_hit_1r_15m_future": ["a2_net_hit_1r_15m"],
+        "a2_net_hit_1r_1h_future": ["a2_net_hit_1r_1h"],
+        "a2_net_hit_2r_1h_future": ["a2_net_hit_2r_1h"],
         "a3_future_ignition_quality": ["a3_preview_ignition_quality"],
         "a3_future_breakout_seen_flag": ["a3_preview_breakout_raw_flag"],
         "a3_future_persistence_3m_flag": ["a3_preview_persistence_3m_flag"],
@@ -136,9 +145,15 @@ def _register_defaults() -> None:
     ):
         register(_spec(name, "rt", "runtime_three_a", "runtime-safe entry input"))
 
-    for name in ("realized_r_sim", "target_fixed_2r_price_sim"):
+    for name in (
+        "realized_r_sim",
+        "target_fixed_2r_price_sim",
+        "avg_realized_r_sim",
+        "median_realized_r_sim",
+        "avg_mfe_r_sim",
+        "avg_mae_r_sim",
+    ):
         register(_spec(name, "sim", "runtime_three_a", "simulated backtest result"))
 
 
 _register_defaults()
-

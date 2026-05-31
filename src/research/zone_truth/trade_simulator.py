@@ -175,13 +175,13 @@ def resolve_entry(row: Mapping[str, Any], bar_index: BarIndex, entry_model: str)
         ts = _first_ts(row, "retest_confirmed_ts", "retest_started_ts", "reaction_event_ts")
         return _entry_from_bar_close(bar_index, ts, "NO_RETEST_TS")
     if model == "AGGRESSION_FLIP":
-        if not parse_bool(row.get("a3_orderflow_aggression_flag")):
+        if not parse_bool(row.get("a3_orderflow_aggression_flag_future")):
             return {"available": False, "reason": "NO_ORDERFLOW_AGGRESSION"}
         ts = _first_ts(row, "a3_aggression_ts", "confirmed_ts", "a3_future_breakout_entry_ts", "reaction_event_ts")
         return _entry_from_bar_close(bar_index, ts, "NO_AGGRESSION_TS")
     if model == "NO_QUICK_RETURN_CONFIRM":
         if not (
-            parse_bool(row.get("a3_no_quick_return_flag"))
+            parse_bool(row.get("a3_no_quick_return_flag_future"))
             or parse_bool(row.get("a3_future_no_quick_return_3m_flag"))
             or parse_bool(row.get("a3_future_no_quick_return_5m_flag"))
         ):

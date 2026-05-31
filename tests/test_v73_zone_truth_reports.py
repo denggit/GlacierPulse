@@ -26,6 +26,7 @@ def _inputs(root: Path) -> tuple[Path, Path, Path]:
                 "settle_price": 100,
                 "zone_lower": 99,
                 "zone_upper": 101,
+                "active_notional": 1_000_000,
                 "truth_score": {"truth_score_total": 80, "truth_label": "HIGH_CONFIDENCE_ICEBERG"},
             }
         )
@@ -80,5 +81,32 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
         "zone_truth_3a_rt_summary.json",
     ):
         assert (out / name).exists()
+    with (out / "zone_truth_3a_rt_summary.json").open(encoding="utf-8") as handle:
+        rt_summary = json.load(handle)
+    assert rt_summary["runtime_3a_status"] == "SKIPPED_NO_TRADE_EVENTS"
     assert summary["no_future_field_hygiene_version"] == "v7.3.0.no_future_field_registry"
 
+
+def test_v73_zone_truth_runtime_reports_use_supplied_trade_events(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_rt"
+    ticks = [
+        {"ts": BASE_TS + 1, "last_price": 100.0, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
+        {"ts": BASE_TS + 2, "last_price": 100.1, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
+        {"ts": BASE_TS + 3, "last_price": 100.2, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0, "price_velocity_u_per_sec": 0.01},
+        {"ts": BASE_TS + 4, "last_price": 102.0, "active_buy_notional_3s": 250_000, "active_sell_notional_3s": 20_000, "cvd_delta_3s": 50_000, "price_velocity_u_per_sec": 0.5},
+    ]
+    analyzer = ZoneTruthAnalyzer(
+        enable_3a_simulator=False,
+        a2_rt_expiry_sweep_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    analyzer.analyze_files(phase1, reactions, kline, out, runtime_events=ticks)
+    with (out / "zone_truth_3a_rt_summary.json").open(encoding="utf-8") as handle:
+        rt_summary = json.load(handle)
+    assert rt_summary["runtime_3a_status"] == "OK"
+    with (out / "zone_truth_3a_rt_trades.csv").open(encoding="utf-8", newline="") as handle:
+        trades = list(csv.DictReader(handle))
+    assert len(trades) == 1
+    assert trades[0]["entry_ts"] == str(float(BASE_TS + 4))
