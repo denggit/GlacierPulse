@@ -5,7 +5,9 @@ from src.research.runtime_three_a.runtime_engine import (
     RuntimeThreeABacktestEngine,
     RuntimeThreeAEngineConfig,
     default_runtime_engine_config,
+    normalize_runtime_bars,
     simulate_runtime_trade_exit,
+    simulate_runtime_trade_exit_from_normalized_bars,
 )
 from src.research.runtime_three_a.target_models import build_target_candidates
 from src.research.runtime_three_a.three_a_strategy_backtest import build_runtime_strategy_reports
@@ -280,3 +282,117 @@ def test_ambiguous_exit_flags():
     assert result["ambiguous_flag_sim"] is True
     assert result["target_first_flag_sim"] is False
     assert result["stop_first_flag_sim"] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1: trade exit from normalized bars (no repeated normalize/filter)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_exit_from_normalized_bars_matches_old_behavior():
+    """simulate_runtime_trade_exit_from_normalized_bars must match old function."""
+    bars = _bars()
+    bars_norm = normalize_runtime_bars(bars)
+    bar_ts = [b["timestamp"] for b in bars_norm]
+    old_result = simulate_runtime_trade_exit(
+        entry_ts=1004,
+        entry_price=102,
+        stop_price=99,
+        target_price=108,
+        direction="BUY",
+        future_bars=bars,
+        fee_share_r=0.1,
+        risk_u=3,
+    )
+    new_result = simulate_runtime_trade_exit_from_normalized_bars(
+        entry_ts=1004,
+        entry_price=102,
+        stop_price=99,
+        target_price=108,
+        direction="BUY",
+        normalized_bars=bars_norm,
+        normalized_bar_ts=bar_ts,
+        fee_share_r=0.1,
+        risk_u=3,
+    )
+    assert old_result["exit_reason"] == new_result["exit_reason"]
+    assert old_result["realized_r_sim"] == new_result["realized_r_sim"]
+    assert old_result["mfe_r_future"] == new_result["mfe_r_future"]
+    assert old_result["mae_r_future"] == new_result["mae_r_future"]
+
+
+def test_exit_from_normalized_bars_ambiguous():
+    """Ambiguous (both hit) exit matches old behavior."""
+    bars_norm = normalize_runtime_bars([{"timestamp": 1004, "open": 102, "high": 109, "low": 98, "close": 101}])
+    bar_ts = [b["timestamp"] for b in bars_norm]
+    result = simulate_runtime_trade_exit_from_normalized_bars(
+        entry_ts=1004,
+        entry_price=102,
+        stop_price=99,
+        target_price=108,
+        direction="BUY",
+        normalized_bars=bars_norm,
+        normalized_bar_ts=bar_ts,
+        fee_share_r=0.1,
+        risk_u=3,
+    )
+    assert result["exit_reason"] == "AMBIGUOUS_BOTH_HIT"
+
+
+def test_exit_from_normalized_bars_slice_respects_window(tmp_path, monkeypatch):
+    """Only bars within [entry_ts, entry_ts + window_sec] are examined."""
+    import random
+    random.seed(42)
+    many_bars = []
+    # Generate bars where stop/target are not hit, ensuring CLOSE_EXIT or NO_FUTURE_BARS
+    for i in range(1000):
+        many_bars.append({
+            "timestamp": 500 + i * 10.0,
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+        })
+    bars_norm = normalize_runtime_bars(many_bars)
+    bar_ts = [b["timestamp"] for b in bars_norm]
+    # Entry at ts=9000, window_sec=3600: should scan ~360 bars within [9000, 12600]
+    result = simulate_runtime_trade_exit_from_normalized_bars(
+        entry_ts=9000,
+        entry_price=100,
+        stop_price=95,
+        target_price=108,
+        direction="BUY",
+        normalized_bars=bars_norm,
+        normalized_bar_ts=bar_ts,
+        fee_share_r=0.1,
+        risk_u=5,
+        window_sec=3600,
+    )
+    # With narrow range [99-101], stop=95 and target=108 never hit → CLOSE_EXIT
+    assert result["exit_reason"] in {"CLOSE_EXIT", "NO_FUTURE_BARS"}
+
+
+def test_engine_does_not_repeat_normalize_runtime_bars(monkeypatch):
+    """Runtime engine must normalize bars once, not per trade."""
+    called = [0]
+    original = normalize_runtime_bars
+
+    def counting_normalize(bars):
+        called[0] += 1
+        return original(bars)
+
+    monkeypatch.setattr(
+        "src.research.runtime_three_a.runtime_engine.normalize_runtime_bars",
+        counting_normalize,
+    )
+    ticks = [*_quiet_ticks(count=3), _burst_tick()]
+    reports = build_runtime_strategy_reports(
+        [_zone(), _zone()],
+        _bars(),
+        trade_events=ticks,
+        expiry_secs=[300, 900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    # normalize_runtime_bars should be called exactly once, not per zone or per trade
+    assert called[0] == 1, f"normalize_runtime_bars called {called[0]} times, expected 1"

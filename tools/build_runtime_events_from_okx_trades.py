@@ -261,6 +261,9 @@ def build_runtime_events(
     pending_event: dict[str, Any] | None = None
     prev_trade: NormalizedTrade | None = None
     prev_ts: float | None = None
+    rolling_buy_sum: float = 0.0
+    rolling_sell_sum: float = 0.0
+    rolling_signed_sum: float = 0.0
     success = False
 
     try:
@@ -278,6 +281,16 @@ def build_runtime_events(
                 stats.empty_output_warning = "no supported trade files found; output will be empty"
                 stats.output_warning = _join_warning(stats.output_warning, stats.empty_output_warning)
                 writer.close()
+                if isinstance(writer, _ShardedRuntimeEventWriter):
+                    stats.manifest_path = str(writer.manifest_path)
+                    writer.write_manifest(
+                        symbol=symbol,
+                        bucket_sec=bucket_sec,
+                        rolling_sec=rolling_sec,
+                        contract_multiplier=resolved_multiplier,
+                        notional_mode=stats.notional_mode,
+                        output_mode=stats.output_mode,
+                    )
                 writer.commit()
                 success = True
                 return stats.as_dict()
@@ -292,6 +305,7 @@ def build_runtime_events(
         if allow_json_file:
             trade_iter_kwargs["allow_json_file"] = True
             trade_iter_kwargs["max_json_file_bytes"] = int(max_json_file_bytes)
+        trade_iter_kwargs["include_metadata_json"] = bool(include_metadata_json)
         read_stats = RuntimeReadStats()
         trade_iter_kwargs["read_stats"] = read_stats
         for trade in iter_normalized_trades(
@@ -319,6 +333,9 @@ def build_runtime_events(
                 price_window.clear()
                 current_bucket = None
                 prev_trade = None
+                rolling_buy_sum = 0.0
+                rolling_sell_sum = 0.0
+                rolling_signed_sum = 0.0
             stats.first_ts = trade.ts if stats.first_ts <= 0 else min(stats.first_ts, trade.ts)
             stats.last_ts = max(stats.last_ts, trade.ts)
             bucket = _bucket_start(trade.ts, bucket_sec)
@@ -326,16 +343,30 @@ def build_runtime_events(
                 writer.write(pending_event)
                 stats.runtime_events_written += 1
             current_bucket = bucket
+            if trade.side == "BUY":
+                rolling_buy_sum += trade.notional
+                rolling_signed_sum += trade.notional
+            elif trade.side == "SELL":
+                rolling_sell_sum += trade.notional
+                rolling_signed_sum -= trade.notional
             rolling.append(trade)
             price_window.append((trade.ts, trade.price))
-            _trim_rolling(rolling, trade.ts, rolling_sec)
+            for removed in _trim_rolling(rolling, trade.ts, rolling_sec):
+                if removed.side == "BUY":
+                    rolling_buy_sum -= removed.notional
+                    rolling_signed_sum -= removed.notional
+                elif removed.side == "SELL":
+                    rolling_sell_sum -= removed.notional
+                    rolling_signed_sum += removed.notional
             _trim_price_window(price_window, trade.ts, rolling_sec)
             pending_event = runtime_event_from_trade(
                 trade,
-                rolling=rolling,
                 price_window=price_window,
                 prev_trade=prev_trade,
                 rolling_sec=rolling_sec,
+                rolling_buy_sum=rolling_buy_sum,
+                rolling_sell_sum=rolling_sell_sum,
+                rolling_signed_sum=rolling_signed_sum,
             )
             prev_trade = trade
             prev_ts = trade.ts
@@ -354,6 +385,16 @@ def build_runtime_events(
             if allow_empty:
                 stats.empty_output_warning = "no valid trades were converted into runtime_events"
                 stats.output_warning = _join_warning(stats.output_warning, stats.empty_output_warning)
+                if isinstance(writer, _ShardedRuntimeEventWriter):
+                    stats.manifest_path = str(writer.manifest_path)
+                    writer.write_manifest(
+                        symbol=symbol,
+                        bucket_sec=bucket_sec,
+                        rolling_sec=rolling_sec,
+                        contract_multiplier=resolved_multiplier,
+                        notional_mode=stats.notional_mode,
+                        output_mode=stats.output_mode,
+                    )
                 writer.commit()
                 success = True
                 return stats.as_dict()
@@ -386,29 +427,21 @@ def build_runtime_events(
 def runtime_event_from_trade(
     trade: NormalizedTrade,
     *,
-    rolling: Iterable[NormalizedTrade],
     price_window: deque[tuple[float, float]],
     prev_trade: NormalizedTrade | None,
     rolling_sec: float,
+    rolling_buy_sum: float = 0.0,
+    rolling_sell_sum: float = 0.0,
+    rolling_signed_sum: float = 0.0,
 ) -> dict[str, Any]:
-    buy = 0.0
-    sell = 0.0
-    signed = 0.0
-    for item in rolling:
-        if item.side == "BUY":
-            buy += item.notional
-            signed += item.notional
-        elif item.side == "SELL":
-            sell += item.notional
-            signed -= item.notional
     velocity = _price_velocity(trade, price_window, prev_trade, rolling_sec)
     return {
         "ts": round(trade.ts, 8),
         "symbol": trade.symbol,
         "last_price": round(trade.price, 8),
-        "active_buy_notional_3s": round(buy, 8),
-        "active_sell_notional_3s": round(sell, 8),
-        "cvd_delta_3s": round(signed, 8),
+        "active_buy_notional_3s": round(rolling_buy_sum, 8),
+        "active_sell_notional_3s": round(rolling_sell_sum, 8),
+        "cvd_delta_3s": round(rolling_signed_sum, 8),
         "price_velocity_u_per_sec": round(velocity, 8),
         "condition_available_ts": round(trade.ts, 8),
         "condition_source": "okx_raw_trades_builder",
@@ -605,11 +638,13 @@ def iter_normalized_trades(
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
     read_stats: RuntimeReadStats | None = None,
+    include_metadata_json: bool = False,
 ) -> Iterator[NormalizedTrade]:
     base_kwargs: dict[str, Any] = {
         "symbol": symbol,
         "contract_multiplier": contract_multiplier,
         "max_json_line_bytes": max_json_line_bytes,
+        "include_metadata_json": bool(include_metadata_json),
     }
     if allow_json_file:
         base_kwargs["allow_json_file"] = True
@@ -644,6 +679,7 @@ def iter_normalized_trades_from_file(
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
     read_stats: RuntimeReadStats | None = None,
+    include_metadata_json: bool = False,
 ) -> Iterator[NormalizedTrade]:
     for row in iter_trade_rows(
         path,
@@ -651,6 +687,7 @@ def iter_normalized_trades_from_file(
         allow_json_file=allow_json_file,
         max_json_file_bytes=max_json_file_bytes,
         read_stats=read_stats,
+        include_metadata_json=include_metadata_json,
     ):
         trade = normalize_trade_row(row, symbol=symbol, contract_multiplier=contract_multiplier)
         if trade is not None:
@@ -664,6 +701,7 @@ def iter_trade_rows(
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
     read_stats: RuntimeReadStats | None = None,
+    include_metadata_json: bool = False,
 ) -> Iterator[dict[str, Any]]:
     name = path.name.lower()
     if name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
@@ -672,6 +710,10 @@ def iter_trade_rows(
                 inner = Path(member.name)
                 if _is_raw_json_path(inner):
                     if not allow_json_file:
+                        if read_stats is not None:
+                            read_stats.skipped_json_file_count += 1
+                        continue
+                    if not include_metadata_json and _is_metadata_json_name(inner.name):
                         if read_stats is not None:
                             read_stats.skipped_json_file_count += 1
                         continue
@@ -698,6 +740,10 @@ def iter_trade_rows(
                     continue
                 if _is_raw_json_path(inner):
                     if not allow_json_file:
+                        if read_stats is not None:
+                            read_stats.skipped_json_file_count += 1
+                        continue
+                    if not include_metadata_json and _is_metadata_json_name(inner.name):
                         if read_stats is not None:
                             read_stats.skipped_json_file_count += 1
                         continue
@@ -793,10 +839,13 @@ def _bucket_start(ts: float, bucket_sec: float) -> float:
     return int(float(ts) / bucket_sec) * bucket_sec
 
 
-def _trim_rolling(rolling: deque[NormalizedTrade], ts: float, rolling_sec: float) -> None:
+def _trim_rolling(rolling: deque[NormalizedTrade], ts: float, rolling_sec: float) -> list[NormalizedTrade]:
+    """Remove expired trades and return them so caller can update incremental sums."""
     cutoff = float(ts) - float(rolling_sec)
+    removed: list[NormalizedTrade] = []
     while rolling and rolling[0].ts < cutoff:
-        rolling.popleft()
+        removed.append(rolling.popleft())
+    return removed
 
 
 def _trim_price_window(window: deque[tuple[float, float]], ts: float, rolling_sec: float) -> None:

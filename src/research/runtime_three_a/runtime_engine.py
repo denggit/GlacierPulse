@@ -77,6 +77,7 @@ class RuntimeThreeABacktestEngine:
             return _empty_reports(expiry_values, RUNTIME_STATUS_SKIPPED_NO_TRADE_EVENTS, self.config)
 
         bars_norm = normalize_runtime_bars(bars or [])
+        bar_ts = [bar["timestamp"] for bar in bars_norm]
         zones_sorted = sorted([dict(row) for row in zones or []], key=_zone_start_ts)
         all_signals: list[dict[str, Any]] = []
         all_trades: list[dict[str, Any]] = []
@@ -98,7 +99,7 @@ class RuntimeThreeABacktestEngine:
                 end_ts=end_ts,
                 symbol=symbol,
             )
-            outcomes = self._run_zone_for_expiries(zone, tick_iter, bars_norm, expiry_values, max_expiry)
+            outcomes = self._run_zone_for_expiries(zone, tick_iter, bars_norm, bar_ts, expiry_values, max_expiry)
             for expiry, outcome in outcomes.items():
                 status = str(outcome.get("status") or "")
                 if status == A2_EXPIRED:
@@ -130,6 +131,7 @@ class RuntimeThreeABacktestEngine:
         zone: Mapping[str, Any],
         ticks: Iterable[Mapping[str, Any]],
         bars: list[dict[str, float]],
+        bar_ts: list[float],
         expiry_values: list[int],
         max_expiry: int,
     ) -> dict[int, dict[str, Any]]:
@@ -190,7 +192,7 @@ class RuntimeThreeABacktestEngine:
                 a2 = _a2_snapshot_for_expiry(trigger_a2, expiry)
                 a3 = dict(trigger_a3)
                 signal = _signal_row(zone, a2, a3, expiry)
-                trade = _trade_row(zone, a2, a3, expiry, bars, self.config)
+                trade = _trade_row(zone, a2, a3, expiry, bars, bar_ts, self.config)
                 outcomes[expiry] = {"status": A2_A3_TRIGGERED, "signal": signal, "trade": trade}
             elif invalidated_ts > 0 and invalidated_ts - start_ts <= float(expiry):
                 outcomes[expiry] = {"status": A2_INVALIDATED}
@@ -284,6 +286,61 @@ def simulate_runtime_trade_exit(
     raw_r = (close - entry_price) / risk_u if side == "BUY" else (entry_price - close) / risk_u
     complete = float(bars[-1]["timestamp"]) >= float(entry_ts) + float(window_sec)
     return _exit_result(bars[-1]["timestamp"], close, "CLOSE_EXIT", raw_r - fee_share_r, mfe_r, mae_r, complete_flag=complete)
+
+
+def simulate_runtime_trade_exit_from_normalized_bars(
+    *,
+    entry_ts: float,
+    entry_price: float,
+    stop_price: float,
+    target_price: float,
+    direction: str,
+    normalized_bars: list[dict[str, float]],
+    normalized_bar_ts: list[float],
+    fee_share_r: float,
+    risk_u: float,
+    window_sec: int = 3600,
+) -> dict[str, Any]:
+    """Same as simulate_runtime_trade_exit but accepts pre-normalized bars + sorted ts list.
+
+    Uses bisect to only scan bars within [entry_ts, entry_ts + window_sec].
+    Does NOT call normalize_runtime_bars — caller normalizes once.
+    """
+    side = str(direction or "").upper()
+    if risk_u <= 0 or entry_price <= 0 or side not in {"BUY", "SELL"}:
+        return _exit_result(0.0, 0.0, "INVALID_RISK", 0.0, 0.0, complete_flag=False)
+    start_idx = bisect_left(normalized_bar_ts, float(entry_ts))
+    end_val = float(entry_ts) + float(window_sec)
+    end_idx = bisect_right(normalized_bar_ts, end_val)
+    if start_idx >= end_idx:
+        return _exit_result(entry_ts, entry_price, "NO_FUTURE_BARS", -fee_share_r, 0.0, complete_flag=False)
+    bars_slice = normalized_bars[start_idx:end_idx]
+    if side == "BUY":
+        mfe_r = (max(float(b["high"]) for b in bars_slice) - entry_price) / risk_u
+        mae_r = (min(float(b["low"]) for b in bars_slice) - entry_price) / risk_u
+    else:
+        mfe_r = (entry_price - min(float(b["low"]) for b in bars_slice)) / risk_u
+        mae_r = (entry_price - max(float(b["high"]) for b in bars_slice)) / risk_u
+    target_r = abs(target_price - entry_price) / risk_u if target_price > 0 else 0.0
+    for bar in bars_slice:
+        high = float(bar["high"])
+        low = float(bar["low"])
+        if side == "BUY":
+            hit_stop = low <= stop_price
+            hit_target = high >= target_price
+        else:
+            hit_stop = high >= stop_price
+            hit_target = low <= target_price
+        if hit_stop and hit_target:
+            return _exit_result(bar["timestamp"], stop_price, "AMBIGUOUS_BOTH_HIT", -1.0 - fee_share_r, mfe_r, mae_r)
+        if hit_target:
+            return _exit_result(bar["timestamp"], target_price, "TARGET_FIRST", target_r - fee_share_r, mfe_r, mae_r)
+        if hit_stop:
+            return _exit_result(bar["timestamp"], stop_price, "STOP_FIRST", -1.0 - fee_share_r, mfe_r, mae_r)
+    close = float(bars_slice[-1]["close"])
+    raw_r = (close - entry_price) / risk_u if side == "BUY" else (entry_price - close) / risk_u
+    complete = float(bars_slice[-1]["timestamp"]) >= end_val
+    return _exit_result(bars_slice[-1]["timestamp"], close, "CLOSE_EXIT", raw_r - fee_share_r, mfe_r, mae_r, complete_flag=complete)
 
 
 def normalize_runtime_ticks(events: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -459,23 +516,26 @@ def _trade_row(
     a3: Mapping[str, Any],
     expiry_sec: int,
     bars: list[dict[str, float]],
+    bar_ts: list[float],
     config: RuntimeThreeAEngineConfig,
 ) -> dict[str, Any]:
     row = {**dict(zone), **dict(a2), **dict(a3)}
     direction = str(a3.get("a3_entry_rt_direction") or zone.get("direction") or "").upper()
     entry = parse_float(a3.get("a3_entry_rt_price"))
+    entry_ts = parse_float(a3.get("a3_entry_rt_ts"))
     stop = build_stop(row, entry, direction, config.stop_model)
     risk = parse_float(stop.get("risk_u"))
     targets = build_target_candidates(row, entry, direction, risk)
     target_price = targets["target_fixed_2r_price_sim"] if config.target_model.upper() == "TARGET_FIXED_2R" else targets.get("target_hybrid_min_2r_price_rt", 0.0)
     target_r = abs(parse_float(target_price) - entry) / risk if risk > 0 else 0.0
-    exit_result = simulate_runtime_trade_exit(
-        entry_ts=parse_float(a3.get("a3_entry_rt_ts")),
+    exit_result = simulate_runtime_trade_exit_from_normalized_bars(
+        entry_ts=entry_ts,
         entry_price=entry,
         stop_price=parse_float(stop.get("stop_price")),
         target_price=parse_float(target_price),
         direction=direction,
-        future_bars=bars,
+        normalized_bars=bars,
+        normalized_bar_ts=bar_ts,
         fee_share_r=parse_float(stop.get("fee_share_r")),
         risk_u=risk,
         window_sec=config.outcome_window_sec,

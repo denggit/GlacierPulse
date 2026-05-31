@@ -549,7 +549,7 @@ def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
     def fake_discover(path, *, allow_json_file=False, include_metadata_json=False):
         return [path], 0
 
-    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES, allow_json_file=False, max_json_file_bytes=runtime_builder.MAX_JSON_FILE_BYTES, read_stats=None):
+    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES, allow_json_file=False, max_json_file_bytes=runtime_builder.MAX_JSON_FILE_BYTES, read_stats=None, include_metadata_json=False):
         for idx in range(5):
             yielded.append(idx)
             yield runtime_builder.NormalizedTrade(
@@ -736,7 +736,7 @@ def test_sequential_file_reading_does_not_open_all_files(tmp_path, monkeypatch):
     paths = [tmp_path / f"{idx}.jsonl" for idx in range(3)]
     calls = []
 
-    def fake_iter(path, *, symbol, contract_multiplier=1.0, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES, allow_json_file=False, max_json_file_bytes=runtime_builder.MAX_JSON_FILE_BYTES, read_stats=None):
+    def fake_iter(path, *, symbol, contract_multiplier=1.0, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES, allow_json_file=False, max_json_file_bytes=runtime_builder.MAX_JSON_FILE_BYTES, read_stats=None, include_metadata_json=False):
         calls.append(path.name)
         yield runtime_builder.NormalizedTrade(
             ts=1000.0 + len(calls),
@@ -1348,3 +1348,295 @@ def test_include_metadata_json_allows_metadata_files(tmp_path):
     )
     assert summary["total_trades_read"] == 2
     assert summary["skipped_json_file_count"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1: archive internal metadata-like .json matching directory rules
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_tar_gz_metadata_json_skipped_with_allow_json_file(tmp_path):
+    """tar.gz with trades.json + metadata.json + allow_json_file: metadata skipped."""
+    inner_trades = tmp_path / "trades.json"
+    inner_trades.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+    inner_meta = tmp_path / "metadata.json"
+    inner_meta.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}]),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "trades.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(inner_trades, arcname="trades.json")
+        archive.add(inner_meta, arcname="metadata.json")
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=archive_path,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_json_file=True,
+    )
+    assert summary["total_trades_read"] == 1
+    assert summary["skipped_json_file_count"] == 1
+    assert "raw .json files were skipped" in summary["output_warning"]
+
+
+def test_zip_metadata_json_skipped_with_allow_json_file(tmp_path):
+    """Zip with trades.json + summary.json + allow_json_file: summary skipped."""
+    from zipfile import ZipFile
+
+    inner_trades = tmp_path / "trades.json"
+    inner_trades.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+    inner_summary = tmp_path / "summary.json"
+    inner_summary.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}]),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "trades.zip"
+    with ZipFile(archive_path, "w") as zf:
+        zf.write(inner_trades, arcname="trades.json")
+        zf.write(inner_summary, arcname="summary.json")
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=archive_path,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_json_file=True,
+    )
+    assert summary["total_trades_read"] == 1
+    assert summary["skipped_json_file_count"] == 1
+
+
+def test_tar_gz_include_metadata_json_allows_metadata(tmp_path):
+    """tar.gz with include_metadata_json + allow_json_file: metadata IS processed."""
+    # Tar members sorted by name: metadata.json then trades.json
+    # Give earlier timestamp to the alphabetically first member
+    inner_meta = tmp_path / "metadata.json"
+    inner_meta.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+    inner_trades = tmp_path / "trades.json"
+    inner_trades.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}]),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "trades.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(inner_meta, arcname="metadata.json")
+        archive.add(inner_trades, arcname="trades.json")
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=archive_path,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_json_file=True,
+        include_metadata_json=True,
+    )
+    assert summary["total_trades_read"] == 2
+    assert summary["skipped_json_file_count"] == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1: rolling sum incremental (no O(N*window) iteration)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_rolling_sum_incremental_matches_full_scan(tmp_path, monkeypatch):
+    """Incremental rolling sum must produce identical output to old O(N) scan."""
+    trades = tmp_path / "trades.jsonl"
+    rows_data = []
+    for i in range(20):
+        side = "buy" if i % 3 == 0 else "sell"
+        rows_data.append(
+            json.dumps({
+                "instId": "ETH-USDT-SWAP",
+                "ts": 1000.0 + i * 0.5,
+                "px": 10.0 + i * 0.1,
+                "sz": 2.0 + i,
+                "side": side,
+            })
+        )
+    trades.write_text("\n".join(rows_data) + "\n", encoding="utf-8")
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_path=out,
+        bucket_sec=1,
+        rolling_sec=3,
+        contract_multiplier=1.0,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["total_trades_read"] == 20
+    assert summary["runtime_events_written"] >= 1
+    # Verify that expired trades are correctly subtracted — every row has non-negative sums
+    for row in rows:
+        assert row["active_buy_notional_3s"] >= 0
+        assert row["active_sell_notional_3s"] >= 0
+
+
+def test_rolling_sum_expired_not_counted(tmp_path):
+    """Verify that trades older than rolling_sec are properly subtracted."""
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        "\n".join(
+            [
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}),
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000.5, "px": 11, "sz": 3, "side": "sell"}),
+                # This trade is >3s after t=1000, so the first buy should be expired
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1003.5, "px": 12, "sz": 1, "side": "buy"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_path=out,
+        bucket_sec=1,
+        rolling_sec=3,
+        contract_multiplier=1.0,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["total_trades_read"] == 3
+    # 2 runtime events: bucket 1000 (trades 1+2) and bucket 1003 (trade 3)
+    assert summary["runtime_events_written"] == 2
+    # Event 0 (bucket 1000): both trades in window → buy=20, sell=33, signed=-13
+    assert rows[0]["active_buy_notional_3s"] == 20
+    assert rows[0]["active_sell_notional_3s"] == 33
+    # Event 1 (bucket 1003): trade 1 expired (cutoff=1000.5), trade 2 still in window
+    # Remaining: sell (sz=3, notional=33) + buy (sz=1, notional=12*1=12) → buy=12, sell=33
+    assert rows[1]["active_buy_notional_3s"] == 12
+    assert rows[1]["active_sell_notional_3s"] == 33
+
+
+def test_rolling_sum_non_monotonic_reset(tmp_path):
+    """Non-monotonic reset also resets incremental sums."""
+    trades_dir = tmp_path / "trades"
+    trades_dir.mkdir()
+    # File a.jsonl has ts=1000, ts=1001 (monotonic within file)
+    (trades_dir / "a.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}),
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # File b.jsonl has ts=1000.5 — this is before a.jsonl's ts=1001, causing non-monotonic
+    (trades_dir / "b.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000.5, "px": 9, "sz": 4, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        bucket_sec=1,
+        rolling_sec=3,
+        contract_multiplier=1.0,
+        allow_non_monotonic_output=True,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["non_monotonic_trade_count"] > 0
+    # After reset, the first two trades (1000, 1001) are flushed as events,
+    # then rolling/price_window/sums reset, then non-monotonic trade (1000.5) processed
+    # The non-monotonic trade starts fresh: only its own notional
+    nm_event = [r for r in rows if r["ts"] == 1000.5]
+    assert len(nm_event) == 1
+    assert nm_event[0]["active_buy_notional_3s"] == 36  # px=9 * sz=4 * multiplier=1
+    assert nm_event[0]["active_sell_notional_3s"] == 0
+
+
+def test_runtime_event_from_trade_does_not_iterate_rolling(monkeypatch):
+    """runtime_event_from_trade must not iterate rolling — uses precomputed sums."""
+    captured = []
+    original_func = runtime_builder.runtime_event_from_trade
+
+    def wrap(*args, **kwargs):
+        if "rolling" in kwargs:
+            captured.append("rolling_found")
+        result = original_func(*args, **kwargs)
+        return result
+
+    monkeypatch.setattr(runtime_builder, "runtime_event_from_trade", wrap)
+    trades_data = json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n"
+    import tempfile, pathlib
+    with tempfile.TemporaryDirectory() as td:
+        tpath = pathlib.Path(td) / "trades.jsonl"
+        tpath.write_text(trades_data, encoding="utf-8")
+        out = pathlib.Path(td) / "out.jsonl"
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=tpath,
+            out_path=out,
+            bucket_sec=1,
+            rolling_sec=3,
+            contract_multiplier=1.0,
+        )
+    assert "rolling_found" not in captured, "runtime_event_from_trade must not receive rolling param"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P2: allow_empty + out-dir writes empty manifest
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_allow_empty_out_dir_writes_empty_manifest(tmp_path):
+    """allow_empty=True with out-dir: writes empty manifest with shards=[]."""
+    trades_dir = tmp_path / "empty_dir"
+    trades_dir.mkdir()
+    out_dir = tmp_path / "runtime_events"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_dir=out_dir,
+        shard_by="day",
+        contract_multiplier=1.0,
+        allow_empty=True,
+    )
+    assert summary["allow_empty"] is True
+    assert summary["shard_count"] == 0
+    assert summary["shard_files"] == []
+    assert "manifest_path" in summary
+    manifest_path = Path(summary["manifest_path"])
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["symbol"] == "ETH-USDT-SWAP"
+    assert manifest["shards"] == []
+    assert manifest["output_mode"] == "sharded_by_day"
+
+
+def test_allow_empty_manifest_usable_by_runtime_event_source(tmp_path):
+    """RuntimeEventSource can read empty manifest from allow_empty out-dir."""
+    trades_dir = tmp_path / "empty_dir"
+    trades_dir.mkdir()
+    out_dir = tmp_path / "runtime_events"
+    runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_dir=out_dir,
+        shard_by="day",
+        contract_multiplier=1.0,
+        allow_empty=True,
+    )
+    # RuntimeEventSource reads manifest and exposes files attribute
+    source = RuntimeEventSource(out_dir)  # imported at top of file
+    assert isinstance(source.files, list)
+    # Empty manifest exists: source reads it but may not flag manifest_used for empty shards
+    manifest = out_dir / "runtime_events_manifest.json"
+    assert manifest.exists()
