@@ -307,6 +307,21 @@ def test_data_json_array_lines_do_not_call_json_load(tmp_path, monkeypatch):
     assert rows[2]["ts"] == 1002
 
 
+def test_jsonl_line_too_large_fails(tmp_path):
+    trades = tmp_path / "trades.data"
+    trades.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]) + "\n",
+        encoding="utf-8",
+    )
+    try:
+        list(runtime_builder.iter_trade_rows(trades, max_json_line_bytes=16))
+        assert False, "oversized .data line must fail"
+    except ValueError as exc:
+        assert "JSONL/.data line exceeds max-json-line-bytes" in str(exc)
+    rows = list(runtime_builder.iter_trade_rows(trades, max_json_line_bytes=1024))
+    assert len(rows) == 1
+
+
 def test_build_runtime_events_from_okx_trades_tar_gz_data(tmp_path):
     trades_dir = tmp_path / "okx_raw"
     trades_dir.mkdir()
@@ -341,7 +356,7 @@ def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
     def fake_discover(path):
         return [path]
 
-    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False):
+    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES):
         for idx in range(5):
             yielded.append(idx)
             yield runtime_builder.NormalizedTrade(
@@ -402,6 +417,26 @@ def test_build_runtime_events_sharded_by_day(tmp_path):
     assert manifest["output_mode"] == "sharded_by_day"
     assert [shard["path"] for shard in manifest["shards"]] == ["2026-05-16.jsonl", "2026-05-17.jsonl"]
     assert [shard["row_count"] for shard in manifest["shards"]] == [1, 1]
+    assert summary["manifest_path"] == str(out_dir / "runtime_events_manifest.json")
+    assert Path(summary["manifest_path"]).exists()
+
+
+def test_builder_summary_manifest_path(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1_778_976_000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "runtime_events"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_dir=out_dir,
+        shard_by="day",
+        contract_multiplier=1.0,
+    )
+    assert summary["manifest_path"] == str(out_dir / "runtime_events_manifest.json")
+    assert Path(summary["manifest_path"]).exists()
 
 
 def test_runtime_event_source_uses_manifest_without_scanning_bounds(tmp_path, monkeypatch):
@@ -472,6 +507,7 @@ def test_single_large_runtime_file_warning_or_not_recommended(tmp_path):
         contract_multiplier=1.0,
     )
     assert summary["output_mode"] == "single_file"
+    assert summary["manifest_path"] == ""
     assert "not recommended" in summary["output_warning"]
 
 
@@ -507,7 +543,7 @@ def test_sequential_file_reading_does_not_open_all_files(tmp_path, monkeypatch):
     paths = [tmp_path / f"{idx}.jsonl" for idx in range(3)]
     calls = []
 
-    def fake_iter(path, *, symbol, contract_multiplier=1.0):
+    def fake_iter(path, *, symbol, contract_multiplier=1.0, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES):
         calls.append(path.name)
         yield runtime_builder.NormalizedTrade(
             ts=1000.0 + len(calls),
@@ -532,7 +568,32 @@ def test_sequential_file_reading_does_not_open_all_files(tmp_path, monkeypatch):
     assert calls == ["0.jsonl", "1.jsonl"]
 
 
-def test_sequential_non_monotonic_trades_warn_and_reset_rolling(tmp_path):
+def test_non_monotonic_trades_fail_by_default(tmp_path):
+    trades_dir = tmp_path / "trades"
+    trades_dir.mkdir()
+    (trades_dir / "a.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1002, "px": 10, "sz": 10, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    (trades_dir / "b.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 1, "side": "sell"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades_dir,
+            out_path=out,
+            rolling_sec=3,
+            contract_multiplier=1.0,
+        )
+        assert False, "non-monotonic trades must fail by default"
+    except SystemExit as exc:
+        assert str(exc) == runtime_builder.NON_MONOTONIC_ERROR
+
+
+def test_non_monotonic_trades_allow_flag_warns(tmp_path):
     trades_dir = tmp_path / "trades"
     trades_dir.mkdir()
     (trades_dir / "a.jsonl").write_text(
@@ -550,14 +611,29 @@ def test_sequential_non_monotonic_trades_warn_and_reset_rolling(tmp_path):
         out_path=out,
         rolling_sec=3,
         contract_multiplier=1.0,
+        allow_non_monotonic_output=True,
     )
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["allow_non_monotonic_output"] is True
     assert summary["non_monotonic_trade_count"] == 1
     assert "non-monotonic trades detected" in summary["output_warning"]
+    assert "runtime_events may be non-monotonic and unsafe for windowed backtest" in summary["output_warning"]
     assert rows[-1]["ts"] == 1000
     assert rows[-1]["active_buy_notional_3s"] == 0.0
     assert rows[-1]["active_sell_notional_3s"] == 10.0
 
+
+def test_merge_sort_files_outputs_monotonic(tmp_path):
+    trades_dir = tmp_path / "trades"
+    trades_dir.mkdir()
+    (trades_dir / "a.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1002, "px": 10, "sz": 10, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    (trades_dir / "b.jsonl").write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 1, "side": "sell"}) + "\n",
+        encoding="utf-8",
+    )
     sorted_out = tmp_path / "runtime_events_sorted.jsonl"
     sorted_summary = runtime_builder.build_runtime_events(
         symbol="ETH-USDT-SWAP",

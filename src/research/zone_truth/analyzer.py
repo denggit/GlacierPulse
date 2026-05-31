@@ -518,11 +518,10 @@ class ZoneTruthAnalyzer:
             "simulator_written_trade_count": simulator_stats.written_trade_count,
             "simulator_combo_valid_trade_count": stream_summary["valid_trade_count"],
             "memory_profile": memory_profile,
-            "deprecated_report_aliases": {
-                "zone_truth_by_a3_aggression_type_v2.csv": "zone_truth_by_a3_quality_future_type_v2.csv",
-                "zone_truth_by_aggression_quality_context.csv": "zone_truth_by_aggression_quality_future_context.csv",
-                "a3_aggression_quality": "a3_aggression_quality_future",
-            },
+            "deprecated_report_aliases": [
+                "zone_truth_by_a3_aggression_type_v2.csv",
+                "zone_truth_by_aggression_quality_context.csv",
+            ],
             **field_hygiene_summary(ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS),
             "no_future_schema_audit": audit_report_schema(ZONE_TRUTH_MAIN_EVENT_WITH_CONTEXT_FIELDS),
             "runtime_3a_report_summary": rt_reports["summary"],
@@ -1030,11 +1029,14 @@ class ZoneTruthAnalyzer:
             lines.append(f"- runtime_max_window_ticks: {rt_memory.get('runtime_max_window_ticks')}")
             if rt_memory.get("runtime_performance_warning"):
                 lines.append(f"- WARNING: {rt_memory.get('runtime_performance_warning')}")
-        deprecated_aliases = dict(summary.get("deprecated_report_aliases") or {})
+        deprecated_aliases = list(summary.get("deprecated_report_aliases") or [])
         if deprecated_aliases:
             lines.extend(["", "## Deprecated Report Aliases", ""])
-            for old, new in deprecated_aliases.items():
-                lines.append(f"- `{old}` -> `{new}`")
+            lines.append("- These reports are deprecated aliases. Prefer the future-explicit reports:")
+            lines.append("  - `zone_truth_by_a3_quality_future_type_v2.csv`")
+            lines.append("  - `zone_truth_by_aggression_quality_future_context.csv`")
+            for name in deprecated_aliases:
+                lines.append(f"- Deprecated alias: `{name}`")
         lines.append(f"- a3_after_a2_future_fee_positive_1h_count: {summary.get('a3_after_a2_future_fee_positive_1h_count')}")
         lines.append(f"- a3_after_a2_future_fee_positive_1h_rate: {summary.get('a3_after_a2_future_fee_positive_1h_rate')}")
         lines.append(f"- a3_after_a2_future_realized_r_proxy_1h_avg: {summary.get('a3_after_a2_future_realized_r_proxy_1h_avg')}")

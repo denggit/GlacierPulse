@@ -42,6 +42,10 @@ RUNTIME_EVENT_FIELDS = [
     "notional_mode",
 ]
 
+MAX_JSON_LINE_BYTES = 16 * 1024 * 1024
+NON_MONOTONIC_ERROR = "Non-monotonic trades detected. Re-run with --merge-sort-files or verify source file ordering."
+NON_MONOTONIC_UNSAFE_WARNING = "runtime_events may be non-monotonic and unsafe for windowed backtest"
+
 
 @dataclass(frozen=True)
 class NormalizedTrade:
@@ -61,9 +65,12 @@ class BuildStats:
     bucket_sec: float = 0.0
     rolling_sec: float = 0.0
     merge_sort_files: bool = False
+    allow_non_monotonic_output: bool = False
+    max_json_line_bytes: int = MAX_JSON_LINE_BYTES
     output_mode: str = "single_file"
     shard_count: int = 0
     shard_files: list[str] | None = None
+    manifest_path: str = ""
     output_warning: str = ""
     non_monotonic_trade_count: int = 0
     total_trades_read: int = 0
@@ -80,9 +87,12 @@ class BuildStats:
             "bucket_sec": self.bucket_sec,
             "rolling_sec": self.rolling_sec,
             "merge_sort_files": self.merge_sort_files,
+            "allow_non_monotonic_output": self.allow_non_monotonic_output,
+            "max_json_line_bytes": self.max_json_line_bytes,
             "output_mode": self.output_mode,
             "shard_count": self.shard_count,
             "shard_files": list(self.shard_files or []),
+            "manifest_path": self.manifest_path,
             "output_warning": self.output_warning,
             "non_monotonic_trade_count": self.non_monotonic_trade_count,
             "total_trades_read": self.total_trades_read,
@@ -105,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rolling-sec", type=float, default=3.0)
     parser.add_argument("--contract-multiplier", type=float, default=None, help="Multiplier applied to raw size before notional = price * size. Required for SWAP symbols.")
     parser.add_argument("--merge-sort-files", action="store_true", help="Heap-merge all files by timestamp. Default is sequential to avoid opening many files.")
+    parser.add_argument("--allow-non-monotonic-output", action="store_true", help="Allow non-monotonic runtime events with a strong warning. Unsafe for windowed backtests.")
+    parser.add_argument("--max-json-line-bytes", type=int, default=MAX_JSON_LINE_BYTES, help="Maximum bytes per JSONL/.data/.ndjson line.")
     parser.add_argument("--summary-out", help="Optional summary JSON path. Default: <out>.summary.json")
     return parser
 
@@ -124,6 +136,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         rolling_sec=float(args.rolling_sec),
         contract_multiplier=multiplier,
         merge_sort_files=bool(args.merge_sort_files),
+        allow_non_monotonic_output=bool(args.allow_non_monotonic_output),
+        max_json_line_bytes=int(args.max_json_line_bytes),
     )
     summary_path = Path(args.summary_out) if args.summary_out else Path(str(out_path or out_dir) + ".summary.json")
     write_json(summary_path, summary)
@@ -152,6 +166,8 @@ def build_runtime_events(
     rolling_sec: float = 3.0,
     contract_multiplier: float | None = None,
     merge_sort_files: bool = False,
+    allow_non_monotonic_output: bool = False,
+    max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
 ) -> dict[str, Any]:
     if out_path is not None and out_dir is not None:
         raise SystemExit("--out and --out-dir are mutually exclusive")
@@ -169,6 +185,8 @@ def build_runtime_events(
         bucket_sec=bucket_sec,
         rolling_sec=rolling_sec,
         merge_sort_files=bool(merge_sort_files),
+        allow_non_monotonic_output=bool(allow_non_monotonic_output),
+        max_json_line_bytes=int(max_json_line_bytes),
         output_mode="sharded_by_day" if out_dir is not None else "single_file",
         shard_files=[],
         output_warning="single large runtime_events file is not recommended for long samples; use --out-dir --shard-by day" if out_path is not None else "",
@@ -191,15 +209,21 @@ def build_runtime_events(
             symbol=symbol,
             contract_multiplier=resolved_multiplier,
             merge_sort_files=merge_sort_files,
+            max_json_line_bytes=int(max_json_line_bytes),
         ):
             stats.total_trades_read += 1
             if prev_ts is not None and trade.ts < prev_ts:
                 stats.non_monotonic_trade_count += 1
+                if not allow_non_monotonic_output:
+                    pending_event = None
+                    raise SystemExit(NON_MONOTONIC_ERROR)
                 if "non-monotonic trades detected" not in stats.output_warning:
                     stats.output_warning = _join_warning(
                         stats.output_warning,
                         "non-monotonic trades detected; consider --merge-sort-files",
                     )
+                if NON_MONOTONIC_UNSAFE_WARNING not in stats.output_warning:
+                    stats.output_warning = _join_warning(stats.output_warning, NON_MONOTONIC_UNSAFE_WARNING)
                 if pending_event is not None:
                     writer.write(pending_event)
                     stats.runtime_events_written += 1
@@ -239,6 +263,7 @@ def build_runtime_events(
     stats.shard_files = writer.files
     stats.shard_count = len(writer.files)
     if isinstance(writer, _ShardedRuntimeEventWriter):
+        stats.manifest_path = str(writer.manifest_path)
         writer.write_manifest(
             symbol=symbol,
             bucket_sec=bucket_sec,
@@ -327,6 +352,10 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
     def files(self) -> list[str]:
         return list(self._files)
 
+    @property
+    def manifest_path(self) -> Path:
+        return self.root / "runtime_events_manifest.json"
+
     def write(self, row: Mapping[str, Any]) -> None:
         path = self.root / f"{_utc_day(float(row.get('ts') or 0.0))}.jsonl"
         if path != self._current_path:
@@ -372,7 +401,7 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
             "output_mode": output_mode,
             "shards": [self._shards[path] for path in sorted(self._shards)],
         }
-        write_json(self.root / "runtime_events_manifest.json", manifest)
+        write_json(self.manifest_path, manifest)
 
 
 def discover_trade_files(path: Path) -> list[Path]:
@@ -392,14 +421,25 @@ def iter_normalized_trades(
     symbol: str,
     contract_multiplier: float = 1.0,
     merge_sort_files: bool = False,
+    max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
 ) -> Iterator[NormalizedTrade]:
     if not merge_sort_files:
         for path in paths:
-            yield from iter_normalized_trades_from_file(path, symbol=symbol, contract_multiplier=contract_multiplier)
+            yield from iter_normalized_trades_from_file(
+                path,
+                symbol=symbol,
+                contract_multiplier=contract_multiplier,
+                max_json_line_bytes=max_json_line_bytes,
+            )
         return
     heap: list[tuple[float, int, NormalizedTrade, Iterator[NormalizedTrade]]] = []
     for seq, path in enumerate(paths):
-        iterator = iter_normalized_trades_from_file(path, symbol=symbol, contract_multiplier=contract_multiplier)
+        iterator = iter_normalized_trades_from_file(
+            path,
+            symbol=symbol,
+            contract_multiplier=contract_multiplier,
+            max_json_line_bytes=max_json_line_bytes,
+        )
         trade = next(iterator, None)
         if trade is not None:
             heapq.heappush(heap, (trade.ts, seq, trade, iterator))
@@ -411,14 +451,20 @@ def iter_normalized_trades(
             heapq.heappush(heap, (nxt.ts, seq, nxt, iterator))
 
 
-def iter_normalized_trades_from_file(path: Path, *, symbol: str, contract_multiplier: float = 1.0) -> Iterator[NormalizedTrade]:
-    for row in iter_trade_rows(path):
+def iter_normalized_trades_from_file(
+    path: Path,
+    *,
+    symbol: str,
+    contract_multiplier: float = 1.0,
+    max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+) -> Iterator[NormalizedTrade]:
+    for row in iter_trade_rows(path, max_json_line_bytes=max_json_line_bytes):
         trade = normalize_trade_row(row, symbol=symbol, contract_multiplier=contract_multiplier)
         if trade is not None:
             yield trade
 
 
-def iter_trade_rows(path: Path) -> Iterator[dict[str, Any]]:
+def iter_trade_rows(path: Path, *, max_json_line_bytes: int = MAX_JSON_LINE_BYTES) -> Iterator[dict[str, Any]]:
     name = path.name.lower()
     if name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
         with tarfile.open(path, "r:*") as archive:
@@ -431,7 +477,7 @@ def iter_trade_rows(path: Path) -> Iterator[dict[str, Any]]:
                     continue
                 with raw:
                     text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
-                    yield from iter_text_rows(text, inner.suffix.lower())
+                    yield from iter_text_rows(text, inner.suffix.lower(), max_json_line_bytes=max_json_line_bytes)
         return
     if name.endswith(".zip"):
         with ZipFile(path) as archive:
@@ -441,23 +487,30 @@ def iter_trade_rows(path: Path) -> Iterator[dict[str, Any]]:
                     continue
                 with archive.open(member) as raw:
                     text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
-                    yield from iter_text_rows(text, inner.suffix.lower())
+                    yield from iter_text_rows(text, inner.suffix.lower(), max_json_line_bytes=max_json_line_bytes)
         return
     if name.endswith(".gz"):
         inner_suffix = path.with_suffix("").suffix.lower()
         with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as handle:
-            yield from iter_text_rows(handle, inner_suffix)
+            yield from iter_text_rows(handle, inner_suffix, max_json_line_bytes=max_json_line_bytes)
         return
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        yield from iter_text_rows(handle, path.suffix.lower())
+        yield from iter_text_rows(handle, path.suffix.lower(), max_json_line_bytes=max_json_line_bytes)
 
 
-def iter_text_rows(handle: io.TextIOBase, suffix: str) -> Iterator[dict[str, Any]]:
+def iter_text_rows(
+    handle: io.TextIOBase,
+    suffix: str,
+    *,
+    max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+) -> Iterator[dict[str, Any]]:
     sample = handle.read(4096)
     handle.seek(0)
     fmt = _detect_format(suffix, sample)
     if fmt == "jsonl":
         for line in handle:
+            if len(line.encode("utf-8")) > int(max_json_line_bytes):
+                raise ValueError("JSONL/.data line exceeds max-json-line-bytes; giant JSON arrays are not memory-safe.")
             text = line.strip()
             if not text:
                 continue

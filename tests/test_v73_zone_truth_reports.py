@@ -103,8 +103,22 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
     assert "runtime_3a_memory_profile" in rt_summary
     assert "default_expiry_trade_count" in rt_summary
     assert summary["no_future_field_hygiene_version"] == "v7.3.0.no_future_field_registry"
-    assert summary["deprecated_report_aliases"]["zone_truth_by_a3_aggression_type_v2.csv"] == "zone_truth_by_a3_quality_future_type_v2.csv"
-    assert summary["deprecated_report_aliases"]["a3_aggression_quality"] == "a3_aggression_quality_future"
+    assert "zone_truth_by_a3_aggression_type_v2.csv" in summary["deprecated_report_aliases"]
+    assert "zone_truth_by_aggression_quality_context.csv" in summary["deprecated_report_aliases"]
+
+
+def test_deprecated_report_aliases_marked(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_aliases"
+    summary = ZoneTruthAnalyzer(enable_3a_simulator=False).analyze_files(phase1, reactions, kline, out)
+    assert summary["deprecated_report_aliases"] == [
+        "zone_truth_by_a3_aggression_type_v2.csv",
+        "zone_truth_by_aggression_quality_context.csv",
+    ]
+    md = (out / "zone_truth_summary.md").read_text(encoding="utf-8")
+    assert "Deprecated Report Aliases" in md
+    assert "zone_truth_by_a3_quality_future_type_v2.csv" in md
+    assert "zone_truth_by_aggression_quality_future_context.csv" in md
 
 
 def test_v73_zone_truth_runtime_reports_use_supplied_trade_events(tmp_path):
