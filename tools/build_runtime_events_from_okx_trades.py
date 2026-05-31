@@ -67,6 +67,9 @@ SKIPPED_JSON_WARNING = "raw .json files were skipped; use .jsonl/.data or --allo
 SKIPPED_METADATA_JSON_WARNING = (
     "metadata-like .json files were skipped; use --include-metadata-json to force"
 )
+SKIPPED_METADATA_JSON_GZ_WARNING = (
+    "metadata-like .json.gz files were skipped; use --include-metadata-json to force"
+)
 
 
 @dataclass(frozen=True)
@@ -357,13 +360,10 @@ def build_runtime_events(
                 rolling_signed_sum -= trade.notional
             rolling.append(trade)
             price_window.append((trade.ts, trade.price))
-            for removed in _trim_rolling(rolling, trade.ts, rolling_sec):
-                if removed.side == "BUY":
-                    rolling_buy_sum -= removed.notional
-                    rolling_signed_sum -= removed.notional
-                elif removed.side == "SELL":
-                    rolling_sell_sum -= removed.notional
-                    rolling_signed_sum += removed.notional
+            rolling_buy_sum, rolling_sell_sum, rolling_signed_sum = _trim_rolling_and_update_sums(
+                rolling, trade.ts, rolling_sec,
+                rolling_buy_sum, rolling_sell_sum, rolling_signed_sum,
+            )
             _trim_price_window(price_window, trade.ts, rolling_sec)
             pending_event = runtime_event_from_trade(
                 trade,
@@ -630,6 +630,9 @@ def discover_trade_files(
             if not include_metadata_json and _is_metadata_json_name(child.name):
                 skipped_json += 1
                 continue
+        if not include_metadata_json and _is_metadata_json_gz_name(child.name):
+            skipped_json += 1
+            continue
         if _is_supported_trade_path(child, allow_json_file=allow_json_file):
             files.append(child)
     return files, skipped_json
@@ -862,13 +865,25 @@ def _bucket_start(ts: float, bucket_sec: float) -> float:
     return int(float(ts) / bucket_sec) * bucket_sec
 
 
-def _trim_rolling(rolling: deque[NormalizedTrade], ts: float, rolling_sec: float) -> list[NormalizedTrade]:
-    """Remove expired trades and return them so caller can update incremental sums."""
+def _trim_rolling_and_update_sums(
+    rolling: deque[NormalizedTrade],
+    ts: float,
+    rolling_sec: float,
+    rolling_buy_sum: float,
+    rolling_sell_sum: float,
+    rolling_signed_sum: float,
+) -> tuple[float, float, float]:
+    """Remove expired trades and update incremental sums inline (no list allocation)."""
     cutoff = float(ts) - float(rolling_sec)
-    removed: list[NormalizedTrade] = []
     while rolling and rolling[0].ts < cutoff:
-        removed.append(rolling.popleft())
-    return removed
+        removed = rolling.popleft()
+        if removed.side == "BUY":
+            rolling_buy_sum -= removed.notional
+            rolling_signed_sum -= removed.notional
+        elif removed.side == "SELL":
+            rolling_sell_sum -= removed.notional
+            rolling_signed_sum += removed.notional
+    return rolling_buy_sum, rolling_sell_sum, rolling_signed_sum
 
 
 def _trim_price_window(window: deque[tuple[float, float]], ts: float, rolling_sec: float) -> None:
@@ -928,6 +943,16 @@ def _is_metadata_json_name(name: str) -> bool:
     stem = Path(name).stem.lower()
     metadata_keywords = ("summary", "manifest", "metadata", "meta", "stats")
     return any(kw in stem for kw in metadata_keywords)
+
+
+def _is_metadata_json_gz_name(name: str) -> bool:
+    """Check if a .json.gz filename looks like metadata (summary.json.gz, etc.)."""
+    lower = name.lower()
+    if not lower.endswith(".json.gz"):
+        return False
+    inner_stem = Path(lower[:-len(".gz")]).stem  # stem of the .json part
+    metadata_keywords = ("summary", "manifest", "metadata", "meta", "stats")
+    return any(kw in inner_stem for kw in metadata_keywords)
 
 
 def _ensure_json_file_allowed(allow_json_file: bool) -> None:
