@@ -56,6 +56,17 @@ GZ_JSON_DISABLED_ERROR = (
 )
 NON_MONOTONIC_ERROR = "Non-monotonic trades detected. Re-run with --merge-sort-files or verify source file ordering."
 NON_MONOTONIC_UNSAFE_WARNING = "runtime_events may be non-monotonic and unsafe for windowed backtest"
+NO_TRADE_FILES_ERROR = (
+    "No supported trade files found. Expected .data/.jsonl/.ndjson/.csv or OKX tar.gz containing those formats."
+)
+NO_VALID_TRADES_ERROR = (
+    "No valid trades were converted into runtime_events. "
+    "Check symbol, input format, contract multiplier, and filters."
+)
+SKIPPED_JSON_WARNING = "raw .json files were skipped; use .jsonl/.data or --allow-json-file for small files"
+SKIPPED_METADATA_JSON_WARNING = (
+    "metadata-like .json files were skipped; use --include-metadata-json to force"
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +77,12 @@ class NormalizedTrade:
     side: str
     notional: float
     contract_multiplier: float = 1.0
+
+
+@dataclass
+class RuntimeReadStats:
+    """Mutable stats collected while reading trade files (e.g. inside archives)."""
+    skipped_json_file_count: int = 0
 
 
 @dataclass
@@ -93,6 +110,8 @@ class BuildStats:
     last_ts: float = 0.0
     peak_rss_mb: float = 0.0
     skipped_json_file_count: int = 0
+    allow_empty: bool = False
+    empty_output_warning: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -119,6 +138,8 @@ class BuildStats:
             "last_ts": self.last_ts,
             "peak_rss_mb": self.peak_rss_mb,
             "skipped_json_file_count": self.skipped_json_file_count,
+            "allow_empty": self.allow_empty,
+            "empty_output_warning": self.empty_output_warning,
         }
 
 
@@ -139,6 +160,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-json-file", action="store_true", help="Allow small raw .json files that require json.load. Disabled by default.")
     parser.add_argument("--max-json-file-bytes", type=int, default=MAX_JSON_FILE_BYTES, help="Maximum bytes for --allow-json-file inputs.")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output file/directory after a successful build.")
+    parser.add_argument("--allow-empty", action="store_true", help="Allow empty output when no trade files are found or no trades match.")
+    parser.add_argument("--include-metadata-json", action="store_true", help="Include metadata-like .json files (summary, manifest, metadata, meta, stats) when --allow-json-file is set.")
     parser.add_argument("--summary-out", help="Optional summary JSON path. Default: <out>.summary.json")
     return parser
 
@@ -163,6 +186,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_json_file=bool(args.allow_json_file),
         max_json_file_bytes=int(args.max_json_file_bytes),
         overwrite=bool(args.overwrite),
+        allow_empty=bool(args.allow_empty),
+        include_metadata_json=bool(args.include_metadata_json),
     )
     summary_path = Path(args.summary_out) if args.summary_out else Path(str(out_path or out_dir) + ".summary.json")
     write_json(summary_path, summary)
@@ -196,6 +221,8 @@ def build_runtime_events(
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
     overwrite: bool = False,
+    allow_empty: bool = False,
+    include_metadata_json: bool = False,
 ) -> dict[str, Any]:
     if out_path is not None and out_dir is not None:
         raise SystemExit("--out and --out-dir are mutually exclusive")
@@ -221,6 +248,7 @@ def build_runtime_events(
         output_mode="sharded_by_day" if out_dir is not None else "single_file",
         shard_files=[],
         output_warning="single large runtime_events file is not recommended for long samples; use --out-dir --shard-by day" if out_path is not None else "",
+        allow_empty=bool(allow_empty),
     )
     writer: _RuntimeEventWriter
     if out_dir is not None:
@@ -236,13 +264,25 @@ def build_runtime_events(
     success = False
 
     try:
-        trade_files, skipped_json = discover_trade_files(trades_path, allow_json_file=allow_json_file)
+        trade_files, skipped_json = discover_trade_files(
+            trades_path,
+            allow_json_file=allow_json_file,
+            include_metadata_json=include_metadata_json,
+        )
         stats.skipped_json_file_count = skipped_json
         if skipped_json > 0:
-            stats.output_warning = _join_warning(
-                stats.output_warning,
-                "raw .json files were skipped; use .jsonl/.data or --allow-json-file for small files",
-            )
+            stats.output_warning = _join_warning(stats.output_warning, SKIPPED_JSON_WARNING)
+
+        if not trade_files:
+            if allow_empty:
+                stats.empty_output_warning = "no supported trade files found; output will be empty"
+                stats.output_warning = _join_warning(stats.output_warning, stats.empty_output_warning)
+                writer.close()
+                writer.commit()
+                success = True
+                return stats.as_dict()
+            raise SystemExit(NO_TRADE_FILES_ERROR)
+
         trade_iter_kwargs: dict[str, Any] = {
             "symbol": symbol,
             "contract_multiplier": resolved_multiplier,
@@ -252,6 +292,8 @@ def build_runtime_events(
         if allow_json_file:
             trade_iter_kwargs["allow_json_file"] = True
             trade_iter_kwargs["max_json_file_bytes"] = int(max_json_file_bytes)
+        read_stats = RuntimeReadStats()
+        trade_iter_kwargs["read_stats"] = read_stats
         for trade in iter_normalized_trades(
             trade_files,
             **trade_iter_kwargs,
@@ -303,6 +345,21 @@ def build_runtime_events(
             stats.runtime_events_written += 1
             pending_event = None
         writer.close()
+
+        stats.skipped_json_file_count += read_stats.skipped_json_file_count
+        if read_stats.skipped_json_file_count > 0:
+            stats.output_warning = _join_warning(stats.output_warning, SKIPPED_JSON_WARNING)
+
+        if stats.total_trades_read == 0 or stats.runtime_events_written == 0:
+            if allow_empty:
+                stats.empty_output_warning = "no valid trades were converted into runtime_events"
+                stats.output_warning = _join_warning(stats.output_warning, stats.empty_output_warning)
+                writer.commit()
+                success = True
+                return stats.as_dict()
+            writer.close()
+            writer.cleanup()
+            raise SystemExit(NO_VALID_TRADES_ERROR)
 
         stats.peak_rss_mb = _peak_rss_mb()
         stats.shard_files = writer.files
@@ -508,7 +565,12 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
         write_json(self.build_root / "runtime_events_manifest.json", manifest)
 
 
-def discover_trade_files(path: Path, *, allow_json_file: bool = False) -> tuple[list[Path], int]:
+def discover_trade_files(
+    path: Path,
+    *,
+    allow_json_file: bool = False,
+    include_metadata_json: bool = False,
+) -> tuple[list[Path], int]:
     """Return (trade_files, skipped_json_file_count)."""
     if path.is_file():
         if _is_raw_json_path(path) and not allow_json_file:
@@ -521,9 +583,13 @@ def discover_trade_files(path: Path, *, allow_json_file: bool = False) -> tuple[
     for child in sorted(path.rglob("*")):
         if not child.is_file() or any(part.startswith(".") for part in child.parts):
             continue
-        if _is_raw_json_path(child) and not allow_json_file:
-            skipped_json += 1
-            continue
+        if _is_raw_json_path(child):
+            if not allow_json_file:
+                skipped_json += 1
+                continue
+            if not include_metadata_json and _is_metadata_json_name(child.name):
+                skipped_json += 1
+                continue
         if _is_supported_trade_path(child, allow_json_file=allow_json_file):
             files.append(child)
     return files, skipped_json
@@ -538,30 +604,26 @@ def iter_normalized_trades(
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
+    read_stats: RuntimeReadStats | None = None,
 ) -> Iterator[NormalizedTrade]:
+    base_kwargs: dict[str, Any] = {
+        "symbol": symbol,
+        "contract_multiplier": contract_multiplier,
+        "max_json_line_bytes": max_json_line_bytes,
+    }
+    if allow_json_file:
+        base_kwargs["allow_json_file"] = True
+        base_kwargs["max_json_file_bytes"] = max_json_file_bytes
+    if read_stats is not None:
+        base_kwargs["read_stats"] = read_stats
+
     if not merge_sort_files:
         for path in paths:
-            kwargs: dict[str, Any] = {
-                "symbol": symbol,
-                "contract_multiplier": contract_multiplier,
-                "max_json_line_bytes": max_json_line_bytes,
-            }
-            if allow_json_file:
-                kwargs["allow_json_file"] = True
-                kwargs["max_json_file_bytes"] = max_json_file_bytes
-            yield from iter_normalized_trades_from_file(path, **kwargs)
+            yield from iter_normalized_trades_from_file(path, **base_kwargs)
         return
     heap: list[tuple[float, int, NormalizedTrade, Iterator[NormalizedTrade]]] = []
     for seq, path in enumerate(paths):
-        kwargs = {
-            "symbol": symbol,
-            "contract_multiplier": contract_multiplier,
-            "max_json_line_bytes": max_json_line_bytes,
-        }
-        if allow_json_file:
-            kwargs["allow_json_file"] = True
-            kwargs["max_json_file_bytes"] = max_json_file_bytes
-        iterator = iter_normalized_trades_from_file(path, **kwargs)
+        iterator = iter_normalized_trades_from_file(path, **base_kwargs)
         trade = next(iterator, None)
         if trade is not None:
             heapq.heappush(heap, (trade.ts, seq, trade, iterator))
@@ -581,12 +643,14 @@ def iter_normalized_trades_from_file(
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
+    read_stats: RuntimeReadStats | None = None,
 ) -> Iterator[NormalizedTrade]:
     for row in iter_trade_rows(
         path,
         max_json_line_bytes=max_json_line_bytes,
         allow_json_file=allow_json_file,
         max_json_file_bytes=max_json_file_bytes,
+        read_stats=read_stats,
     ):
         trade = normalize_trade_row(row, symbol=symbol, contract_multiplier=contract_multiplier)
         if trade is not None:
@@ -599,6 +663,7 @@ def iter_trade_rows(
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
     allow_json_file: bool = False,
     max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
+    read_stats: RuntimeReadStats | None = None,
 ) -> Iterator[dict[str, Any]]:
     name = path.name.lower()
     if name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
@@ -606,7 +671,10 @@ def iter_trade_rows(
             for member in sorted((m for m in archive.getmembers() if m.isfile()), key=lambda item: item.name):
                 inner = Path(member.name)
                 if _is_raw_json_path(inner):
-                    _ensure_json_file_allowed(allow_json_file)
+                    if not allow_json_file:
+                        if read_stats is not None:
+                            read_stats.skipped_json_file_count += 1
+                        continue
                     _ensure_json_member_size(member.size, max_json_file_bytes, inner)
                 if not _is_supported_inner(inner, allow_json_file=allow_json_file):
                     continue
@@ -629,7 +697,10 @@ def iter_trade_rows(
                 if member.endswith("/"):
                     continue
                 if _is_raw_json_path(inner):
-                    _ensure_json_file_allowed(allow_json_file)
+                    if not allow_json_file:
+                        if read_stats is not None:
+                            read_stats.skipped_json_file_count += 1
+                        continue
                     _ensure_json_member_size(archive.getinfo(member).file_size, max_json_file_bytes, inner)
                 if not _is_supported_inner(inner, allow_json_file=allow_json_file):
                     continue
@@ -778,6 +849,13 @@ def _is_supported_trade_path(path: Path, *, allow_json_file: bool = False) -> bo
 
 def _is_raw_json_path(path: Path) -> bool:
     return path.name.lower().endswith(".json")
+
+
+def _is_metadata_json_name(name: str) -> bool:
+    """Check if a .json filename looks like metadata (summary, manifest, etc.)."""
+    stem = Path(name).stem.lower()
+    metadata_keywords = ("summary", "manifest", "metadata", "meta", "stats")
+    return any(kw in stem for kw in metadata_keywords)
 
 
 def _ensure_json_file_allowed(allow_json_file: bool) -> None:

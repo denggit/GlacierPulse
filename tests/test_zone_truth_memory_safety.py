@@ -439,7 +439,9 @@ def test_large_json_file_rejected_even_with_flag(tmp_path):
     assert not out.with_name(f"{out.name}.tmp").exists()
 
 
-def test_tar_inner_json_rejected_by_default(tmp_path):
+def test_tar_inner_json_skipped_by_default(tmp_path):
+    """Tar inner .json files are now silently skipped (not raised), counted via read_stats."""
+    read_stats = runtime_builder.RuntimeReadStats()
     inner = tmp_path / "trades.json"
     inner.write_text(
         json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
@@ -448,11 +450,9 @@ def test_tar_inner_json_rejected_by_default(tmp_path):
     archive_path = tmp_path / "trades.tar.gz"
     with tarfile.open(archive_path, "w:gz") as archive:
         archive.add(inner, arcname="nested/trades.json")
-    try:
-        list(runtime_builder.iter_trade_rows(archive_path))
-        assert False, "tar inner .json must be disabled by default"
-    except SystemExit as exc:
-        assert str(exc) == runtime_builder.JSON_FILE_DISABLED_ERROR
+    rows = list(runtime_builder.iter_trade_rows(archive_path, read_stats=read_stats))
+    assert rows == []
+    assert read_stats.skipped_json_file_count == 1
 
 
 def test_data_jsonl_still_streams_line_by_line(tmp_path, monkeypatch):
@@ -546,10 +546,10 @@ def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
     out = tmp_path / "runtime_events.jsonl"
     yielded = []
 
-    def fake_discover(path, *, allow_json_file=False):
+    def fake_discover(path, *, allow_json_file=False, include_metadata_json=False):
         return [path], 0
 
-    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES):
+    def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES, allow_json_file=False, max_json_file_bytes=runtime_builder.MAX_JSON_FILE_BYTES, read_stats=None):
         for idx in range(5):
             yielded.append(idx)
             yield runtime_builder.NormalizedTrade(
@@ -736,7 +736,7 @@ def test_sequential_file_reading_does_not_open_all_files(tmp_path, monkeypatch):
     paths = [tmp_path / f"{idx}.jsonl" for idx in range(3)]
     calls = []
 
-    def fake_iter(path, *, symbol, contract_multiplier=1.0, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES):
+    def fake_iter(path, *, symbol, contract_multiplier=1.0, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES, allow_json_file=False, max_json_file_bytes=runtime_builder.MAX_JSON_FILE_BYTES, read_stats=None):
         calls.append(path.name)
         yield runtime_builder.NormalizedTrade(
             ts=1000.0 + len(calls),
@@ -1045,3 +1045,306 @@ def test_direct_json_file_path_still_fails(tmp_path):
         assert False, "direct .json path must still fail"
     except SystemExit as exc:
         assert str(exc) == runtime_builder.JSON_FILE_DISABLED_ERROR
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1-1: tar/zip archive internal .json skipped (not raised)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_tar_gz_with_trades_data_and_metadata_json_succeeds(tmp_path):
+    """tar.gz containing trades.data + metadata.json: build succeeds, metadata skipped."""
+    trades_dir = tmp_path / "trades_dir"
+    trades_dir.mkdir()
+    inner_data = trades_dir / "trades.data"
+    inner_data.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]) + "\n"
+        + json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}]) + "\n",
+        encoding="utf-8",
+    )
+    inner_meta = trades_dir / "metadata.json"
+    inner_meta.write_text(
+        json.dumps({"source": "okx_export", "date": "2024-01-01"}),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "trades.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(inner_data, arcname="trades.data")
+        archive.add(inner_meta, arcname="metadata.json")
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=archive_path,
+        out_path=out,
+        contract_multiplier=1.0,
+    )
+    assert summary["total_trades_read"] == 2
+    assert summary["runtime_events_written"] == 2
+    assert summary["skipped_json_file_count"] == 1
+    assert "raw .json files were skipped" in summary["output_warning"]
+
+
+def test_zip_with_trades_data_and_metadata_json_succeeds(tmp_path):
+    """Zip containing trades.jsonl + summary.json: build succeeds, summary skipped."""
+    from zipfile import ZipFile
+
+    inner_data = tmp_path / "trades.jsonl"
+    inner_data.write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    inner_summary = tmp_path / "summary.json"
+    inner_summary.write_text(
+        json.dumps({"count": 100}),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "trades.zip"
+    with ZipFile(archive_path, "w") as zf:
+        zf.write(inner_data, arcname="trades.jsonl")
+        zf.write(inner_summary, arcname="summary.json")
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=archive_path,
+        out_path=out,
+        contract_multiplier=1.0,
+    )
+    assert summary["total_trades_read"] == 1
+    assert summary["runtime_events_written"] == 1
+    assert summary["skipped_json_file_count"] == 1
+    assert "raw .json files were skipped" in summary["output_warning"]
+
+
+def test_tar_gz_only_metadata_json_fails(tmp_path):
+    """tar.gz with only metadata.json (no trade data) → fails."""
+    inner_meta = tmp_path / "metadata.json"
+    inner_meta.write_text(
+        json.dumps({"source": "okx_export"}),
+        encoding="utf-8",
+    )
+    archive_path = tmp_path / "only_meta.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(inner_meta, arcname="metadata.json")
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=archive_path,
+            out_path=out,
+            contract_multiplier=1.0,
+        )
+        assert False, "archive with only metadata .json must fail"
+    except SystemExit as exc:
+        assert "No valid trades were converted" in str(exc)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1-2: no valid trades / empty → fail by default
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_empty_directory_fails_by_default(tmp_path):
+    """Empty directory: fails, no output file left."""
+    trades_dir = tmp_path / "empty_dir"
+    trades_dir.mkdir()
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades_dir,
+            out_path=out,
+            contract_multiplier=1.0,
+        )
+        assert False, "empty directory must fail"
+    except SystemExit as exc:
+        assert runtime_builder.NO_TRADE_FILES_ERROR in str(exc)
+    assert not out.exists()
+    assert not runtime_builder._building_dir_path(out).exists()
+
+
+def test_directory_only_summary_json_fails(tmp_path):
+    """Directory with only summary.json: fails."""
+    trades_dir = tmp_path / "only_meta_dir"
+    trades_dir.mkdir()
+    (trades_dir / "summary.json").write_text(
+        json.dumps({"total": 3}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades_dir,
+            out_path=out,
+            contract_multiplier=1.0,
+        )
+        assert False, "directory with only summary.json must fail"
+    except SystemExit as exc:
+        assert runtime_builder.NO_TRADE_FILES_ERROR in str(exc)
+
+
+def test_wrong_symbol_no_matches_fails(tmp_path):
+    """jsonl with correct format BUT wrong symbol → fails."""
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "BTC-USDT-SWAP", "ts": 1000, "px": 50000, "sz": 1, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades,
+            out_path=out,
+            contract_multiplier=1.0,
+        )
+        assert False, "wrong symbol must yield no trades → fail"
+    except SystemExit as exc:
+        assert runtime_builder.NO_VALID_TRADES_ERROR in str(exc)
+    assert not out.exists()
+
+
+def test_allow_empty_permits_empty_output(tmp_path):
+    """--allow-empty permits empty output with warning."""
+    trades_dir = tmp_path / "empty_dir"
+    trades_dir.mkdir()
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_empty=True,
+    )
+    assert summary["allow_empty"] is True
+    assert "no supported trade files found" in summary.get("empty_output_warning", "")
+    assert summary["total_trades_read"] == 0
+    assert summary["runtime_events_written"] == 0
+    assert out.exists()
+
+
+def test_allow_empty_with_zero_valid_trades(tmp_path):
+    """--allow-empty with wrong symbol: 0 trades read, 0 written, output exists with warning."""
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "BTC-USDT-SWAP", "ts": 1000, "px": 50000, "sz": 1, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_empty=True,
+    )
+    assert summary["allow_empty"] is True
+    assert "no valid trades were converted" in summary.get("empty_output_warning", "")
+    assert summary["total_trades_read"] == 0
+    assert summary["runtime_events_written"] == 0
+    assert out.exists()
+
+
+def test_empty_failure_cleans_up_tmp_output(tmp_path):
+    """Failure must not leave tmp/building half-products."""
+    trades_dir = tmp_path / "empty_dir"
+    trades_dir.mkdir()
+    out = tmp_path / "runtime_events.jsonl"
+    building = runtime_builder._building_dir_path(out)
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades_dir,
+            out_path=out,
+            contract_multiplier=1.0,
+        )
+        assert False, "should fail"
+    except SystemExit:
+        pass
+    assert not out.exists()
+    assert not building.exists()
+
+
+def test_empty_failure_cleans_up_sharded_tmp_output(tmp_path):
+    """Sharded failure must not leave tmp/building half-products."""
+    trades_dir = tmp_path / "empty_dir"
+    trades_dir.mkdir()
+    out_dir = tmp_path / "runtime_events"
+    building = runtime_builder._building_dir_path(out_dir)
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades_dir,
+            out_dir=out_dir,
+            shard_by="day",
+            contract_multiplier=1.0,
+        )
+        assert False, "should fail"
+    except SystemExit:
+        pass
+    assert not out_dir.exists()
+    assert not building.exists()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P2: skip metadata-like .json even with --allow-json-file
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_metadata_json_skipped_with_allow_json_file(tmp_path):
+    """With --allow-json-file, metadata.json / summary.json are still skipped."""
+    trades_dir = tmp_path / "trades_dir"
+    trades_dir.mkdir()
+    (trades_dir / "trades.json").write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+    (trades_dir / "summary.json").write_text(
+        json.dumps({"total": 1}),
+        encoding="utf-8",
+    )
+    (trades_dir / "metadata.json").write_text(
+        json.dumps({"version": "1.0"}),
+        encoding="utf-8",
+    )
+    (trades_dir / "manifest.json").write_text(
+        json.dumps({}),
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_json_file=True,
+    )
+    assert summary["total_trades_read"] == 1
+    assert summary["skipped_json_file_count"] == 3  # summary, metadata, manifest
+    assert "raw .json files were skipped" in summary["output_warning"]
+
+
+def test_include_metadata_json_allows_metadata_files(tmp_path):
+    """--include-metadata-json + --allow-json-file: metadata .json are processed."""
+    trades_dir = tmp_path / "trades_dir"
+    trades_dir.mkdir()
+    # summary.json sorts before trades.json → give it the earlier timestamp
+    (trades_dir / "summary.json").write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+    (trades_dir / "trades.json").write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}]),
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_json_file=True,
+        include_metadata_json=True,
+    )
+    assert summary["total_trades_read"] == 2
+    assert summary["skipped_json_file_count"] == 0
