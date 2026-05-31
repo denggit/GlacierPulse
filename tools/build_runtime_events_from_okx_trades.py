@@ -11,6 +11,7 @@ import heapq
 import io
 import json
 import resource
+import shutil
 import sys
 import tarfile
 from collections import deque
@@ -43,6 +44,12 @@ RUNTIME_EVENT_FIELDS = [
 ]
 
 MAX_JSON_LINE_BYTES = 16 * 1024 * 1024
+MAX_JSON_LINE_CHARS = MAX_JSON_LINE_BYTES
+MAX_JSON_FILE_BYTES = 64 * 1024 * 1024
+JSON_FILE_DISABLED_ERROR = (
+    "Raw .json files are disabled by default because json.load is not memory-safe. "
+    "Use .jsonl/.data or pass --allow-json-file for small files."
+)
 NON_MONOTONIC_ERROR = "Non-monotonic trades detected. Re-run with --merge-sort-files or verify source file ordering."
 NON_MONOTONIC_UNSAFE_WARNING = "runtime_events may be non-monotonic and unsafe for windowed backtest"
 
@@ -67,6 +74,9 @@ class BuildStats:
     merge_sort_files: bool = False
     allow_non_monotonic_output: bool = False
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES
+    allow_json_file: bool = False
+    max_json_file_bytes: int = MAX_JSON_FILE_BYTES
+    overwrite: bool = False
     output_mode: str = "single_file"
     shard_count: int = 0
     shard_files: list[str] | None = None
@@ -89,6 +99,9 @@ class BuildStats:
             "merge_sort_files": self.merge_sort_files,
             "allow_non_monotonic_output": self.allow_non_monotonic_output,
             "max_json_line_bytes": self.max_json_line_bytes,
+            "allow_json_file": self.allow_json_file,
+            "max_json_file_bytes": self.max_json_file_bytes,
+            "overwrite": self.overwrite,
             "output_mode": self.output_mode,
             "shard_count": self.shard_count,
             "shard_files": list(self.shard_files or []),
@@ -117,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--merge-sort-files", action="store_true", help="Heap-merge all files by timestamp. Default is sequential to avoid opening many files.")
     parser.add_argument("--allow-non-monotonic-output", action="store_true", help="Allow non-monotonic runtime events with a strong warning. Unsafe for windowed backtests.")
     parser.add_argument("--max-json-line-bytes", type=int, default=MAX_JSON_LINE_BYTES, help="Maximum bytes per JSONL/.data/.ndjson line.")
+    parser.add_argument("--allow-json-file", action="store_true", help="Allow small raw .json files that require json.load. Disabled by default.")
+    parser.add_argument("--max-json-file-bytes", type=int, default=MAX_JSON_FILE_BYTES, help="Maximum bytes for --allow-json-file inputs.")
+    parser.add_argument("--overwrite", action="store_true", help="Replace an existing output file/directory after a successful build.")
     parser.add_argument("--summary-out", help="Optional summary JSON path. Default: <out>.summary.json")
     return parser
 
@@ -138,6 +154,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         merge_sort_files=bool(args.merge_sort_files),
         allow_non_monotonic_output=bool(args.allow_non_monotonic_output),
         max_json_line_bytes=int(args.max_json_line_bytes),
+        allow_json_file=bool(args.allow_json_file),
+        max_json_file_bytes=int(args.max_json_file_bytes),
+        overwrite=bool(args.overwrite),
     )
     summary_path = Path(args.summary_out) if args.summary_out else Path(str(out_path or out_dir) + ".summary.json")
     write_json(summary_path, summary)
@@ -168,6 +187,9 @@ def build_runtime_events(
     merge_sort_files: bool = False,
     allow_non_monotonic_output: bool = False,
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+    allow_json_file: bool = False,
+    max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
     if out_path is not None and out_dir is not None:
         raise SystemExit("--out and --out-dir are mutually exclusive")
@@ -187,29 +209,43 @@ def build_runtime_events(
         merge_sort_files=bool(merge_sort_files),
         allow_non_monotonic_output=bool(allow_non_monotonic_output),
         max_json_line_bytes=int(max_json_line_bytes),
+        allow_json_file=bool(allow_json_file),
+        max_json_file_bytes=int(max_json_file_bytes),
+        overwrite=bool(overwrite),
         output_mode="sharded_by_day" if out_dir is not None else "single_file",
         shard_files=[],
         output_warning="single large runtime_events file is not recommended for long samples; use --out-dir --shard-by day" if out_path is not None else "",
     )
     writer: _RuntimeEventWriter
     if out_dir is not None:
-        writer = _ShardedRuntimeEventWriter(out_dir)
+        writer = _ShardedRuntimeEventWriter(out_dir, overwrite=overwrite)
     else:
-        writer = _SingleRuntimeEventWriter(out_path)  # type: ignore[arg-type]
+        writer = _SingleRuntimeEventWriter(out_path, overwrite=overwrite)  # type: ignore[arg-type]
     rolling: deque[NormalizedTrade] = deque()
     price_window: deque[tuple[float, float]] = deque()
     current_bucket: float | None = None
     pending_event: dict[str, Any] | None = None
     prev_trade: NormalizedTrade | None = None
     prev_ts: float | None = None
+    success = False
 
     try:
+        if allow_json_file:
+            trade_files = discover_trade_files(trades_path, allow_json_file=True)
+        else:
+            trade_files = discover_trade_files(trades_path)
+        trade_iter_kwargs: dict[str, Any] = {
+            "symbol": symbol,
+            "contract_multiplier": resolved_multiplier,
+            "merge_sort_files": merge_sort_files,
+            "max_json_line_bytes": int(max_json_line_bytes),
+        }
+        if allow_json_file:
+            trade_iter_kwargs["allow_json_file"] = True
+            trade_iter_kwargs["max_json_file_bytes"] = int(max_json_file_bytes)
         for trade in iter_normalized_trades(
-            discover_trade_files(trades_path),
-            symbol=symbol,
-            contract_multiplier=resolved_multiplier,
-            merge_sort_files=merge_sort_files,
-            max_json_line_bytes=int(max_json_line_bytes),
+            trade_files,
+            **trade_iter_kwargs,
         ):
             stats.total_trades_read += 1
             if prev_ts is not None and trade.ts < prev_ts:
@@ -253,26 +289,32 @@ def build_runtime_events(
             prev_trade = trade
             prev_ts = trade.ts
 
-    finally:
         if pending_event is not None:
             writer.write(pending_event)
             stats.runtime_events_written += 1
+            pending_event = None
         writer.close()
 
-    stats.peak_rss_mb = _peak_rss_mb()
-    stats.shard_files = writer.files
-    stats.shard_count = len(writer.files)
-    if isinstance(writer, _ShardedRuntimeEventWriter):
-        stats.manifest_path = str(writer.manifest_path)
-        writer.write_manifest(
-            symbol=symbol,
-            bucket_sec=bucket_sec,
-            rolling_sec=rolling_sec,
-            contract_multiplier=resolved_multiplier,
-            notional_mode=stats.notional_mode,
-            output_mode=stats.output_mode,
-        )
-    return stats.as_dict()
+        stats.peak_rss_mb = _peak_rss_mb()
+        stats.shard_files = writer.files
+        stats.shard_count = len(writer.files)
+        if isinstance(writer, _ShardedRuntimeEventWriter):
+            stats.manifest_path = str(writer.manifest_path)
+            writer.write_manifest(
+                symbol=symbol,
+                bucket_sec=bucket_sec,
+                rolling_sec=rolling_sec,
+                contract_multiplier=resolved_multiplier,
+                notional_mode=stats.notional_mode,
+                output_mode=stats.output_mode,
+            )
+        writer.commit()
+        success = True
+        return stats.as_dict()
+    finally:
+        if not success:
+            writer.close()
+            writer.cleanup()
 
 
 def runtime_event_from_trade(
@@ -320,12 +362,31 @@ class _RuntimeEventWriter:
     def close(self) -> None:
         raise NotImplementedError
 
+    def commit(self) -> None:
+        raise NotImplementedError
+
+    def cleanup(self) -> None:
+        raise NotImplementedError
+
 
 class _SingleRuntimeEventWriter(_RuntimeEventWriter):
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, overwrite: bool = False) -> None:
         self.path = Path(path)
+        self.tmp_path = self.path.with_name(f"{self.path.name}.tmp")
+        self._overwrite = bool(overwrite)
+        if self.path.exists() and not self._overwrite:
+            raise SystemExit(f"output path already exists; pass --overwrite to replace it: {self.path}")
+        if self.path.exists() and self.path.is_dir():
+            raise SystemExit(f"output path is a directory, expected file: {self.path}")
+        if self.tmp_path.exists():
+            if not self._overwrite:
+                raise SystemExit(f"temporary output path already exists; pass --overwrite to replace it: {self.tmp_path}")
+            if self.tmp_path.is_dir():
+                shutil.rmtree(self.tmp_path)
+            else:
+                self.tmp_path.unlink()
         ensure_dir(self.path.parent)
-        self._handle = self.path.open("w", encoding="utf-8")
+        self._handle = self.tmp_path.open("w", encoding="utf-8")
 
     @property
     def files(self) -> list[str]:
@@ -335,13 +396,33 @@ class _SingleRuntimeEventWriter(_RuntimeEventWriter):
         self._handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
 
     def close(self) -> None:
-        self._handle.close()
+        if not self._handle.closed:
+            self._handle.close()
+
+    def commit(self) -> None:
+        self.close()
+        self.tmp_path.replace(self.path)
+
+    def cleanup(self) -> None:
+        if self.tmp_path.exists():
+            if self.tmp_path.is_dir():
+                shutil.rmtree(self.tmp_path)
+            else:
+                self.tmp_path.unlink()
 
 
 class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, overwrite: bool = False) -> None:
         self.root = Path(root)
-        ensure_dir(self.root)
+        self.build_root = _building_dir_path(self.root)
+        self._overwrite = bool(overwrite)
+        if self.root.exists() and not self._overwrite:
+            raise SystemExit(f"output directory already exists; pass --overwrite to replace it: {self.root}")
+        if self.build_root.exists():
+            if not self._overwrite:
+                raise SystemExit(f"temporary output directory already exists; pass --overwrite to replace it: {self.build_root}")
+            shutil.rmtree(self.build_root)
+        ensure_dir(self.build_root)
         self._handle: Any | None = None
         self._current_path: Path | None = None
         self._seen: set[Path] = set()
@@ -357,7 +438,7 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
         return self.root / "runtime_events_manifest.json"
 
     def write(self, row: Mapping[str, Any]) -> None:
-        path = self.root / f"{_utc_day(float(row.get('ts') or 0.0))}.jsonl"
+        path = self.build_root / f"{_utc_day(float(row.get('ts') or 0.0))}.jsonl"
         if path != self._current_path:
             self.close()
             mode = "a" if path in self._seen else "w"
@@ -366,7 +447,7 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
             self._current_path = path
             if path not in self._seen:
                 self._seen.add(path)
-                self._files.append(str(path))
+                self._files.append(str(self.root / path.name))
         self._handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True) + "\n")
         ts = float(row.get("ts") or 0.0)
         shard = self._shards.setdefault(
@@ -381,6 +462,20 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
         if self._handle is not None:
             self._handle.close()
             self._handle = None
+
+    def commit(self) -> None:
+        self.close()
+        if self.root.exists():
+            if self.root.is_dir():
+                shutil.rmtree(self.root)
+            else:
+                self.root.unlink()
+        self.build_root.replace(self.root)
+
+    def cleanup(self) -> None:
+        self.close()
+        if self.build_root.exists():
+            shutil.rmtree(self.build_root)
 
     def write_manifest(
         self,
@@ -401,18 +496,25 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
             "output_mode": output_mode,
             "shards": [self._shards[path] for path in sorted(self._shards)],
         }
-        write_json(self.manifest_path, manifest)
+        write_json(self.build_root / "runtime_events_manifest.json", manifest)
 
 
-def discover_trade_files(path: Path) -> list[Path]:
+def discover_trade_files(path: Path, *, allow_json_file: bool = False) -> list[Path]:
     if path.is_file():
-        return [path] if _is_supported_trade_path(path) else []
+        if _is_raw_json_path(path) and not allow_json_file:
+            raise SystemExit(JSON_FILE_DISABLED_ERROR)
+        return [path] if _is_supported_trade_path(path, allow_json_file=allow_json_file) else []
     if not path.exists():
         raise SystemExit(f"trades path does not exist: {path}")
-    return sorted(
-        child for child in path.rglob("*")
-        if child.is_file() and not any(part.startswith(".") for part in child.parts) and _is_supported_trade_path(child)
-    )
+    files: list[Path] = []
+    for child in sorted(path.rglob("*")):
+        if not child.is_file() or any(part.startswith(".") for part in child.parts):
+            continue
+        if _is_raw_json_path(child) and not allow_json_file:
+            raise SystemExit(JSON_FILE_DISABLED_ERROR)
+        if _is_supported_trade_path(child, allow_json_file=allow_json_file):
+            files.append(child)
+    return files
 
 
 def iter_normalized_trades(
@@ -422,24 +524,32 @@ def iter_normalized_trades(
     contract_multiplier: float = 1.0,
     merge_sort_files: bool = False,
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+    allow_json_file: bool = False,
+    max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
 ) -> Iterator[NormalizedTrade]:
     if not merge_sort_files:
         for path in paths:
-            yield from iter_normalized_trades_from_file(
-                path,
-                symbol=symbol,
-                contract_multiplier=contract_multiplier,
-                max_json_line_bytes=max_json_line_bytes,
-            )
+            kwargs: dict[str, Any] = {
+                "symbol": symbol,
+                "contract_multiplier": contract_multiplier,
+                "max_json_line_bytes": max_json_line_bytes,
+            }
+            if allow_json_file:
+                kwargs["allow_json_file"] = True
+                kwargs["max_json_file_bytes"] = max_json_file_bytes
+            yield from iter_normalized_trades_from_file(path, **kwargs)
         return
     heap: list[tuple[float, int, NormalizedTrade, Iterator[NormalizedTrade]]] = []
     for seq, path in enumerate(paths):
-        iterator = iter_normalized_trades_from_file(
-            path,
-            symbol=symbol,
-            contract_multiplier=contract_multiplier,
-            max_json_line_bytes=max_json_line_bytes,
-        )
+        kwargs = {
+            "symbol": symbol,
+            "contract_multiplier": contract_multiplier,
+            "max_json_line_bytes": max_json_line_bytes,
+        }
+        if allow_json_file:
+            kwargs["allow_json_file"] = True
+            kwargs["max_json_file_bytes"] = max_json_file_bytes
+        iterator = iter_normalized_trades_from_file(path, **kwargs)
         trade = next(iterator, None)
         if trade is not None:
             heapq.heappush(heap, (trade.ts, seq, trade, iterator))
@@ -457,45 +567,92 @@ def iter_normalized_trades_from_file(
     symbol: str,
     contract_multiplier: float = 1.0,
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+    allow_json_file: bool = False,
+    max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
 ) -> Iterator[NormalizedTrade]:
-    for row in iter_trade_rows(path, max_json_line_bytes=max_json_line_bytes):
+    for row in iter_trade_rows(
+        path,
+        max_json_line_bytes=max_json_line_bytes,
+        allow_json_file=allow_json_file,
+        max_json_file_bytes=max_json_file_bytes,
+    ):
         trade = normalize_trade_row(row, symbol=symbol, contract_multiplier=contract_multiplier)
         if trade is not None:
             yield trade
 
 
-def iter_trade_rows(path: Path, *, max_json_line_bytes: int = MAX_JSON_LINE_BYTES) -> Iterator[dict[str, Any]]:
+def iter_trade_rows(
+    path: Path,
+    *,
+    max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+    allow_json_file: bool = False,
+    max_json_file_bytes: int = MAX_JSON_FILE_BYTES,
+) -> Iterator[dict[str, Any]]:
     name = path.name.lower()
     if name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")):
         with tarfile.open(path, "r:*") as archive:
             for member in sorted((m for m in archive.getmembers() if m.isfile()), key=lambda item: item.name):
                 inner = Path(member.name)
-                if not _is_supported_inner(inner):
+                if _is_raw_json_path(inner):
+                    _ensure_json_file_allowed(allow_json_file)
+                    _ensure_json_member_size(member.size, max_json_file_bytes, inner)
+                if not _is_supported_inner(inner, allow_json_file=allow_json_file):
                     continue
                 raw = archive.extractfile(member)
                 if raw is None:
                     continue
                 with raw:
                     text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
-                    yield from iter_text_rows(text, inner.suffix.lower(), max_json_line_bytes=max_json_line_bytes)
+                    yield from iter_text_rows(
+                        text,
+                        inner.suffix.lower(),
+                        max_json_line_bytes=max_json_line_bytes,
+                        allow_json_file=allow_json_file,
+                    )
         return
     if name.endswith(".zip"):
         with ZipFile(path) as archive:
             for member in sorted(archive.namelist()):
                 inner = Path(member)
-                if member.endswith("/") or not _is_supported_inner(inner):
+                if member.endswith("/"):
+                    continue
+                if _is_raw_json_path(inner):
+                    _ensure_json_file_allowed(allow_json_file)
+                    _ensure_json_member_size(archive.getinfo(member).file_size, max_json_file_bytes, inner)
+                if not _is_supported_inner(inner, allow_json_file=allow_json_file):
                     continue
                 with archive.open(member) as raw:
                     text = io.TextIOWrapper(raw, encoding="utf-8", errors="replace", newline="")
-                    yield from iter_text_rows(text, inner.suffix.lower(), max_json_line_bytes=max_json_line_bytes)
+                    yield from iter_text_rows(
+                        text,
+                        inner.suffix.lower(),
+                        max_json_line_bytes=max_json_line_bytes,
+                        allow_json_file=allow_json_file,
+                    )
         return
     if name.endswith(".gz"):
         inner_suffix = path.with_suffix("").suffix.lower()
+        if inner_suffix == ".json":
+            _ensure_json_file_allowed(allow_json_file)
+            _ensure_json_file_size(path, max_json_file_bytes)
         with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as handle:
-            yield from iter_text_rows(handle, inner_suffix, max_json_line_bytes=max_json_line_bytes)
+            yield from iter_text_rows(
+                handle,
+                inner_suffix,
+                max_json_line_bytes=max_json_line_bytes,
+                allow_json_file=allow_json_file,
+            )
         return
+    if _is_raw_json_path(path):
+        _ensure_json_file_allowed(allow_json_file)
+        _ensure_json_file_size(path, max_json_file_bytes)
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
-        yield from iter_text_rows(handle, path.suffix.lower(), max_json_line_bytes=max_json_line_bytes)
+        yield from iter_text_rows(
+            handle,
+            path.suffix.lower(),
+            max_json_line_bytes=max_json_line_bytes,
+            allow_json_file=allow_json_file,
+        )
 
 
 def iter_text_rows(
@@ -503,13 +660,14 @@ def iter_text_rows(
     suffix: str,
     *,
     max_json_line_bytes: int = MAX_JSON_LINE_BYTES,
+    allow_json_file: bool = False,
 ) -> Iterator[dict[str, Any]]:
     sample = handle.read(4096)
     handle.seek(0)
     fmt = _detect_format(suffix, sample)
     if fmt == "jsonl":
         for line in handle:
-            if len(line.encode("utf-8")) > int(max_json_line_bytes):
+            if len(line) > int(max_json_line_bytes):
                 raise ValueError("JSONL/.data line exceeds max-json-line-bytes; giant JSON arrays are not memory-safe.")
             text = line.strip()
             if not text:
@@ -517,6 +675,7 @@ def iter_text_rows(
             value = json.loads(text)
             yield from _expand_json(value)
     elif fmt == "json":
+        _ensure_json_file_allowed(allow_json_file)
         yield from _expand_json(json.load(handle))
     else:
         has_header = _csv_has_header(sample)
@@ -594,14 +753,42 @@ def _utc_day(ts: float) -> str:
     return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
 
 
-def _is_supported_inner(path: Path) -> bool:
+def _is_supported_inner(path: Path, *, allow_json_file: bool = False) -> bool:
     name = path.name.lower()
-    return name.endswith((".data", ".csv", ".jsonl", ".ndjson", ".json"))
+    suffixes = (".data", ".csv", ".jsonl", ".ndjson")
+    return name.endswith(suffixes) or (allow_json_file and name.endswith(".json"))
 
 
-def _is_supported_trade_path(path: Path) -> bool:
+def _is_supported_trade_path(path: Path, *, allow_json_file: bool = False) -> bool:
     name = path.name.lower()
-    return name.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".zip", ".gz", ".data", ".csv", ".jsonl", ".ndjson", ".json"))
+    suffixes = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".zip", ".gz", ".data", ".csv", ".jsonl", ".ndjson")
+    return name.endswith(suffixes) or (allow_json_file and name.endswith(".json"))
+
+
+def _is_raw_json_path(path: Path) -> bool:
+    return path.name.lower().endswith(".json")
+
+
+def _ensure_json_file_allowed(allow_json_file: bool) -> None:
+    if not allow_json_file:
+        raise SystemExit(JSON_FILE_DISABLED_ERROR)
+
+
+def _ensure_json_file_size(path: Path, max_json_file_bytes: int) -> None:
+    size = path.stat().st_size
+    _ensure_json_member_size(size, max_json_file_bytes, path)
+
+
+def _ensure_json_member_size(size: int, max_json_file_bytes: int, path: Path) -> None:
+    if int(size) > int(max_json_file_bytes):
+        raise SystemExit(
+            f"Raw .json file exceeds max-json-file-bytes ({int(max_json_file_bytes)}); "
+            f"json.load is not memory-safe for large files: {path}"
+        )
+
+
+def _building_dir_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}._building")
 
 
 def _detect_format(suffix: str, sample: str) -> str:
