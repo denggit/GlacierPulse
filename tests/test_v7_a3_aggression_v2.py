@@ -5,7 +5,7 @@ from src.research.zone_truth.a3_aggression_v2 import classify_a3_aggression_v2
 
 
 def _typ(row):
-    return classify_a3_aggression_v2(row)["a3_aggression_type_v2"]
+    return classify_a3_aggression_v2(row)["a3_quality_future_type_v2"]
 
 
 def test_price_breakout_persistent():

@@ -155,9 +155,9 @@ def simulate_3a_proxy_trades(
 def resolve_entry(row: Mapping[str, Any], bar_index: BarIndex, entry_model: str) -> dict[str, Any]:
     model = str(entry_model).upper()
     if model == "BREAKOUT":
-        ts = parse_float(row.get("a3_preview_entry_ts"))
-        price = parse_float(row.get("a3_preview_entry_price"))
-        if parse_bool(row.get("a3_preview_breakout_raw_flag")) and ts > 0 and price > 0:
+        ts = parse_float(row.get("a3_future_breakout_entry_ts"))
+        price = parse_float(row.get("a3_future_breakout_entry_price"))
+        if parse_bool(row.get("a3_future_breakout_seen_flag")) and ts > 0 and price > 0:
             return {
                 "available": True,
                 "entry_ts": ts,
@@ -177,17 +177,17 @@ def resolve_entry(row: Mapping[str, Any], bar_index: BarIndex, entry_model: str)
     if model == "AGGRESSION_FLIP":
         if not parse_bool(row.get("a3_orderflow_aggression_flag")):
             return {"available": False, "reason": "NO_ORDERFLOW_AGGRESSION"}
-        ts = _first_ts(row, "a3_aggression_ts", "confirmed_ts", "a3_preview_entry_ts", "reaction_event_ts")
+        ts = _first_ts(row, "a3_aggression_ts", "confirmed_ts", "a3_future_breakout_entry_ts", "reaction_event_ts")
         return _entry_from_bar_close(bar_index, ts, "NO_AGGRESSION_TS")
     if model == "NO_QUICK_RETURN_CONFIRM":
         if not (
             parse_bool(row.get("a3_no_quick_return_flag"))
-            or parse_bool(row.get("a3_preview_no_quick_return_3m_flag"))
-            or parse_bool(row.get("a3_preview_no_quick_return_5m_flag"))
+            or parse_bool(row.get("a3_future_no_quick_return_3m_flag"))
+            or parse_bool(row.get("a3_future_no_quick_return_5m_flag"))
         ):
             return {"available": False, "reason": "NO_QUICK_RETURN_NOT_CONFIRMED"}
-        base = parse_float(row.get("a3_preview_entry_ts"))
-        offset = 300.0 if parse_bool(row.get("a3_preview_no_quick_return_5m_flag")) else 180.0
+        base = parse_float(row.get("a3_future_breakout_entry_ts"))
+        offset = 300.0 if parse_bool(row.get("a3_future_no_quick_return_5m_flag")) else 180.0
         return _entry_from_bar_close(bar_index, base + offset if base > 0 else 0.0, "NO_QUICK_RETURN_TS")
     return {"available": False, "reason": "UNKNOWN_ENTRY_MODEL"}
 
@@ -314,14 +314,14 @@ def simulate_single_trade_with_future_bars(
         "target_price": round(target_price, 8),
         "risk_u": round(risk_u, 8),
         "fee_share_r": round(fee_share, 8),
-        "realized_r_1h": round(realized, 8),
-        "realized_outcome_1h": outcome,
-        "target_first_flag": flags["target"],
-        "stop_first_flag": flags["stop"],
-        "ambiguous_flag": flags["ambiguous"],
-        "complete_flag": complete,
-        "mfe_r_1h": round(mfe_r - fee_share, 8),
-        "mae_r_1h": round(mae_r - fee_share, 8),
+        "realized_r_1h_sim": round(realized, 8),
+        "realized_outcome_1h_sim": outcome,
+        "target_first_flag_sim": flags["target"],
+        "stop_first_flag_sim": flags["stop"],
+        "ambiguous_flag_sim": flags["ambiguous"],
+        "complete_flag_sim": complete,
+        "mfe_r_1h_sim": round(mfe_r - fee_share, 8),
+        "mae_r_1h_sim": round(mae_r - fee_share, 8),
     }
 
 
@@ -471,7 +471,7 @@ def _row_identity(row: Mapping[str, Any]) -> dict[str, Any]:
         "a1_strength_tier": str(row.get("strong_a1_tier") or row.get("a1_strength_tier") or "UNKNOWN"),
         "a1_best_horizon": str(row.get("a1_best_horizon") or "UNKNOWN"),
         "a2_accumulation_path_v2": _mainline_a2(row),
-        "a3_aggression_type_v2": str(row.get("a3_aggression_type_v2") or "NO_AGGRESSION"),
+        "a3_quality_future_type_v2": str(row.get("a3_quality_future_type_v2") or "NO_AGGRESSION"),
         "market_context_bucket": _market_context(row),
     }
 
@@ -492,8 +492,8 @@ def _mainline_a2(row: Mapping[str, Any]) -> str:
         return "A2_VALIDATED"
     if parse_bool(row.get("a2_retest_flag")) or "RETEST" in raw:
         return "A2_RETEST"
-    if str(row.get("a2_compression_state") or "").upper() not in {"", "UNKNOWN", "NO_COMPRESSION", "INSUFFICIENT_BARS"}:
-        return "A2_COMPRESSION"
+    if str(row.get("a2_compression_state_future") or "").upper() not in {"", "UNKNOWN", "NO_COMPRESSION", "INSUFFICIENT_BARS"}:
+        return "A2_COMPRESSION_FUTURE_PROXY"
     if parse_bool(row.get("a2_clean_hold_flag")) or "HOLD" in raw:
         return "A2_HOLD"
     if parse_bool(row.get("a2_failed_reclaim_flag")) or "FAILED" in raw:
@@ -534,12 +534,12 @@ def _unavailable(
         "target_price": 0.0,
         "risk_u": 0.0,
         "fee_share_r": 0.0,
-        "realized_r_1h": 0.0,
-        "realized_outcome_1h": reason,
-        "target_first_flag": False,
-        "stop_first_flag": False,
-        "ambiguous_flag": False,
-        "complete_flag": False,
-        "mfe_r_1h": 0.0,
-        "mae_r_1h": 0.0,
+        "realized_r_1h_sim": 0.0,
+        "realized_outcome_1h_sim": reason,
+        "target_first_flag_sim": False,
+        "stop_first_flag_sim": False,
+        "ambiguous_flag_sim": False,
+        "complete_flag_sim": False,
+        "mfe_r_1h_sim": 0.0,
+        "mae_r_1h_sim": 0.0,
     }

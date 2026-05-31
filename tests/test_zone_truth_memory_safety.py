@@ -58,9 +58,9 @@ def _write_inputs(root: Path) -> dict[str, Path]:
                     "frozen_low": 99,
                     "frozen_high": 101,
                     "reaction_type": "CLEAN_HOLD",
-                    "a3_preview_breakout_raw_flag": True,
-                    "a3_preview_entry_ts": BASE_TS + offset,
-                    "a3_preview_entry_price": 100,
+                    "a3_future_breakout_seen_flag": True,
+                    "a3_future_breakout_entry_ts": BASE_TS + offset,
+                    "a3_future_breakout_entry_price": 100,
                 }
             )
             + "\n"
@@ -83,20 +83,20 @@ def _trade(zone_id: str):
         "zone_id": zone_id,
         "direction": "BUY",
         "a1_primary_evidence_type": "ICEBERG",
-        "a3_aggression_type_v2": "PRICE_BREAKOUT_PERSISTENT",
+        "a3_quality_future_type_v2": "STRONG_ORDERFLOW_AGGRESSION",
         "entry_model": "BREAKOUT",
         "stop_model": "V1_ZONE_WIDTH",
         "target_r": 1.0,
         "entry_ts": BASE_TS,
         "entry_price": 100,
         "risk_u": 1,
-        "realized_r_1h": 1.0,
-        "realized_outcome_1h": "TARGET_1R_FIRST",
-        "target_first_flag": True,
+        "realized_r_1h_sim": 1.0,
+        "realized_outcome_1h_sim": "TARGET_1R_FIRST",
+        "target_first_flag_sim": True,
         "fee_share_r": 0.1,
-        "mfe_r_1h": 1.0,
-        "mae_r_1h": -0.1,
-        "complete_flag": True,
+        "mfe_r_1h_sim": 1.0,
+        "mae_r_1h_sim": -0.1,
+        "complete_flag_sim": True,
     }
 
 

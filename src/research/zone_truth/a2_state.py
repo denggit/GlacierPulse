@@ -25,15 +25,15 @@ def classify_a3_latency_bucket(after_a2_flag: bool, latency_sec: float) -> str:
 def classify_a3_ignition_quality_after_a2(row: Mapping[str, Any], after_a2_flag: bool) -> str:
     if not after_a2_flag:
         return "NO_IGNITION"
-    raw = str(row.get("a3_preview_ignition_quality") or "").upper()
+    raw = str(row.get("a3_future_ignition_quality") or "").upper()
     if raw in {"STRONG_IGNITION", "MEDIUM_IGNITION", "WEAK_IGNITION"}:
         return raw
 
-    latency_bucket = classify_a3_latency_bucket(True, parse_float(row.get("a3_preview_breakout_raw_latency_sec")))
-    net_mfe_15m = parse_float(row.get("a3_preview_net_mfe_15m_r"))
-    net_mae_15m = parse_float(row.get("a3_preview_net_mae_15m_r"))
-    persistence_3m = parse_bool(row.get("a3_preview_persistence_3m_flag"))
-    no_quick_return_3m = parse_bool(row.get("a3_preview_no_quick_return_3m_flag"))
+    latency_bucket = classify_a3_latency_bucket(True, parse_float(row.get("a3_future_breakout_latency_sec")))
+    net_mfe_15m = parse_float(row.get("a3_future_net_mfe_15m_r"))
+    net_mae_15m = parse_float(row.get("a3_future_net_mae_15m_r"))
+    persistence_3m = parse_bool(row.get("a3_future_persistence_3m_flag"))
+    no_quick_return_3m = parse_bool(row.get("a3_future_no_quick_return_3m_flag"))
 
     if (
         net_mfe_15m >= 1.0
@@ -57,68 +57,68 @@ def classify_a3_ignition_quality_after_a2(row: Mapping[str, Any], after_a2_flag:
 def _build_after_a2_fee_aware_fields(row: Mapping[str, Any], after_a2_flag: bool) -> dict[str, Any]:
     if not after_a2_flag:
         return {
-            "a3_after_a2_net_mfe_15m_r": 0.0,
-            "a3_after_a2_net_mae_15m_r": 0.0,
-            "a3_after_a2_net_mfe_1h_r": 0.0,
-            "a3_after_a2_net_mae_1h_r": 0.0,
-            "a3_after_a2_realized_r_proxy_15m": 0.0,
-            "a3_after_a2_realized_r_proxy_1h": 0.0,
-            "a3_after_a2_realized_outcome_15m": "NO_BREAKOUT",
-            "a3_after_a2_realized_outcome_1h": "NO_BREAKOUT",
-            "a3_after_a2_fee_positive_1h": False,
-            "a3_after_a2_net_mfe_1h_bucket": "NO_BREAKOUT",
-            "a3_after_a2_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+            "a3_after_a2_future_net_mfe_15m_r": 0.0,
+            "a3_after_a2_future_net_mae_15m_r": 0.0,
+            "a3_after_a2_future_net_mfe_1h_r": 0.0,
+            "a3_after_a2_future_net_mae_1h_r": 0.0,
+            "a3_after_a2_future_realized_r_proxy_15m": 0.0,
+            "a3_after_a2_future_realized_r_proxy_1h": 0.0,
+            "a3_after_a2_future_realized_outcome_15m": "NO_BREAKOUT",
+            "a3_after_a2_future_realized_outcome_1h": "NO_BREAKOUT",
+            "a3_after_a2_future_fee_positive_1h": False,
+            "a3_after_a2_future_net_mfe_1h_bucket": "NO_BREAKOUT",
+            "a3_after_a2_future_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
         }
-    realized_1h = parse_float(row.get("a3_preview_realized_r_proxy_1h"))
+    realized_1h = parse_float(row.get("a3_future_realized_r_proxy_1h"))
     return {
-        "a3_after_a2_net_mfe_15m_r": parse_float(row.get("a3_preview_net_mfe_15m_r")),
-        "a3_after_a2_net_mae_15m_r": parse_float(row.get("a3_preview_net_mae_15m_r")),
-        "a3_after_a2_net_mfe_1h_r": parse_float(row.get("a3_preview_net_mfe_1h_r")),
-        "a3_after_a2_net_mae_1h_r": parse_float(row.get("a3_preview_net_mae_1h_r")),
-        "a3_after_a2_realized_r_proxy_15m": parse_float(row.get("a3_preview_realized_r_proxy_15m")),
-        "a3_after_a2_realized_r_proxy_1h": realized_1h,
-        "a3_after_a2_realized_outcome_15m": str(row.get("a3_preview_realized_outcome_15m") or "NO_BREAKOUT"),
-        "a3_after_a2_realized_outcome_1h": str(row.get("a3_preview_realized_outcome_1h") or "NO_BREAKOUT"),
-        "a3_after_a2_fee_positive_1h": realized_1h > 0,
-        "a3_after_a2_net_mfe_1h_bucket": str(row.get("a3_preview_net_mfe_1h_bucket") or "NO_BREAKOUT"),
-        "a3_after_a2_realized_r_proxy_1h_bucket": str(row.get("a3_preview_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
+        "a3_after_a2_future_net_mfe_15m_r": parse_float(row.get("a3_future_net_mfe_15m_r")),
+        "a3_after_a2_future_net_mae_15m_r": parse_float(row.get("a3_future_net_mae_15m_r")),
+        "a3_after_a2_future_net_mfe_1h_r": parse_float(row.get("a3_future_net_mfe_1h_r")),
+        "a3_after_a2_future_net_mae_1h_r": parse_float(row.get("a3_future_net_mae_1h_r")),
+        "a3_after_a2_future_realized_r_proxy_15m": parse_float(row.get("a3_future_realized_r_proxy_15m")),
+        "a3_after_a2_future_realized_r_proxy_1h": realized_1h,
+        "a3_after_a2_future_realized_outcome_15m": str(row.get("a3_future_realized_outcome_15m") or "NO_BREAKOUT"),
+        "a3_after_a2_future_realized_outcome_1h": str(row.get("a3_future_realized_outcome_1h") or "NO_BREAKOUT"),
+        "a3_after_a2_future_fee_positive_1h": realized_1h > 0,
+        "a3_after_a2_future_net_mfe_1h_bucket": str(row.get("a3_future_net_mfe_1h_bucket") or "NO_BREAKOUT"),
+        "a3_after_a2_future_realized_r_proxy_1h_bucket": str(row.get("a3_future_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
     }
 
 
 def _build_after_a2_structural_fields(row: Mapping[str, Any], after_a2_flag: bool) -> dict[str, Any]:
     if not after_a2_flag:
         return {
-            "a3_after_a2_structural_stop_price": 0.0,
-            "a3_after_a2_structural_risk_u": 0.0,
-            "a3_after_a2_structural_fee_share_r": 0.0,
-            "a3_after_a2_structural_realized_r_proxy_15m": 0.0,
-            "a3_after_a2_structural_realized_r_proxy_1h": 0.0,
-            "a3_after_a2_structural_realized_outcome_15m": "NO_BREAKOUT",
-            "a3_after_a2_structural_realized_outcome_1h": "NO_BREAKOUT",
-            "a3_after_a2_structural_fee_positive_1h": False,
-            "a3_after_a2_structural_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
-            "a3_after_a2_structural_vs_v1_delta_r_1h": 0.0,
-            "a3_after_a2_structural_fee_share_delta_r": 0.0,
-            "a3_after_a2_structural_improved_flag": False,
+            "a3_after_a2_future_structural_stop_price": 0.0,
+            "a3_after_a2_future_structural_risk_u": 0.0,
+            "a3_after_a2_future_structural_fee_share_r": 0.0,
+            "a3_after_a2_future_structural_realized_r_proxy_15m": 0.0,
+            "a3_after_a2_future_structural_realized_r_proxy_1h": 0.0,
+            "a3_after_a2_future_structural_realized_outcome_15m": "NO_BREAKOUT",
+            "a3_after_a2_future_structural_realized_outcome_1h": "NO_BREAKOUT",
+            "a3_after_a2_future_structural_fee_positive_1h": False,
+            "a3_after_a2_future_structural_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+            "a3_after_a2_future_structural_vs_v1_delta_r_1h": 0.0,
+            "a3_after_a2_future_structural_fee_share_delta_r": 0.0,
+            "a3_after_a2_future_structural_improved_flag": False,
         }
 
-    structural_realized_1h = parse_float(row.get("a3_structural_realized_r_proxy_1h"))
-    v1_realized_1h = parse_float(row.get("a3_preview_realized_r_proxy_1h"))
+    structural_realized_1h = parse_float(row.get("a3_structural_realized_r_proxy_1h_future"))
+    v1_realized_1h = parse_float(row.get("a3_future_realized_r_proxy_1h"))
     structural_fee_share = parse_float(row.get("a3_structural_fee_share_r"))
-    preview_fee_share = parse_float(row.get("a3_preview_fee_share_r"))
+    preview_fee_share = parse_float(row.get("a3_future_fee_share_r"))
     return {
-        "a3_after_a2_structural_stop_price": parse_float(row.get("a3_structural_stop_price")),
-        "a3_after_a2_structural_risk_u": parse_float(row.get("a3_structural_risk_u")),
-        "a3_after_a2_structural_fee_share_r": structural_fee_share,
-        "a3_after_a2_structural_realized_r_proxy_15m": parse_float(row.get("a3_structural_realized_r_proxy_15m")),
-        "a3_after_a2_structural_realized_r_proxy_1h": structural_realized_1h,
-        "a3_after_a2_structural_realized_outcome_15m": str(row.get("a3_structural_realized_outcome_15m") or "NO_BREAKOUT"),
-        "a3_after_a2_structural_realized_outcome_1h": str(row.get("a3_structural_realized_outcome_1h") or "NO_BREAKOUT"),
-        "a3_after_a2_structural_fee_positive_1h": structural_realized_1h > 0,
-        "a3_after_a2_structural_realized_r_proxy_1h_bucket": str(row.get("a3_structural_realized_r_proxy_1h_bucket") or "NO_BREAKOUT"),
-        "a3_after_a2_structural_vs_v1_delta_r_1h": round(structural_realized_1h - v1_realized_1h, 8),
-        "a3_after_a2_structural_fee_share_delta_r": round(structural_fee_share - preview_fee_share, 8),
-        "a3_after_a2_structural_improved_flag": structural_realized_1h > v1_realized_1h,
+        "a3_after_a2_future_structural_stop_price": parse_float(row.get("a3_structural_stop_price")),
+        "a3_after_a2_future_structural_risk_u": parse_float(row.get("a3_structural_risk_u")),
+        "a3_after_a2_future_structural_fee_share_r": structural_fee_share,
+        "a3_after_a2_future_structural_realized_r_proxy_15m": parse_float(row.get("a3_structural_realized_r_proxy_15m_future")),
+        "a3_after_a2_future_structural_realized_r_proxy_1h": structural_realized_1h,
+        "a3_after_a2_future_structural_realized_outcome_15m": str(row.get("a3_structural_realized_outcome_15m_future") or "NO_BREAKOUT"),
+        "a3_after_a2_future_structural_realized_outcome_1h": str(row.get("a3_structural_realized_outcome_1h_future") or "NO_BREAKOUT"),
+        "a3_after_a2_future_structural_fee_positive_1h": structural_realized_1h > 0,
+        "a3_after_a2_future_structural_realized_r_proxy_1h_bucket": str(row.get("a3_structural_realized_r_proxy_1h_bucket_future") or "NO_BREAKOUT"),
+        "a3_after_a2_future_structural_vs_v1_delta_r_1h": round(structural_realized_1h - v1_realized_1h, 8),
+        "a3_after_a2_future_structural_fee_share_delta_r": round(structural_fee_share - preview_fee_share, 8),
+        "a3_after_a2_future_structural_improved_flag": structural_realized_1h > v1_realized_1h,
     }
 class ZoneA2StateClassifier:
     """Research-only A2_PRE_POOL lifecycle classifier for zone_truth rows."""
@@ -228,7 +228,7 @@ class ZoneA2StateClassifier:
             observe_priority=observe_priority,
             strong_tier=strong_tier,
         )
-        a3_breakout_after_a2 = ready_for_a3 and parse_bool(result.get("a3_preview_breakout_raw_flag"))
+        a3_breakout_after_a2 = ready_for_a3 and parse_bool(result.get("a3_future_breakout_seen_flag"))
         result.update(
             {
                 "a2_state": state,
@@ -257,20 +257,20 @@ class ZoneA2StateClassifier:
                 "a2_sweep_reclaim_quality": sweep_quality,
                 "a2_reclaim_success_flag": reclaim and not failed_reclaim,
                 "a2_retest_success_flag": retest and not failed_reclaim,
-                "a2_post_zone_range_15m_u": compression["a2_post_zone_range_15m_u"],
-                "a2_post_zone_range_1h_u": compression["a2_post_zone_range_1h_u"],
-                "a2_post_zone_range_4h_u": compression["a2_post_zone_range_4h_u"],
-                "a2_compression_ratio_15m": compression["a2_compression_ratio_15m"],
-                "a2_compression_ratio_1h": compression["a2_compression_ratio_1h"],
-                "a2_compression_state": compression["a2_compression_state"],
-                "a2_compression_reason": compression["a2_compression_reason"],
+                "a2_post_zone_range_15m_u_future": compression["a2_post_zone_range_15m_u_future"],
+                "a2_post_zone_range_1h_u_future": compression["a2_post_zone_range_1h_u_future"],
+                "a2_post_zone_range_4h_u_future": compression["a2_post_zone_range_4h_u_future"],
+                "a2_compression_ratio_15m_future": compression["a2_compression_ratio_15m_future"],
+                "a2_compression_ratio_1h_future": compression["a2_compression_ratio_1h_future"],
+                "a2_compression_state_future": compression["a2_compression_state_future"],
+                "a2_compression_reason_future": compression["a2_compression_reason_future"],
                 "a2_ready_for_a3_watch_flag": ready_for_a3,
                 "a2_ready_for_a3_reason": ready_reason,
                 "a3_watch_priority": a3_watch_priority,
-                "a3_preview_breakout_after_a2_flag": a3_breakout_after_a2,
-                "a3_preview_breakout_after_a2_latency_sec": parse_float(result.get("a3_preview_breakout_raw_latency_sec")) if a3_breakout_after_a2 else 0.0,
-                "a3_preview_latency_bucket": classify_a3_latency_bucket(a3_breakout_after_a2, parse_float(result.get("a3_preview_breakout_raw_latency_sec"))),
-                "a3_preview_ignition_quality": classify_a3_ignition_quality_after_a2(result, a3_breakout_after_a2),
+                "a3_future_breakout_after_a2_flag": a3_breakout_after_a2,
+                "a3_future_breakout_after_a2_latency_sec": parse_float(result.get("a3_future_breakout_latency_sec")) if a3_breakout_after_a2 else 0.0,
+                "a3_future_latency_bucket": classify_a3_latency_bucket(a3_breakout_after_a2, parse_float(result.get("a3_future_breakout_latency_sec"))),
+                "a3_future_ignition_quality": classify_a3_ignition_quality_after_a2(result, a3_breakout_after_a2),
                 **_build_after_a2_fee_aware_fields(result, a3_breakout_after_a2),
                 **_build_after_a2_structural_fields(result, a3_breakout_after_a2),
                 "strong_a1_raw_flag": strong_flag,
@@ -513,24 +513,24 @@ class ZoneA2StateClassifier:
         failed_reclaim: bool,
         book_depth_state: str,
     ) -> dict[str, Any]:
-        range_15m = parse_float(row.get("mfe_15m_u")) + abs(parse_float(row.get("mae_15m_u")))
-        range_1h = parse_float(row.get("mfe_1h_u")) + abs(parse_float(row.get("mae_1h_u")))
-        range_4h = parse_float(row.get("mfe_4h_u")) + abs(parse_float(row.get("mae_4h_u")))
-        is_complete_15m = parse_bool(row.get("is_complete_15m"))
+        range_15m = parse_float(row.get("mfe_15m_u_future")) + abs(parse_float(row.get("mae_15m_u_future")))
+        range_1h = parse_float(row.get("mfe_1h_u_future")) + abs(parse_float(row.get("mae_1h_u_future")))
+        range_4h = parse_float(row.get("mfe_4h_u_future")) + abs(parse_float(row.get("mae_4h_u_future")))
+        is_complete_15m_future = parse_bool(row.get("is_complete_15m_future"))
         zone_width = max(
             parse_float(row.get("zone_width")),
             parse_float(row.get("zone_upper")) - parse_float(row.get("zone_lower")),
             1.0,
         )
-        mae_15m_ratio = abs(parse_float(row.get("mae_15m_u"))) / zone_width
-        mfe_15m_ratio = parse_float(row.get("mfe_15m_u")) / zone_width
+        mae_15m_ratio = abs(parse_float(row.get("mae_15m_u_future"))) / zone_width
+        mfe_15m_ratio = parse_float(row.get("mfe_15m_u_future")) / zone_width
         ratio_15m = range_15m / zone_width
         ratio_1h = range_1h / zone_width
 
         if not eligible:
             state = "NON_A2"
             reason = "not_a2_pre_pool"
-        elif not is_complete_15m:
+        elif not is_complete_15m_future:
             state = "INSUFFICIENT_FUTURE_DATA"
             reason = "incomplete_15m_forward_window"
         elif failed_reclaim or book_depth_state == "BOOK_DEPTH_MISSING" or mae_15m_ratio >= 3.0:
@@ -550,13 +550,13 @@ class ZoneA2StateClassifier:
             reason = "no_compression_proxy_match"
 
         return {
-            "a2_post_zone_range_15m_u": round(range_15m, 8),
-            "a2_post_zone_range_1h_u": round(range_1h, 8),
-            "a2_post_zone_range_4h_u": round(range_4h, 8),
-            "a2_compression_ratio_15m": round(ratio_15m, 8),
-            "a2_compression_ratio_1h": round(ratio_1h, 8),
-            "a2_compression_state": state,
-            "a2_compression_reason": reason,
+            "a2_post_zone_range_15m_u_future": round(range_15m, 8),
+            "a2_post_zone_range_1h_u_future": round(range_1h, 8),
+            "a2_post_zone_range_4h_u_future": round(range_4h, 8),
+            "a2_compression_ratio_15m_future": round(ratio_15m, 8),
+            "a2_compression_ratio_1h_future": round(ratio_1h, 8),
+            "a2_compression_state_future": state,
+            "a2_compression_reason_future": reason,
         }
 
     @staticmethod

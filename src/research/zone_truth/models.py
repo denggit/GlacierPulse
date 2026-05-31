@@ -197,20 +197,20 @@ class ZoneTruthEvent:
     ignore_pie_event_keys: str = ""
     spoofing_pie_event_keys: str = ""
     cancel_pie_event_keys: str = ""
-    truth_score_max: float = 0.0
-    truth_score_avg: float = 0.0
-    truth_score_median: float = 0.0
-    truth_score_min: float = 0.0
-    truth_ge50_count: int = 0
-    truth_ge65_count: int = 0
-    truth_ge80_count: int = 0
+    truth_score_max_offline: float = 0.0
+    truth_score_avg_offline: float = 0.0
+    truth_score_median_offline: float = 0.0
+    truth_score_min_offline: float = 0.0
+    truth_ge50_count_offline: int = 0
+    truth_ge65_count_offline: int = 0
+    truth_ge80_count_offline: int = 0
     truth_not_iceberg_count: int = 0
     truth_insufficient_count: int = 0
     best_pie_event_key: str = ""
     best_pie_ts: float = 0.0
     best_pie_price: float = 0.0
-    best_pie_truth_score: float = 0.0
-    best_pie_truth_label: str = ""
+    best_pie_truth_score_offline: float = 0.0
+    best_pie_truth_label_offline: str = ""
     best_pie_quality: str = ""
     best_pie_behavior: str = ""
     structural_proxy_available: bool = False
@@ -325,20 +325,20 @@ class ZoneTruthEvent:
     a2_sweep_reclaim_quality: str = ""
     a2_reclaim_success_flag: bool = False
     a2_retest_success_flag: bool = False
-    a2_post_zone_range_15m_u: float = 0.0
-    a2_post_zone_range_1h_u: float = 0.0
-    a2_post_zone_range_4h_u: float = 0.0
-    a2_compression_ratio_15m: float = 0.0
-    a2_compression_ratio_1h: float = 0.0
-    a2_compression_state: str = ""
-    a2_compression_reason: str = ""
+    a2_post_zone_range_15m_u_future: float = 0.0
+    a2_post_zone_range_1h_u_future: float = 0.0
+    a2_post_zone_range_4h_u_future: float = 0.0
+    a2_compression_ratio_15m_future: float = 0.0
+    a2_compression_ratio_1h_future: float = 0.0
+    a2_compression_state_future: str = ""
+    a2_compression_reason_future: str = ""
     a2_ready_for_a3_watch_flag: bool = False
     a2_ready_for_a3_reason: str = ""
     a2_accumulation_path_v2: str = "A2_UNKNOWN"
     a2_accumulation_path_score_v2: float = 0.0
     a2_accumulation_path_reason_v2: str = ""
     a3_watch_priority: str = ""
-    a3_preview_breakout_after_a2_flag: bool = False
+    a3_future_breakout_after_a2_flag: bool = False
     a2_fee_reference_price: float = 0.0
     a2_risk_u: float = 0.0
     a2_fee_u: float = 0.0
@@ -352,90 +352,90 @@ class ZoneTruthEvent:
     a2_net_hit_1r_15m: bool = False
     a2_net_hit_1r_1h: bool = False
     a2_net_hit_2r_1h: bool = False
-    a3_preview_latency_bucket: str = "NO_IGNITION"
-    a3_preview_entry_ts: float = 0.0
-    a3_preview_entry_price: float = 0.0
-    a3_preview_entry_time_utc: str = ""
-    a3_preview_risk_u: float = 0.0
-    a3_preview_fee_u: float = 0.0
-    a3_preview_fee_share_r: float = 0.0
-    a3_preview_net_mfe_15m_r: float = 0.0
-    a3_preview_net_mae_15m_r: float = 0.0
-    a3_preview_net_mfe_1h_r: float = 0.0
-    a3_preview_net_mae_1h_r: float = 0.0
-    a3_preview_first_hit_1r_15m: bool = False
-    a3_preview_first_hit_1r_1h: bool = False
-    a3_preview_realized_r_proxy_15m: float = 0.0
-    a3_preview_realized_r_proxy_1h: float = 0.0
-    a3_preview_realized_outcome_15m: str = "NO_BREAKOUT"
-    a3_preview_realized_outcome_1h: str = "NO_BREAKOUT"
+    a3_future_latency_bucket: str = "NO_IGNITION"
+    a3_future_breakout_entry_ts: float = 0.0
+    a3_future_breakout_entry_price: float = 0.0
+    a3_future_breakout_entry_time_utc: str = ""
+    a3_future_risk_u: float = 0.0
+    a3_future_fee_u: float = 0.0
+    a3_future_fee_share_r: float = 0.0
+    a3_future_net_mfe_15m_r: float = 0.0
+    a3_future_net_mae_15m_r: float = 0.0
+    a3_future_net_mfe_1h_r: float = 0.0
+    a3_future_net_mae_1h_r: float = 0.0
+    a3_future_first_hit_1r_15m: bool = False
+    a3_future_first_hit_1r_1h: bool = False
+    a3_future_realized_r_proxy_15m: float = 0.0
+    a3_future_realized_r_proxy_1h: float = 0.0
+    a3_future_realized_outcome_15m: str = "NO_BREAKOUT"
+    a3_future_realized_outcome_1h: str = "NO_BREAKOUT"
     a3_structural_stop_price: float = 0.0
     a3_structural_risk_u: float = 0.0
     a3_structural_fee_u: float = 0.0
     a3_structural_fee_share_r: float = 0.0
-    a3_structural_net_mfe_15m_r: float = 0.0
-    a3_structural_net_mae_15m_r: float = 0.0
-    a3_structural_net_mfe_1h_r: float = 0.0
-    a3_structural_net_mae_1h_r: float = 0.0
-    a3_structural_realized_r_proxy_15m: float = 0.0
-    a3_structural_realized_r_proxy_1h: float = 0.0
-    a3_structural_realized_outcome_15m: str = "NO_BREAKOUT"
-    a3_structural_realized_outcome_1h: str = "NO_BREAKOUT"
-    a3_structural_fee_positive_1h: bool = False
-    a3_structural_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
-    a3_preview_breakout_volume: float = 0.0
-    a3_preview_volume_median_20: float = 0.0
-    a3_preview_volume_boost: float = 0.0
-    a3_preview_body_strength: float = 0.0
-    a3_preview_breakout_strength_r: float = 0.0
-    a3_preview_persistence_3m_flag: bool = False
-    a3_preview_persistence_5m_flag: bool = False
-    a3_preview_no_quick_return_3m_flag: bool = False
-    a3_preview_no_quick_return_5m_flag: bool = False
-    a3_preview_ignition_quality: str = "NO_IGNITION"
-    a3_aggression_type_v2: str = "NO_AGGRESSION"
-    a3_aggression_score_v2: float = 0.0
-    a3_aggression_reason_v2: str = ""
-    a3_price_breakout_flag: bool = False
-    a3_orderflow_aggression_flag: bool = False
-    a3_cvd_flip_flag: bool = False
-    a3_reclaim_aggression_flag: bool = False
-    a3_no_quick_return_flag: bool = False
-    a3_persistence_flag: bool = False
-    a3_volume_boost_flag: bool = False
-    a3_body_strength_flag: bool = False
-    a2_pre_ignition_bar_count: int = 0
-    a2_pre_ignition_window_sec: float = 0.0
-    a2_pre_ignition_range_u: float = 0.0
-    a2_pre_ignition_range_ratio: float = 0.0
-    a2_pre_ignition_zone_stay_ratio: float = 0.0
-    a2_pre_ignition_compression_state: str = "INSUFFICIENT_BARS"
-    a3_preview_net_mfe_1h_bucket: str = "NO_BREAKOUT"
-    a3_preview_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
-    a3_after_a2_net_mfe_15m_r: float = 0.0
-    a3_after_a2_net_mae_15m_r: float = 0.0
-    a3_after_a2_net_mfe_1h_r: float = 0.0
-    a3_after_a2_net_mae_1h_r: float = 0.0
-    a3_after_a2_realized_r_proxy_15m: float = 0.0
-    a3_after_a2_realized_r_proxy_1h: float = 0.0
-    a3_after_a2_realized_outcome_15m: str = "NO_BREAKOUT"
-    a3_after_a2_realized_outcome_1h: str = "NO_BREAKOUT"
-    a3_after_a2_fee_positive_1h: bool = False
-    a3_after_a2_net_mfe_1h_bucket: str = "NO_BREAKOUT"
-    a3_after_a2_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
-    a3_after_a2_structural_stop_price: float = 0.0
-    a3_after_a2_structural_risk_u: float = 0.0
-    a3_after_a2_structural_fee_share_r: float = 0.0
-    a3_after_a2_structural_realized_r_proxy_15m: float = 0.0
-    a3_after_a2_structural_realized_r_proxy_1h: float = 0.0
-    a3_after_a2_structural_realized_outcome_15m: str = "NO_BREAKOUT"
-    a3_after_a2_structural_realized_outcome_1h: str = "NO_BREAKOUT"
-    a3_after_a2_structural_fee_positive_1h: bool = False
-    a3_after_a2_structural_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
-    a3_after_a2_structural_vs_v1_delta_r_1h: float = 0.0
-    a3_after_a2_structural_fee_share_delta_r: float = 0.0
-    a3_after_a2_structural_improved_flag: bool = False
-    a3_preview_breakout_after_a2_latency_sec: float = 0.0
+    a3_structural_net_mfe_15m_r_future: float = 0.0
+    a3_structural_net_mae_15m_r_future: float = 0.0
+    a3_structural_net_mfe_1h_r_future: float = 0.0
+    a3_structural_net_mae_1h_r_future: float = 0.0
+    a3_structural_realized_r_proxy_15m_future: float = 0.0
+    a3_structural_realized_r_proxy_1h_future: float = 0.0
+    a3_structural_realized_outcome_15m_future: str = "NO_BREAKOUT"
+    a3_structural_realized_outcome_1h_future: str = "NO_BREAKOUT"
+    a3_structural_fee_positive_1h_future: bool = False
+    a3_structural_realized_r_proxy_1h_bucket_future: str = "NO_BREAKOUT"
+    a3_future_breakout_volume: float = 0.0
+    a3_future_volume_median_20: float = 0.0
+    a3_future_volume_boost: float = 0.0
+    a3_future_body_strength: float = 0.0
+    a3_future_breakout_strength_r: float = 0.0
+    a3_future_persistence_3m_flag: bool = False
+    a3_future_persistence_5m_flag: bool = False
+    a3_future_no_quick_return_3m_flag: bool = False
+    a3_future_no_quick_return_5m_flag: bool = False
+    a3_future_ignition_quality: str = "NO_IGNITION"
+    a3_quality_future_type_v2: str = "NO_AGGRESSION"
+    a3_quality_future_score_v2: float = 0.0
+    a3_quality_future_reason_v2: str = ""
+    a3_price_breakout_flag_future: bool = False
+    a3_orderflow_aggression_flag_future: bool = False
+    a3_cvd_flip_flag_future: bool = False
+    a3_reclaim_aggression_flag_future: bool = False
+    a3_no_quick_return_flag_future: bool = False
+    a3_persistence_flag_future: bool = False
+    a3_volume_boost_flag_future: bool = False
+    a3_body_strength_flag_future: bool = False
+    a2_pre_ignition_bar_count_future: int = 0
+    a2_pre_ignition_window_sec_future: float = 0.0
+    a2_pre_ignition_range_u_future: float = 0.0
+    a2_pre_ignition_range_ratio_future: float = 0.0
+    a2_pre_ignition_zone_stay_ratio_future: float = 0.0
+    a2_pre_ignition_compression_state_future: str = "INSUFFICIENT_BARS"
+    a3_future_net_mfe_1h_bucket: str = "NO_BREAKOUT"
+    a3_future_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
+    a3_after_a2_future_net_mfe_15m_r: float = 0.0
+    a3_after_a2_future_net_mae_15m_r: float = 0.0
+    a3_after_a2_future_net_mfe_1h_r: float = 0.0
+    a3_after_a2_future_net_mae_1h_r: float = 0.0
+    a3_after_a2_future_realized_r_proxy_15m: float = 0.0
+    a3_after_a2_future_realized_r_proxy_1h: float = 0.0
+    a3_after_a2_future_realized_outcome_15m: str = "NO_BREAKOUT"
+    a3_after_a2_future_realized_outcome_1h: str = "NO_BREAKOUT"
+    a3_after_a2_future_fee_positive_1h: bool = False
+    a3_after_a2_future_net_mfe_1h_bucket: str = "NO_BREAKOUT"
+    a3_after_a2_future_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
+    a3_after_a2_future_structural_stop_price: float = 0.0
+    a3_after_a2_future_structural_risk_u: float = 0.0
+    a3_after_a2_future_structural_fee_share_r: float = 0.0
+    a3_after_a2_future_structural_realized_r_proxy_15m: float = 0.0
+    a3_after_a2_future_structural_realized_r_proxy_1h: float = 0.0
+    a3_after_a2_future_structural_realized_outcome_15m: str = "NO_BREAKOUT"
+    a3_after_a2_future_structural_realized_outcome_1h: str = "NO_BREAKOUT"
+    a3_after_a2_future_structural_fee_positive_1h: bool = False
+    a3_after_a2_future_structural_realized_r_proxy_1h_bucket: str = "NO_BREAKOUT"
+    a3_after_a2_future_structural_vs_v1_delta_r_1h: float = 0.0
+    a3_after_a2_future_structural_fee_share_delta_r: float = 0.0
+    a3_after_a2_future_structural_improved_flag: bool = False
+    a3_future_breakout_after_a2_latency_sec: float = 0.0
     strong_a1_raw_flag: bool = False
     strong_a1_tier: str = ""
     strong_a1_reason: str = ""
@@ -450,16 +450,16 @@ ZONE_TRUTH_EVENT_FIELDS = [field.name for field in fields(ZoneTruthEvent)]
 FORWARD_FIELDS = [
     "forward_anchor_ts", "forward_anchor_source", "forward_anchor_local_time",
     "forward_entry_price", "forward_entry_price_source",
-    "mfe_15m_u", "mae_15m_u", "end_15m_u", "is_complete_15m",
-    "mfe_1h_u", "mae_1h_u", "end_1h_u", "is_complete_1h",
-    "mfe_4h_u", "mae_4h_u", "end_4h_u", "is_complete_4h",
-    "a3_preview_breakout_raw_flag",
-    "a3_preview_breakout_raw_latency_sec",
-    "a3_preview_breakout_direction",
-    "a3_preview_breakout_threshold_u",
-    "a3_preview_breakout_price",
-    "a3_preview_max_extension_15m_u",
-    "a3_preview_max_extension_1h_u",
+    "mfe_15m_u_future", "mae_15m_u_future", "end_15m_u_future", "is_complete_15m_future",
+    "mfe_1h_u_future", "mae_1h_u_future", "end_1h_u_future", "is_complete_1h_future",
+    "mfe_4h_u_future", "mae_4h_u_future", "end_4h_u_future", "is_complete_4h_future",
+    "a3_future_breakout_seen_flag",
+    "a3_future_breakout_latency_sec",
+    "a3_future_breakout_direction",
+    "a3_future_breakout_threshold_u",
+    "a3_future_breakout_price",
+    "a3_future_max_extension_15m_u",
+    "a3_future_max_extension_1h_u",
 ]
 MARKET_CONTEXT_FIELDS = [
     "market_context_anchor_ts",

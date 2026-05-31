@@ -74,10 +74,10 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "a2_observe_priority",
         "a2_risk_tier",
         "a2_sweep_reclaim_quality",
-        "a2_compression_state",
+        "a2_compression_state_future",
         "a2_ready_for_a3_watch_flag",
         "a3_watch_priority",
-        "a3_preview_breakout_after_a2_flag",
+        "a3_future_breakout_after_a2_flag",
         "strong_a1_tier",
         "a2_validated_candidate_flag",
         "reaction_event_ts_valid",
@@ -95,7 +95,7 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
         "first_iceberg_pie_max_trade_price",
         "a3_structural_stop_price",
         "a3_structural_risk_u",
-        "a3_after_a2_structural_realized_r_proxy_1h",
+        "a3_after_a2_future_structural_realized_r_proxy_1h",
     }
     assert expected_fields.issubset(rows[0])
     assert rows[0]["a2_state"] == "A2_CLEAN_HOLD"
@@ -115,7 +115,7 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
     assert summary["non_reaction_rows_count"] == 0
     assert summary["structural_proxy_available_count"] == 1
     assert summary["structural_proxy_reason_distribution"]["FIRST_ICEBERG_PIE_SWEEP"] == 1
-    assert "a3_after_a2_structural_realized_r_proxy_1h_avg" in summary
+    assert "a3_after_a2_future_structural_realized_r_proxy_1h_avg" in summary
 
     for name in (
         "zone_truth_by_a2_state.csv",
@@ -152,13 +152,13 @@ def test_zone_truth_export_includes_a2_fields_and_group_reports(tmp_path):
 
     with (out / "zone_truth_by_a3_preview_ignition_quality.csv").open("r", encoding="utf-8", newline="") as f:
         header = next(csv.reader(f))
-    assert "a3_preview_realized_r_proxy_1h_avg" in header
-    assert "a3_preview_fee_positive_1h_rate" in header
-    assert "a3_preview_target_1r_first_1h_rate" in header
-    assert "a3_after_a2_realized_r_proxy_1h_avg" in header
-    assert "a3_after_a2_fee_positive_1h_rate" in header
+    assert "a3_future_realized_r_proxy_1h_avg" in header
+    assert "a3_future_fee_positive_1h_rate" in header
+    assert "a3_future_target_1r_first_1h_rate" in header
+    assert "a3_after_a2_future_realized_r_proxy_1h_avg" in header
+    assert "a3_after_a2_future_fee_positive_1h_rate" in header
     assert "a3_structural_risk_u_avg" in header
-    assert "a3_after_a2_structural_realized_r_proxy_1h_avg" in header
+    assert "a3_after_a2_future_structural_realized_r_proxy_1h_avg" in header
 
 
 def test_zone_truth_marks_reaction_event_outside_kline_range(tmp_path):
@@ -169,8 +169,8 @@ def test_zone_truth_marks_reaction_event_outside_kline_range(tmp_path):
         row = next(csv.DictReader(f))
 
     assert row["reaction_event_ts_outside_kline_range"] == "True"
-    assert row["is_complete_15m"] == "False"
-    assert row["mfe_15m_u"] == "0.0"
+    assert row["is_complete_15m_future"] == "False"
+    assert row["mfe_15m_u_future"] == "0.0"
     assert summary["reaction_events_outside_kline_range_count"] == 1
 
 

@@ -14,7 +14,8 @@ from src.research.a1_edge.schema import parse_bool, parse_float
 
 
 DEFAULT_WINDOWS_SEC = (900, 3600, 14400)
-A3_PREVIEW_BREAKOUT_WINDOW_SEC = 3600
+A3_FUTURE_BREAKOUT_WINDOW_SEC = 3600
+A3_PREVIEW_BREAKOUT_WINDOW_SEC = A3_FUTURE_BREAKOUT_WINDOW_SEC
 WINDOW_LABELS = {
     900: "15m",
     3600: "1h",
@@ -56,17 +57,17 @@ class ZoneForwardMetricsCalculator:
         for window_sec in self.windows_sec:
             label = WINDOW_LABELS.get(int(window_sec), f"{int(window_sec)}s")
             metric = compute_zone_forward_metric(result, bars, int(window_sec))
-            result[f"mfe_{label}_u"] = metric["mfe_u"]
-            result[f"mae_{label}_u"] = metric["mae_u"]
-            result[f"end_{label}_u"] = metric["end_u"]
-            result[f"is_complete_{label}"] = metric["is_complete"]
+            result[f"mfe_{label}_u_future"] = metric["mfe_u"]
+            result[f"mae_{label}_u_future"] = metric["mae_u"]
+            result[f"end_{label}_u_future"] = metric["end_u"]
+            result[f"is_complete_{label}_future"] = metric["is_complete"]
 
-        result.update(compute_a3_preview_breakout(result, bars))
+        result.update(compute_a3_future_breakout(result, bars))
         result.update(compute_a3_structural_proxy_metrics(result, bars))
         result.update(compute_a2_fee_metrics(result))
         result.update(compute_a2_pre_ignition_metrics(result, bars))
-        result["a3_preview_net_mfe_1h_bucket"] = bucket_a3_net_mfe_1h(result)
-        result["a3_preview_realized_r_proxy_1h_bucket"] = bucket_a3_realized_r_1h(result)
+        result["a3_future_net_mfe_1h_bucket"] = bucket_a3_net_mfe_1h(result)
+        result["a3_future_realized_r_proxy_1h_bucket"] = bucket_a3_realized_r_1h(result)
         return result
 
 
@@ -226,29 +227,29 @@ def _volume_value(bar: Mapping[str, Any]) -> float:
     return 0.0
 
 
-def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
-    """Offline A3 watch preview only; not a runtime signal."""
+def compute_a3_future_breakout(zone: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
+    """Future A3 quality preview only; not a runtime signal."""
     default = {
-        "a3_preview_breakout_raw_flag": False,
-        "a3_preview_breakout_raw_latency_sec": 0.0,
-        "a3_preview_breakout_direction": "UNKNOWN",
-        "a3_preview_breakout_threshold_u": 0.0,
-        "a3_preview_breakout_price": 0.0,
-        "a3_preview_max_extension_15m_u": 0.0,
-        "a3_preview_max_extension_1h_u": 0.0,
-        "a3_preview_latency_bucket": "NO_IGNITION",
-        "a3_preview_entry_ts": 0.0, "a3_preview_entry_price": 0.0, "a3_preview_entry_time_utc": "",
-        "a3_preview_risk_u": 0.0, "a3_preview_fee_u": 0.0, "a3_preview_fee_share_r": 0.0,
-        "a3_preview_net_mfe_15m_r": 0.0, "a3_preview_net_mae_15m_r": 0.0,
-        "a3_preview_net_mfe_1h_r": 0.0, "a3_preview_net_mae_1h_r": 0.0,
-        "a3_preview_first_hit_1r_15m": False, "a3_preview_first_hit_1r_1h": False,
-        "a3_preview_realized_r_proxy_15m": 0.0, "a3_preview_realized_r_proxy_1h": 0.0,
-        "a3_preview_realized_outcome_15m": "NO_BREAKOUT", "a3_preview_realized_outcome_1h": "NO_BREAKOUT",
-        "a3_preview_breakout_volume": 0.0, "a3_preview_volume_median_20": 0.0, "a3_preview_volume_boost": 0.0,
-        "a3_preview_body_strength": 0.0, "a3_preview_breakout_strength_r": 0.0,
-        "a3_preview_persistence_3m_flag": False, "a3_preview_persistence_5m_flag": False,
-        "a3_preview_no_quick_return_3m_flag": False, "a3_preview_no_quick_return_5m_flag": False,
-        "a3_preview_ignition_quality": "NO_IGNITION",
+        "a3_future_breakout_seen_flag": False,
+        "a3_future_breakout_latency_sec": 0.0,
+        "a3_future_breakout_direction": "UNKNOWN",
+        "a3_future_breakout_threshold_u": 0.0,
+        "a3_future_breakout_price": 0.0,
+        "a3_future_max_extension_15m_u": 0.0,
+        "a3_future_max_extension_1h_u": 0.0,
+        "a3_future_latency_bucket": "NO_IGNITION",
+        "a3_future_breakout_entry_ts": 0.0, "a3_future_breakout_entry_price": 0.0, "a3_future_breakout_entry_time_utc": "",
+        "a3_future_risk_u": 0.0, "a3_future_fee_u": 0.0, "a3_future_fee_share_r": 0.0,
+        "a3_future_net_mfe_15m_r": 0.0, "a3_future_net_mae_15m_r": 0.0,
+        "a3_future_net_mfe_1h_r": 0.0, "a3_future_net_mae_1h_r": 0.0,
+        "a3_future_first_hit_1r_15m": False, "a3_future_first_hit_1r_1h": False,
+        "a3_future_realized_r_proxy_15m": 0.0, "a3_future_realized_r_proxy_1h": 0.0,
+        "a3_future_realized_outcome_15m": "NO_BREAKOUT", "a3_future_realized_outcome_1h": "NO_BREAKOUT",
+        "a3_future_breakout_volume": 0.0, "a3_future_volume_median_20": 0.0, "a3_future_volume_boost": 0.0,
+        "a3_future_body_strength": 0.0, "a3_future_breakout_strength_r": 0.0,
+        "a3_future_persistence_3m_flag": False, "a3_future_persistence_5m_flag": False,
+        "a3_future_no_quick_return_3m_flag": False, "a3_future_no_quick_return_5m_flag": False,
+        "a3_future_ignition_quality": "NO_IGNITION",
     }
     anchor_ts, _anchor_source = _resolve_event_ts(zone)
     direction = str(zone.get("direction") or "").upper()
@@ -272,12 +273,12 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
     if start_idx >= len(bars):
         return {
             **default,
-            "a3_preview_breakout_direction": direction,
-            "a3_preview_breakout_threshold_u": round(threshold_u, 8),
+            "a3_future_breakout_direction": direction,
+            "a3_future_breakout_threshold_u": round(threshold_u, 8),
         }
 
     breakout_price = zone_high + threshold_u if direction == "BUY" else zone_low - threshold_u
-    window_end_idx = bisect_right(timestamps, anchor_ts + A3_PREVIEW_BREAKOUT_WINDOW_SEC)
+    window_end_idx = bisect_right(timestamps, anchor_ts + A3_FUTURE_BREAKOUT_WINDOW_SEC)
     future = bars[start_idx:window_end_idx]
     future_window = future
     breakout_ts = 0.0
@@ -290,17 +291,17 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
             break
 
     out = {
-        "a3_preview_breakout_raw_flag": breakout_ts > 0,
-        "a3_preview_breakout_raw_latency_sec": round(max(0.0, breakout_ts - anchor_ts), 6) if breakout_ts > 0 else 0.0,
-        "a3_preview_breakout_direction": direction,
-        "a3_preview_breakout_threshold_u": round(threshold_u, 8),
-        "a3_preview_breakout_price": round(breakout_price, 8),
-        "a3_preview_max_extension_15m_u": _max_zone_extension(zone_low, zone_high, direction, future, anchor_ts, 900),
-        "a3_preview_max_extension_1h_u": _max_zone_extension(zone_low, zone_high, direction, future, anchor_ts, 3600),
+        "a3_future_breakout_seen_flag": breakout_ts > 0,
+        "a3_future_breakout_latency_sec": round(max(0.0, breakout_ts - anchor_ts), 6) if breakout_ts > 0 else 0.0,
+        "a3_future_breakout_direction": direction,
+        "a3_future_breakout_threshold_u": round(threshold_u, 8),
+        "a3_future_breakout_price": round(breakout_price, 8),
+        "a3_future_max_extension_15m_u": _max_zone_extension(zone_low, zone_high, direction, future, anchor_ts, 900),
+        "a3_future_max_extension_1h_u": _max_zone_extension(zone_low, zone_high, direction, future, anchor_ts, 3600),
     }
-    out["a3_preview_latency_bucket"] = _latency_bucket(out["a3_preview_breakout_raw_flag"], out["a3_preview_breakout_raw_latency_sec"])
-    if not out["a3_preview_breakout_raw_flag"]:
-        out["a3_preview_ignition_quality"] = "NO_IGNITION"
+    out["a3_future_latency_bucket"] = _latency_bucket(out["a3_future_breakout_seen_flag"], out["a3_future_breakout_latency_sec"])
+    if not out["a3_future_breakout_seen_flag"]:
+        out["a3_future_ignition_quality"] = "NO_IGNITION"
         return {**default, **out}
     entry_ts = breakout_ts
     entry_price = breakout_price
@@ -333,11 +334,16 @@ def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, fl
     q3 = (min(float(b["low"]) for b in post[:3])>=zone_high) if direction=="BUY" and len(post)>=1 else ((max(float(b["high"]) for b in post[:3])<=zone_low) if len(post)>=1 else False)
     q5 = (min(float(b["low"]) for b in post[:5])>=zone_high) if direction=="BUY" and len(post)>=1 else ((max(float(b["high"]) for b in post[:5])<=zone_low) if len(post)>=1 else False)
     net_mfe15 = mfe15/risk_u-fee_share_r; net_mae15 = mae15/risk_u-fee_share_r
-    if net_mfe15>=1.0 and net_mae15>-1.0 and p3 and q3 and out["a3_preview_latency_bucket"] in {"FAST_IGNITION","NORMAL_IGNITION"}: iq="STRONG_IGNITION"
-    elif net_mfe15>=0.5 and net_mae15>-1.5 and p3 and out["a3_preview_latency_bucket"]!="OUT_OF_WINDOW": iq="MEDIUM_IGNITION"
+    if net_mfe15>=1.0 and net_mae15>-1.0 and p3 and q3 and out["a3_future_latency_bucket"] in {"FAST_IGNITION","NORMAL_IGNITION"}: iq="STRONG_IGNITION"
+    elif net_mfe15>=0.5 and net_mae15>-1.5 and p3 and out["a3_future_latency_bucket"]!="OUT_OF_WINDOW": iq="MEDIUM_IGNITION"
     else: iq="WEAK_IGNITION"
-    out.update({"a3_preview_entry_ts":entry_ts,"a3_preview_entry_price":round(entry_price,8),"a3_preview_entry_time_utc":_local_time(entry_ts,'UTC'),"a3_preview_risk_u":round(risk_u,8),"a3_preview_fee_u":round(fee_u,8),"a3_preview_fee_share_r":round(fee_share_r,8),"a3_preview_net_mfe_15m_r":round(net_mfe15,8),"a3_preview_net_mae_15m_r":round(net_mae15,8),"a3_preview_net_mfe_1h_r":round(mfe1h/risk_u-fee_share_r,8),"a3_preview_net_mae_1h_r":round(mae1h/risk_u-fee_share_r,8),"a3_preview_first_hit_1r_15m":h15,"a3_preview_first_hit_1r_1h":h1h,"a3_preview_realized_r_proxy_15m":round(r15,8),"a3_preview_realized_r_proxy_1h":round(r1h,8),"a3_preview_realized_outcome_15m":o15,"a3_preview_realized_outcome_1h":o1h,"a3_preview_breakout_volume":round(bvol,8),"a3_preview_volume_median_20":round(med20,8),"a3_preview_volume_boost":round(vol_boost,8),"a3_preview_body_strength":round(body,8),"a3_preview_breakout_strength_r":round(breakout_strength,8),"a3_preview_persistence_3m_flag":bool(p3),"a3_preview_persistence_5m_flag":bool(p5),"a3_preview_no_quick_return_3m_flag":bool(q3),"a3_preview_no_quick_return_5m_flag":bool(q5),"a3_preview_ignition_quality":iq})
+    out.update({"a3_future_breakout_entry_ts":entry_ts,"a3_future_breakout_entry_price":round(entry_price,8),"a3_future_breakout_entry_time_utc":_local_time(entry_ts,'UTC'),"a3_future_risk_u":round(risk_u,8),"a3_future_fee_u":round(fee_u,8),"a3_future_fee_share_r":round(fee_share_r,8),"a3_future_net_mfe_15m_r":round(net_mfe15,8),"a3_future_net_mae_15m_r":round(net_mae15,8),"a3_future_net_mfe_1h_r":round(mfe1h/risk_u-fee_share_r,8),"a3_future_net_mae_1h_r":round(mae1h/risk_u-fee_share_r,8),"a3_future_first_hit_1r_15m":h15,"a3_future_first_hit_1r_1h":h1h,"a3_future_realized_r_proxy_15m":round(r15,8),"a3_future_realized_r_proxy_1h":round(r1h,8),"a3_future_realized_outcome_15m":o15,"a3_future_realized_outcome_1h":o1h,"a3_future_breakout_volume":round(bvol,8),"a3_future_volume_median_20":round(med20,8),"a3_future_volume_boost":round(vol_boost,8),"a3_future_body_strength":round(body,8),"a3_future_breakout_strength_r":round(breakout_strength,8),"a3_future_persistence_3m_flag":bool(p3),"a3_future_persistence_5m_flag":bool(p5),"a3_future_no_quick_return_3m_flag":bool(q3),"a3_future_no_quick_return_5m_flag":bool(q5),"a3_future_ignition_quality":iq})
     return {**default, **out}
+
+
+def compute_a3_preview_breakout(zone: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
+    """Deprecated alias. Returns V7.3 a3_future_* fields."""
+    return compute_a3_future_breakout(zone, bars)
 
 
 def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict[str, float]]) -> dict[str, Any]:
@@ -346,22 +352,22 @@ def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict
         "a3_structural_risk_u": 0.0,
         "a3_structural_fee_u": 0.0,
         "a3_structural_fee_share_r": 0.0,
-        "a3_structural_net_mfe_15m_r": 0.0,
-        "a3_structural_net_mae_15m_r": 0.0,
-        "a3_structural_net_mfe_1h_r": 0.0,
-        "a3_structural_net_mae_1h_r": 0.0,
-        "a3_structural_realized_r_proxy_15m": 0.0,
-        "a3_structural_realized_r_proxy_1h": 0.0,
-        "a3_structural_realized_outcome_15m": "NO_BREAKOUT",
-        "a3_structural_realized_outcome_1h": "NO_BREAKOUT",
-        "a3_structural_fee_positive_1h": False,
-        "a3_structural_realized_r_proxy_1h_bucket": "NO_BREAKOUT",
+        "a3_structural_net_mfe_15m_r_future": 0.0,
+        "a3_structural_net_mae_15m_r_future": 0.0,
+        "a3_structural_net_mfe_1h_r_future": 0.0,
+        "a3_structural_net_mae_1h_r_future": 0.0,
+        "a3_structural_realized_r_proxy_15m_future": 0.0,
+        "a3_structural_realized_r_proxy_1h_future": 0.0,
+        "a3_structural_realized_outcome_15m_future": "NO_BREAKOUT",
+        "a3_structural_realized_outcome_1h_future": "NO_BREAKOUT",
+        "a3_structural_fee_positive_1h_future": False,
+        "a3_structural_realized_r_proxy_1h_bucket_future": "NO_BREAKOUT",
     }
-    if not parse_bool(zone.get("a3_preview_breakout_raw_flag")):
+    if not parse_bool(zone.get("a3_future_breakout_seen_flag")):
         return default
-    direction = str(zone.get("direction") or zone.get("a3_preview_breakout_direction") or "").upper()
-    entry_price = parse_float(zone.get("a3_preview_entry_price"))
-    entry_ts = parse_float(zone.get("a3_preview_entry_ts"))
+    direction = str(zone.get("direction") or zone.get("a3_future_breakout_direction") or "").upper()
+    entry_price = parse_float(zone.get("a3_future_breakout_entry_price"))
+    entry_ts = parse_float(zone.get("a3_future_breakout_entry_ts"))
     if direction not in {"BUY", "SELL"} or entry_price <= 0 or entry_ts <= 0:
         return default
 
@@ -398,7 +404,7 @@ def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict
         structural_risk_u = structural_stop - entry_price
 
     if structural_risk_u <= 0:
-        structural_risk_u = max(parse_float(zone.get("a3_preview_risk_u")), abs(zone_high - zone_low), 1.0)
+        structural_risk_u = max(parse_float(zone.get("a3_future_risk_u")), abs(zone_high - zone_low), 1.0)
         structural_stop = entry_price - structural_risk_u if direction == "BUY" else entry_price + structural_risk_u
         reason = _append_reason(reason, "FALLBACK_RISK")
 
@@ -424,18 +430,18 @@ def compute_a3_structural_proxy_metrics(zone: Mapping[str, Any], bars: list[dict
         "a3_structural_risk_u": round(structural_risk_u, 8),
         "a3_structural_fee_u": round(fee_u, 8),
         "a3_structural_fee_share_r": round(fee_share_r, 8),
-        "a3_structural_net_mfe_15m_r": round(mfe15 / structural_risk_u - fee_share_r, 8),
-        "a3_structural_net_mae_15m_r": round(mae15 / structural_risk_u - fee_share_r, 8),
-        "a3_structural_net_mfe_1h_r": round(mfe1h / structural_risk_u - fee_share_r, 8),
-        "a3_structural_net_mae_1h_r": round(mae1h / structural_risk_u - fee_share_r, 8),
-        "a3_structural_realized_r_proxy_15m": round(r15, 8),
-        "a3_structural_realized_r_proxy_1h": round(r1h, 8),
-        "a3_structural_realized_outcome_15m": o15,
-        "a3_structural_realized_outcome_1h": o1h,
-        "a3_structural_fee_positive_1h": r1h > 0,
+        "a3_structural_net_mfe_15m_r_future": round(mfe15 / structural_risk_u - fee_share_r, 8),
+        "a3_structural_net_mae_15m_r_future": round(mae15 / structural_risk_u - fee_share_r, 8),
+        "a3_structural_net_mfe_1h_r_future": round(mfe1h / structural_risk_u - fee_share_r, 8),
+        "a3_structural_net_mae_1h_r_future": round(mae1h / structural_risk_u - fee_share_r, 8),
+        "a3_structural_realized_r_proxy_15m_future": round(r15, 8),
+        "a3_structural_realized_r_proxy_1h_future": round(r1h, 8),
+        "a3_structural_realized_outcome_15m_future": o15,
+        "a3_structural_realized_outcome_1h_future": o1h,
+        "a3_structural_fee_positive_1h_future": r1h > 0,
     }
-    out["a3_structural_realized_r_proxy_1h_bucket"] = bucket_a3_structural_realized_r_1h(
-        {**zone, **out, "a3_preview_breakout_raw_flag": True}
+    out["a3_structural_realized_r_proxy_1h_bucket_future"] = bucket_a3_structural_realized_r_1h(
+        {**zone, **out, "a3_future_breakout_seen_flag": True}
     )
     out["structural_proxy_reason"] = reason
     return {**default, **out}
@@ -499,7 +505,8 @@ def compute_a2_fee_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
     fee_share=fee_u/risk_u
     out={"a2_fee_reference_price":round(ref,8),"a2_risk_u":round(risk_u,8),"a2_fee_u":round(fee_u,8),"a2_fee_share_r":round(fee_share,8)}
     for lbl in ("15m","1h","4h"):
-        mfe=parse_float(row.get(f"mfe_{lbl}_u")); mae=parse_float(row.get(f"mae_{lbl}_u"))
+        mfe=parse_float(row.get(f"mfe_{lbl}_u_future"))
+        mae=parse_float(row.get(f"mae_{lbl}_u_future"))
         out[f"a2_net_mfe_{lbl}_r"]=round(mfe/risk_u-fee_share,8)
         out[f"a2_net_mae_{lbl}_r"]=round(mae/risk_u-fee_share,8)
     out["a2_net_hit_1r_15m"]=out["a2_net_mfe_15m_r"]>=1.0
@@ -509,12 +516,12 @@ def compute_a2_fee_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def compute_a2_pre_ignition_metrics(row: Mapping[str, Any], bars:list[dict[str,float]])->dict[str,Any]:
     start=next((parse_float(row.get(n)) for n in ("reaction_event_ts","a2_state_ts","frozen_ts","best_pie_ts") if parse_float(row.get(n))>0),0.0)
-    if start<=0 or not bars: return {"a2_pre_ignition_bar_count":0,"a2_pre_ignition_window_sec":0.0,"a2_pre_ignition_range_u":0.0,"a2_pre_ignition_range_ratio":0.0,"a2_pre_ignition_zone_stay_ratio":0.0,"a2_pre_ignition_compression_state":"INSUFFICIENT_BARS"}
+    if start<=0 or not bars: return {"a2_pre_ignition_bar_count_future":0,"a2_pre_ignition_window_sec_future":0.0,"a2_pre_ignition_range_u_future":0.0,"a2_pre_ignition_range_ratio_future":0.0,"a2_pre_ignition_zone_stay_ratio_future":0.0,"a2_pre_ignition_compression_state_future":"INSUFFICIENT_BARS"}
     end=min(start+3600,float(bars[-1]["timestamp"]))
     timestamps = _bar_timestamps(bars)
     window = _bars_between(bars, timestamps, start, end)
     cnt=len(window); risk=max(parse_float(row.get("a2_risk_u")),1.0)
-    if cnt==0: return {"a2_pre_ignition_bar_count":0,"a2_pre_ignition_window_sec":max(0,end-start),"a2_pre_ignition_range_u":0.0,"a2_pre_ignition_range_ratio":0.0,"a2_pre_ignition_zone_stay_ratio":0.0,"a2_pre_ignition_compression_state":"INSUFFICIENT_BARS"}
+    if cnt==0: return {"a2_pre_ignition_bar_count_future":0,"a2_pre_ignition_window_sec_future":max(0,end-start),"a2_pre_ignition_range_u_future":0.0,"a2_pre_ignition_range_ratio_future":0.0,"a2_pre_ignition_zone_stay_ratio_future":0.0,"a2_pre_ignition_compression_state_future":"INSUFFICIENT_BARS"}
     rng=max(float(b["high"]) for b in window)-min(float(b["low"]) for b in window); ratio=rng/risk
     zl=parse_float(row.get("zone_lower")); zh=parse_float(row.get("zone_upper")); zle=zl-0.5*risk; zhe=zh+0.5*risk
     stay=sum(1 for b in window if zle<=float(b["close"])<=zhe)/cnt
@@ -523,19 +530,19 @@ def compute_a2_pre_ignition_metrics(row: Mapping[str, Any], bars:list[dict[str,f
     elif cnt>=5 and ratio<=5.0 and stay>=0.4: st="PRE_IGNITION_RANGING"
     elif cnt>=3 and ratio>5.0: st="PRE_IGNITION_EXPANDING"
     else: st="UNKNOWN"
-    return {"a2_pre_ignition_bar_count":cnt,"a2_pre_ignition_window_sec":round(max(0,end-start),6),"a2_pre_ignition_range_u":round(rng,8),"a2_pre_ignition_range_ratio":round(ratio,8),"a2_pre_ignition_zone_stay_ratio":round(stay,8),"a2_pre_ignition_compression_state":st}
+    return {"a2_pre_ignition_bar_count_future":cnt,"a2_pre_ignition_window_sec_future":round(max(0,end-start),6),"a2_pre_ignition_range_u_future":round(rng,8),"a2_pre_ignition_range_ratio_future":round(ratio,8),"a2_pre_ignition_zone_stay_ratio_future":round(stay,8),"a2_pre_ignition_compression_state_future":st}
 
 def bucket_a3_net_mfe_1h(row):
-    if not parse_bool(row.get("a3_preview_breakout_raw_flag")): return "NO_BREAKOUT"
-    v=parse_float(row.get("a3_preview_net_mfe_1h_r"))
+    if not parse_bool(row.get("a3_future_breakout_seen_flag")): return "NO_BREAKOUT"
+    v=parse_float(row.get("a3_future_net_mfe_1h_r"))
     if v<0:return "NET_MFE_LT_0"
     if v<1:return "NET_MFE_0_TO_1R"
     if v<2:return "NET_MFE_1R_TO_2R"
     return "NET_MFE_GE_2R"
 
 def bucket_a3_realized_r_1h(row):
-    if not parse_bool(row.get("a3_preview_breakout_raw_flag")): return "NO_BREAKOUT"
-    v=parse_float(row.get("a3_preview_realized_r_proxy_1h"))
+    if not parse_bool(row.get("a3_future_breakout_seen_flag")): return "NO_BREAKOUT"
+    v=parse_float(row.get("a3_future_realized_r_proxy_1h"))
     if v<-1:return "REALIZED_LT_-1R"
     if v<0:return "REALIZED_-1R_TO_0"
     if v<1:return "REALIZED_0_TO_1R"
@@ -543,9 +550,9 @@ def bucket_a3_realized_r_1h(row):
 
 
 def bucket_a3_structural_realized_r_1h(row):
-    if not parse_bool(row.get("a3_preview_breakout_raw_flag")):
+    if not parse_bool(row.get("a3_future_breakout_seen_flag")):
         return "NO_BREAKOUT"
-    v = parse_float(row.get("a3_structural_realized_r_proxy_1h"))
+    v = parse_float(row.get("a3_structural_realized_r_proxy_1h_future"))
     if v < -1:
         return "STRUCT_REALIZED_LT_-1R"
     if v < 0:

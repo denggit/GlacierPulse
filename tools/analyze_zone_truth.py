@@ -34,6 +34,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulator-input-scope", default=str(getattr(cfg, "V7_3A_SIMULATOR_INPUT_SCOPE", "ICEBERG_ONLY")).lower(), choices=["iceberg_only", "all"])
     parser.add_argument("--simulator-include-unavailable", default=str(getattr(cfg, "V7_3A_SIMULATOR_INCLUDE_UNAVAILABLE", False)).lower())
     parser.add_argument("--simulator-max-trades", type=int, default=int(getattr(cfg, "V7_3A_SIMULATOR_MAX_TRADES", 0)))
+    parser.add_argument("--enable-3a-rt-backtest", default=str(getattr(cfg, "V7_3A_RT_ENABLED", True)).lower())
+    parser.add_argument("--a2-rt-max-age-sec", type=float, default=float(getattr(cfg, "A2_RT_MAX_AGE_SEC", 900.0)))
+    parser.add_argument("--a2-rt-expiry-sweep-secs", default=",".join(str(x) for x in getattr(cfg, "A2_RT_EXPIRY_SWEEP_SECS", [180, 300, 600, 900, 1200, 1800])))
+    parser.add_argument("--a2-rt-min-quiet-sec", type=float, default=float(getattr(cfg, "A2_RT_MIN_QUIET_SEC", 3.0)))
+    parser.add_argument("--a2-rt-min-tick-count", type=int, default=int(getattr(cfg, "A2_RT_MIN_TICK_COUNT", 20)))
+    parser.add_argument("--a3-rt-target-model", default=str(getattr(cfg, "V7_3A_RT_TARGET_MODEL", "TARGET_FIXED_2R")))
+    parser.add_argument("--a3-rt-stop-model", default=str(getattr(cfg, "V7_3A_RT_STOP_MODEL", "STOP_STRUCTURAL_ZONE_V2")))
+    parser.add_argument("--a3-rt-next-tick-entry", default=str(getattr(cfg, "V7_3A_RT_NEXT_TICK_ENTRY", False)).lower())
+    parser.add_argument("--enable-no-future-audit", default=str(getattr(cfg, "V7_3A_RT_ENABLE_NO_FUTURE_AUDIT", True)).lower())
     return parser
 
 
@@ -70,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
         simulator_input_scope=args.simulator_input_scope,
         simulator_include_unavailable=_parse_bool(args.simulator_include_unavailable),
         simulator_max_trades=args.simulator_max_trades,
+        enable_3a_rt_backtest=_parse_bool(args.enable_3a_rt_backtest),
+        a2_rt_max_age_sec=args.a2_rt_max_age_sec,
+        a2_rt_expiry_sweep_secs=_parse_int_list(args.a2_rt_expiry_sweep_secs),
+        a3_rt_target_model=args.a3_rt_target_model,
+        a3_rt_stop_model=args.a3_rt_stop_model,
+        a3_rt_next_tick_entry=_parse_bool(args.a3_rt_next_tick_entry),
+        enable_no_future_audit=_parse_bool(args.enable_no_future_audit),
     )
     summary = analyzer.analyze_files(phase1_path, reactions_path, kline_path, args.out)
     print(
@@ -81,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         f"simulator_enabled={summary.get('simulator_enabled')} "
         f"simulator_input_scope={summary.get('simulator_input_scope')} "
         f"simulator_written_trade_count={summary.get('simulator_written_trade_count')} "
+        f"rt_3a_enabled={summary.get('runtime_3a_report_summary', {}).get('runtime_3a_strategy_version', '')} "
         f"out={args.out}"
     )
     return 0
@@ -88,6 +105,16 @@ def main(argv: list[str] | None = None) -> int:
 
 def _parse_bool(value: object) -> bool:
     return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _parse_int_list(value: object) -> list[int]:
+    result: list[int] = []
+    for part in str(value or "").split(","):
+        try:
+            result.append(int(part.strip()))
+        except ValueError:
+            continue
+    return result or [180, 300, 600, 900, 1200, 1800]
 
 
 if __name__ == "__main__":

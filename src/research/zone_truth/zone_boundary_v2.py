@@ -309,7 +309,7 @@ def _avg(rows: list[Mapping[str, Any]], field: str) -> float:
 
 def _risk_from_stop(row: Mapping[str, Any], direction: str) -> float:
     stop = parse_float(row.get("zone_v2_structural_stop_price"))
-    entry = parse_float(row.get("a3_preview_entry_price"), parse_float(row.get("zone_mid")))
+    entry = parse_float(row.get("a3_future_breakout_entry_price"), parse_float(row.get("zone_mid")))
     if stop <= 0 or entry <= 0:
         return 0.0
     if direction == "BUY":

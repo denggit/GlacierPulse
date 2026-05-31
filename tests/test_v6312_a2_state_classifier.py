@@ -336,15 +336,15 @@ def test_no_future_gate_fields_do_not_change_with_forward_metrics():
         "zone_lower": 99,
         "zone_upper": 101,
         "zone_width": 2,
-        "is_complete_15m": True,
+        "is_complete_15m_future": True,
     }
-    quiet = _classify({**base, "mfe_15m_u": 1, "mae_15m_u": -1})
-    volatile = _classify({**base, "mfe_15m_u": 20, "mae_15m_u": -10})
+    quiet = _classify({**base, "mfe_15m_u_future": 1, "mae_15m_u_future": -1})
+    volatile = _classify({**base, "mfe_15m_u_future": 20, "mae_15m_u_future": -10})
 
     assert quiet["a2_observe_priority"] == volatile["a2_observe_priority"]
     assert quiet["a2_risk_tier"] == volatile["a2_risk_tier"]
     assert quiet["a2_ready_for_a3_watch_flag"] == volatile["a2_ready_for_a3_watch_flag"]
-    assert quiet["a2_compression_state"] != volatile["a2_compression_state"]
+    assert quiet["a2_compression_state_future"] != volatile["a2_compression_state_future"]
 
 
 def test_compression_requires_complete_15m_forward_window():
@@ -356,9 +356,9 @@ def test_compression_requires_complete_15m_forward_window():
             "zone_lower": 99,
             "zone_upper": 101,
             "zone_width": 2,
-            "mfe_15m_u": 0,
-            "mae_15m_u": 0,
-            "is_complete_15m": False,
+            "mfe_15m_u_future": 0,
+            "mae_15m_u_future": 0,
+            "is_complete_15m_future": False,
         }
     )
     complete = _classify(
@@ -369,15 +369,15 @@ def test_compression_requires_complete_15m_forward_window():
             "zone_lower": 99,
             "zone_upper": 101,
             "zone_width": 2,
-            "mfe_15m_u": 1,
-            "mae_15m_u": -1,
-            "is_complete_15m": True,
+            "mfe_15m_u_future": 1,
+            "mae_15m_u_future": -1,
+            "is_complete_15m_future": True,
         }
     )
 
-    assert incomplete["a2_compression_state"] == "INSUFFICIENT_FUTURE_DATA"
-    assert incomplete["a2_compression_reason"] == "incomplete_15m_forward_window"
-    assert complete["a2_compression_state"] == "COMPRESSING"
+    assert incomplete["a2_compression_state_future"] == "INSUFFICIENT_FUTURE_DATA"
+    assert incomplete["a2_compression_reason_future"] == "incomplete_15m_forward_window"
+    assert complete["a2_compression_state_future"] == "COMPRESSING"
 
 
 def test_a3_after_a2_gate_for_latency_and_ignition_quality():
@@ -385,17 +385,17 @@ def test_a3_after_a2_gate_for_latency_and_ignition_quality():
         {
             "a2_pre_pool_eligible": True,
             "a2_book_depth_state": "BOOK_DEPTH_MISSING",
-            "a3_preview_breakout_raw_flag": True,
-            "a3_preview_breakout_raw_latency_sec": 60,
-            "a3_preview_ignition_quality": "STRONG_IGNITION",
+            "a3_future_breakout_seen_flag": True,
+            "a3_future_breakout_latency_sec": 60,
+            "a3_future_ignition_quality": "STRONG_IGNITION",
         }
     )
-    assert blocked["a3_preview_breakout_after_a2_flag"] is False
-    assert blocked["a3_preview_latency_bucket"] == "NO_IGNITION"
-    assert blocked["a3_preview_ignition_quality"] == "NO_IGNITION"
-    assert blocked["a3_after_a2_realized_r_proxy_1h"] == 0.0
-    assert blocked["a3_after_a2_realized_outcome_1h"] == "NO_BREAKOUT"
-    assert blocked["a3_after_a2_fee_positive_1h"] is False
+    assert blocked["a3_future_breakout_after_a2_flag"] is False
+    assert blocked["a3_future_latency_bucket"] == "NO_IGNITION"
+    assert blocked["a3_future_ignition_quality"] == "NO_IGNITION"
+    assert blocked["a3_after_a2_future_realized_r_proxy_1h"] == 0.0
+    assert blocked["a3_after_a2_future_realized_outcome_1h"] == "NO_BREAKOUT"
+    assert blocked["a3_after_a2_future_fee_positive_1h"] is False
 
     ready = _classify(
         {
@@ -403,19 +403,19 @@ def test_a3_after_a2_gate_for_latency_and_ignition_quality():
             "has_clean_hold": True,
             "a2_book_depth_state": "BOOK_DEPTH_VALID",
             "a2_context_alignment": "ALIGNED",
-            "a3_preview_breakout_raw_flag": True,
-            "a3_preview_breakout_raw_latency_sec": 60,
-            "a3_preview_net_mfe_15m_r": 0.8,
-            "a3_preview_net_mae_15m_r": -0.5,
-            "a3_preview_persistence_3m_flag": True,
-            "a3_preview_no_quick_return_3m_flag": False,
-            "a3_preview_ignition_quality": "WEAK_IGNITION",
-            "a3_preview_realized_r_proxy_1h": 0.7,
-            "a3_preview_realized_outcome_1h": "TARGET_1R_FIRST",
+            "a3_future_breakout_seen_flag": True,
+            "a3_future_breakout_latency_sec": 60,
+            "a3_future_net_mfe_15m_r": 0.8,
+            "a3_future_net_mae_15m_r": -0.5,
+            "a3_future_persistence_3m_flag": True,
+            "a3_future_no_quick_return_3m_flag": False,
+            "a3_future_ignition_quality": "WEAK_IGNITION",
+            "a3_future_realized_r_proxy_1h": 0.7,
+            "a3_future_realized_outcome_1h": "TARGET_1R_FIRST",
         }
     )
-    assert ready["a3_preview_breakout_after_a2_flag"] is True
-    assert ready["a3_preview_latency_bucket"] == "FAST_IGNITION"
-    assert ready["a3_preview_ignition_quality"] != "NO_IGNITION"
-    assert ready["a3_after_a2_realized_r_proxy_1h"] == ready["a3_preview_realized_r_proxy_1h"]
-    assert ready["a3_after_a2_realized_outcome_1h"] == ready["a3_preview_realized_outcome_1h"]
+    assert ready["a3_future_breakout_after_a2_flag"] is True
+    assert ready["a3_future_latency_bucket"] == "FAST_IGNITION"
+    assert ready["a3_future_ignition_quality"] != "NO_IGNITION"
+    assert ready["a3_after_a2_future_realized_r_proxy_1h"] == ready["a3_future_realized_r_proxy_1h"]
+    assert ready["a3_after_a2_future_realized_outcome_1h"] == ready["a3_future_realized_outcome_1h"]

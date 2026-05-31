@@ -39,6 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulator-input-scope", choices=["iceberg_only", "all"], default=None)
     parser.add_argument("--simulator-include-unavailable", choices=["true", "false"], default=None)
     parser.add_argument("--simulator-max-trades", type=int, default=None)
+    parser.add_argument("--enable-3a-rt-backtest", choices=["true", "false"], default=None)
+    parser.add_argument("--a2-rt-max-age-sec", type=float, default=None)
+    parser.add_argument("--a2-rt-expiry-sweep-secs", default=None)
+    parser.add_argument("--a2-rt-min-quiet-sec", type=float, default=None)
+    parser.add_argument("--a2-rt-min-tick-count", type=int, default=None)
+    parser.add_argument("--a3-rt-target-model", default=None)
+    parser.add_argument("--a3-rt-stop-model", default=None)
+    parser.add_argument("--a3-rt-next-tick-entry", choices=["true", "false"], default=None)
+    parser.add_argument("--enable-no-future-audit", choices=["true", "false"], default=None)
     return parser
 
 
@@ -151,6 +160,24 @@ def main(argv: list[str] | None = None, runner: ReportRunner | None = None) -> i
         commands["zone_truth"].extend(["--simulator-include-unavailable", args.simulator_include_unavailable])
     if args.simulator_max_trades is not None:
         commands["zone_truth"].extend(["--simulator-max-trades", str(args.simulator_max_trades)])
+    if args.enable_3a_rt_backtest is not None:
+        commands["zone_truth"].extend(["--enable-3a-rt-backtest", args.enable_3a_rt_backtest])
+    if args.a2_rt_max_age_sec is not None:
+        commands["zone_truth"].extend(["--a2-rt-max-age-sec", str(args.a2_rt_max_age_sec)])
+    if args.a2_rt_expiry_sweep_secs is not None:
+        commands["zone_truth"].extend(["--a2-rt-expiry-sweep-secs", args.a2_rt_expiry_sweep_secs])
+    if args.a2_rt_min_quiet_sec is not None:
+        commands["zone_truth"].extend(["--a2-rt-min-quiet-sec", str(args.a2_rt_min_quiet_sec)])
+    if args.a2_rt_min_tick_count is not None:
+        commands["zone_truth"].extend(["--a2-rt-min-tick-count", str(args.a2_rt_min_tick_count)])
+    if args.a3_rt_target_model is not None:
+        commands["zone_truth"].extend(["--a3-rt-target-model", args.a3_rt_target_model])
+    if args.a3_rt_stop_model is not None:
+        commands["zone_truth"].extend(["--a3-rt-stop-model", args.a3_rt_stop_model])
+    if args.a3_rt_next_tick_entry is not None:
+        commands["zone_truth"].extend(["--a3-rt-next-tick-entry", args.a3_rt_next_tick_entry])
+    if args.enable_no_future_audit is not None:
+        commands["zone_truth"].extend(["--enable-no-future-audit", args.enable_no_future_audit])
     if "kline" in active_paths:
         commands["zone_truth"][6:6] = ["--kline", str(active_paths["kline"])]
     else:

@@ -142,10 +142,10 @@ CONTEXT_LABEL_FIELDS = [
     "near_local_15m_high_flag",
     "sweep_local_15m_low_flag",
     "sweep_local_15m_high_flag",
-    "post_sweep_reclaim_15m_post_event_flag",
-    "bars_to_sweep_reclaim_15m",
+    "future_sweep_reclaim_15m_future_flag",
+    "bars_to_sweep_reclaim_future_15m",
     "sweep_reclaim_level_15m",
-    "failed_auction_15m_post_event_flag",
+    "failed_auction_15m_future_flag",
     "sweep_magnitude_15m_u",
     "sweep_magnitude_15m_atr",
     "local_1h_low_12",
@@ -157,10 +157,10 @@ CONTEXT_LABEL_FIELDS = [
     "near_local_1h_high_flag",
     "sweep_local_1h_low_flag",
     "sweep_local_1h_high_flag",
-    "post_sweep_reclaim_1h_post_event_flag",
-    "bars_to_sweep_reclaim_1h",
+    "future_sweep_reclaim_1h_future_flag",
+    "bars_to_sweep_reclaim_future_1h",
     "sweep_reclaim_level_1h",
-    "failed_auction_1h_post_event_flag",
+    "failed_auction_1h_future_flag",
     "sweep_magnitude_1h_u",
     "sweep_magnitude_1h_atr",
     "near_local_structure_flag",
@@ -186,15 +186,15 @@ CONTEXT_LABEL_FIELDS = [
     "order_block_1h_fresh_flag",
     "vpsession_value_edge_side",
     "vpsession_outside_value_flag",
-    "vpsession_reclaim_value_post_event_flag",
-    "vpsession_reject_value_post_event_flag",
-    "vpsession_bars_to_reclaim",
+    "vpsession_reclaim_value_future_flag",
+    "vpsession_reject_value_future_flag",
+    "vpsession_bars_to_reclaim_future",
     "vpsession_reclaim_level",
     "vp24h_value_edge_side",
     "vp24h_outside_value_flag",
-    "vp24h_reclaim_value_post_event_flag",
-    "vp24h_reject_value_post_event_flag",
-    "vp24h_bars_to_reclaim",
+    "vp24h_reclaim_value_future_flag",
+    "vp24h_reject_value_future_flag",
+    "vp24h_bars_to_reclaim_future",
     "vp24h_reclaim_level",
     "a3_aggression_score",
     "a3_aggression_quality",
@@ -202,8 +202,8 @@ CONTEXT_LABEL_FIELDS = [
     "a3_range_expansion_ratio",
     "a3_volume_zscore",
     "a3_close_location_score",
-    "a3_no_quick_return_post_event_flag",
-    "a3_failed_quick_return_post_event_flag",
+    "a3_no_quick_return_future_flag",
+    "a3_failed_quick_return_future_flag",
     "a3_taker_imbalance_score",
     "a3_delta_flip_flag",
     "a3_cvd_pressure_score",
@@ -217,6 +217,34 @@ CONTEXT_LABEL_FIELDS = [
     "reload_wall_proxy_flag",
     "passive_absorption_proxy_flag",
 ]
+
+for _prefix in ("vp1h", "vp4h", "vp24h", "vpsession"):
+    CONTEXT_LABEL_FIELDS.extend(
+        [
+            f"{_prefix}_poc_rt",
+            f"{_prefix}_val_rt",
+            f"{_prefix}_vah_rt",
+            f"{_prefix}_hvn_above_rt",
+            f"{_prefix}_hvn_below_rt",
+            f"{_prefix}_lvn_above_rt",
+            f"{_prefix}_lvn_below_rt",
+            f"{_prefix}_distance_to_hvn_above_u_rt",
+            f"{_prefix}_distance_to_hvn_below_u_rt",
+            f"{_prefix}_distance_to_lvn_above_u_rt",
+            f"{_prefix}_distance_to_lvn_below_u_rt",
+            f"{_prefix}_a1_value_location_rt",
+            f"{_prefix}_a1_node_location_rt",
+            f"{_prefix}_a1_vp_setup_rt",
+            f"{_prefix}_a1_target_poc_price_rt",
+            f"{_prefix}_a1_target_hvn_price_rt",
+            f"{_prefix}_a1_target_value_edge_price_rt",
+            f"{_prefix}_a1_target_lvn_price_rt",
+            f"{_prefix}_a1_target_poc_distance_u_rt",
+            f"{_prefix}_a1_target_hvn_distance_u_rt",
+            f"{_prefix}_a1_target_value_edge_distance_u_rt",
+            f"{_prefix}_a1_target_lvn_distance_u_rt",
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -293,7 +321,7 @@ class _RollingVolumeProfile:
                         self.hist.pop(price_bin, None)
         self.cache = _compute_vp_cache(self.hist, self.value_area_ratio)
 
-    def labels(self, price: float, atr_15m: float, prefix: str, insufficient: bool = False) -> dict[str, Any]:
+    def labels(self, price: float, atr_15m: float, prefix: str, insufficient: bool = False, direction: str = "") -> dict[str, Any]:
         if insufficient:
             out = _vp_unavailable()
             out["location"] = "VP_INSUFFICIENT_DATA"
@@ -301,7 +329,10 @@ class _RollingVolumeProfile:
             out = dict(self.cache)
         near_threshold = max(self.bin_size * 2.0, atr_15m * 0.10) if atr_15m > 0 else self.bin_size * 2.0
         out.update(_classify_vp_price(out, price, near_threshold, self.bin_size, atr_15m))
-        return {f"{prefix}_{key}": value for key, value in out.items() if not str(key).startswith("_")}
+        labels = {f"{prefix}_{key}": value for key, value in out.items() if not str(key).startswith("_")}
+        rt_prefix = prefix[:-6] if prefix.endswith("_proxy") else prefix
+        labels.update(_directional_vp_rt_labels(out, price, near_threshold, rt_prefix, direction))
+        return labels
 
 
 class ContextCacheSimulator:
@@ -448,11 +479,11 @@ class ContextCacheSimulator:
         }
         labels.update(_boll_labels(self._boll_15m, price, "15m"))
         labels.update(_boll_labels(self._boll_1h, price, "1h"))
-        labels.update(self._vp1h.labels(price, self._atr_15m, "vp1h_proxy"))
-        labels.update(self._vp4h.labels(price, self._atr_15m, "vp4h_proxy"))
-        labels.update(self._vp24h.labels(price, self._atr_15m, "vp24h_proxy"))
+        labels.update(self._vp1h.labels(price, self._atr_15m, "vp1h_proxy", direction=direction))
+        labels.update(self._vp4h.labels(price, self._atr_15m, "vp4h_proxy", direction=direction))
+        labels.update(self._vp24h.labels(price, self._atr_15m, "vp24h_proxy", direction=direction))
         session_volume = parse_float(self._vpsession.cache.get("total_volume"))
-        labels.update(self._vpsession.labels(price, self._atr_15m, "vpsession_proxy", insufficient=session_volume <= 0))
+        labels.update(self._vpsession.labels(price, self._atr_15m, "vpsession_proxy", insufficient=session_volume <= 0, direction=direction))
         labels.update(_local_labels(self._local_15m, price, direction, self._atr_15m, "15m", 16))
         labels.update(_local_labels(self._local_1h, price, direction, self._atr_15m, "1h", 12))
         labels["near_local_structure_flag"] = bool(
@@ -895,6 +926,124 @@ def _nearest(price: float, values: Iterable[float]) -> float:
     return min(vals, key=lambda value: abs(price - value), default=0.0)
 
 
+def _nearest_above(price: float, values: Iterable[float]) -> float:
+    vals = [parse_float(v) for v in values if parse_float(v) >= price]
+    return min(vals, key=lambda value: value - price, default=0.0)
+
+
+def _nearest_below(price: float, values: Iterable[float]) -> float:
+    vals = [parse_float(v) for v in values if 0 < parse_float(v) <= price]
+    return max(vals, default=0.0)
+
+
+def _directional_vp_rt_labels(cache: Mapping[str, Any], price: float, threshold: float, prefix: str, direction: str) -> dict[str, Any]:
+    poc = parse_float(cache.get("poc"))
+    val = parse_float(cache.get("val"))
+    vah = parse_float(cache.get("vah"))
+    hvn_bins = list(cache.get("_hvn_bins") or [])
+    lvn_bins = list(cache.get("_lvn_bins") or [])
+    hvn_above = _nearest_above(price, hvn_bins)
+    hvn_below = _nearest_below(price, hvn_bins)
+    lvn_above = _nearest_above(price, lvn_bins)
+    lvn_below = _nearest_below(price, lvn_bins)
+    value_location = _a1_value_location(price, poc, val, vah, threshold)
+    node_location = _a1_node_location(price, poc, hvn_above, hvn_below, lvn_above, lvn_below, threshold)
+    setup = _a1_vp_setup(direction, value_location, node_location, price, hvn_above, hvn_below)
+    target_hvn = hvn_above if str(direction).upper() == "BUY" else hvn_below if str(direction).upper() == "SELL" else 0.0
+    target_lvn = lvn_above if str(direction).upper() == "BUY" else lvn_below if str(direction).upper() == "SELL" else 0.0
+    target_edge = vah if str(direction).upper() == "BUY" else val if str(direction).upper() == "SELL" else 0.0
+    return {
+        f"{prefix}_poc_rt": round(poc, 8),
+        f"{prefix}_val_rt": round(val, 8),
+        f"{prefix}_vah_rt": round(vah, 8),
+        f"{prefix}_hvn_above_rt": round(hvn_above, 8),
+        f"{prefix}_hvn_below_rt": round(hvn_below, 8),
+        f"{prefix}_lvn_above_rt": round(lvn_above, 8),
+        f"{prefix}_lvn_below_rt": round(lvn_below, 8),
+        f"{prefix}_distance_to_hvn_above_u_rt": round(hvn_above - price, 8) if hvn_above > 0 else 0.0,
+        f"{prefix}_distance_to_hvn_below_u_rt": round(price - hvn_below, 8) if hvn_below > 0 else 0.0,
+        f"{prefix}_distance_to_lvn_above_u_rt": round(lvn_above - price, 8) if lvn_above > 0 else 0.0,
+        f"{prefix}_distance_to_lvn_below_u_rt": round(price - lvn_below, 8) if lvn_below > 0 else 0.0,
+        f"{prefix}_a1_value_location_rt": value_location,
+        f"{prefix}_a1_node_location_rt": node_location,
+        f"{prefix}_a1_vp_setup_rt": setup,
+        f"{prefix}_a1_target_poc_price_rt": poc if _directional_target(direction, price, poc) else 0.0,
+        f"{prefix}_a1_target_hvn_price_rt": target_hvn if _directional_target(direction, price, target_hvn) else 0.0,
+        f"{prefix}_a1_target_value_edge_price_rt": target_edge if _directional_target(direction, price, target_edge) else 0.0,
+        f"{prefix}_a1_target_lvn_price_rt": target_lvn if _directional_target(direction, price, target_lvn) else 0.0,
+        f"{prefix}_a1_target_poc_distance_u_rt": abs(poc - price) if _directional_target(direction, price, poc) else 0.0,
+        f"{prefix}_a1_target_hvn_distance_u_rt": abs(target_hvn - price) if _directional_target(direction, price, target_hvn) else 0.0,
+        f"{prefix}_a1_target_value_edge_distance_u_rt": abs(target_edge - price) if _directional_target(direction, price, target_edge) else 0.0,
+        f"{prefix}_a1_target_lvn_distance_u_rt": abs(target_lvn - price) if _directional_target(direction, price, target_lvn) else 0.0,
+    }
+
+
+def _a1_value_location(price: float, poc: float, val: float, vah: float, threshold: float) -> str:
+    if price <= 0 or poc <= 0 or val <= 0 or vah <= 0:
+        return "UNKNOWN"
+    if abs(price - poc) <= threshold:
+        return "NEAR_POC"
+    if price < val - threshold:
+        return "BELOW_VAL"
+    if abs(price - val) <= threshold:
+        return "NEAR_VAL"
+    if price > vah + threshold:
+        return "ABOVE_VAH"
+    if abs(price - vah) <= threshold:
+        return "NEAR_VAH"
+    if val < price < poc:
+        return "INSIDE_VALUE_BELOW_POC"
+    if poc < price < vah:
+        return "INSIDE_VALUE_ABOVE_POC"
+    return "UNKNOWN"
+
+
+def _a1_node_location(price: float, poc: float, hvn_above: float, hvn_below: float, lvn_above: float, lvn_below: float, threshold: float) -> str:
+    if poc > 0 and abs(price - poc) <= threshold:
+        return "NEAR_POC"
+    if (lvn_above > 0 and abs(price - lvn_above) <= threshold) or (lvn_below > 0 and abs(price - lvn_below) <= threshold):
+        return "NEAR_LVN"
+    if (hvn_above > 0 and abs(price - hvn_above) <= threshold) or (hvn_below > 0 and abs(price - hvn_below) <= threshold):
+        return "NEAR_HVN"
+    return "NONE"
+
+
+def _a1_vp_setup(direction: str, value_location: str, node_location: str, price: float, hvn_above: float, hvn_below: float) -> str:
+    side = str(direction).upper()
+    if value_location == "UNKNOWN":
+        return "VP_UNAVAILABLE"
+    if side == "BUY":
+        if value_location == "BELOW_VAL":
+            return "BUY_BELOW_VAL_ABSORB"
+        if value_location == "NEAR_VAL":
+            return "BUY_NEAR_VAL_ABSORB"
+        if node_location == "NEAR_LVN" and hvn_above > price:
+            return "BUY_LVN_BELOW_HVN_ABSORB"
+        if value_location == "INSIDE_VALUE_BELOW_POC":
+            return "BUY_INSIDE_VALUE_BELOW_POC_ABSORB"
+        if node_location in {"NEAR_HVN", "NEAR_POC"}:
+            return "BUY_NEAR_HVN_DANGER"
+        return "BUY_NO_VP_EDGE"
+    if side == "SELL":
+        if value_location == "ABOVE_VAH":
+            return "SELL_ABOVE_VAH_ABSORB"
+        if value_location == "NEAR_VAH":
+            return "SELL_NEAR_VAH_ABSORB"
+        if node_location == "NEAR_LVN" and 0 < hvn_below < price:
+            return "SELL_LVN_ABOVE_HVN_ABSORB"
+        if value_location == "INSIDE_VALUE_ABOVE_POC":
+            return "SELL_INSIDE_VALUE_ABOVE_POC_ABSORB"
+        if node_location in {"NEAR_HVN", "NEAR_POC"}:
+            return "SELL_NEAR_HVN_DANGER"
+        return "SELL_NO_VP_EDGE"
+    return "NO_DIRECTIONAL_VP_SETUP"
+
+
+def _directional_target(direction: str, price: float, target: float) -> bool:
+    side = str(direction).upper()
+    return target > 0 and ((side == "BUY" and target > price) or (side == "SELL" and target < price))
+
+
 def _percentile_value(values: list[float], q: float) -> float:
     if not values:
         return 0.0
@@ -1033,7 +1182,7 @@ def _aggression_quality_labels(bar: Mapping[str, Any] | None, recent_bars: list[
         return {
             "a3_aggression_score": 0.0, "a3_aggression_quality": "UNAVAILABLE", "a3_body_strength": 0.0,
             "a3_range_expansion_ratio": 0.0, "a3_volume_zscore": 0.0, "a3_close_location_score": 0.0,
-            "a3_no_quick_return_post_event_flag": False, "a3_failed_quick_return_post_event_flag": False,
+            "a3_no_quick_return_future_flag": False, "a3_failed_quick_return_future_flag": False,
             "a3_taker_imbalance_score": 0.0, "a3_delta_flip_flag": False, "a3_cvd_pressure_score": 0.0,
         }
     high = parse_float(bar.get("high")); low = parse_float(bar.get("low")); open_ = parse_float(bar.get("open")); close = parse_float(bar.get("close"))
@@ -1070,7 +1219,7 @@ def _aggression_quality_labels(bar: Mapping[str, Any] | None, recent_bars: list[
         "a3_aggression_score": round(score, 8), "a3_aggression_quality": quality,
         "a3_body_strength": round(body_strength, 8), "a3_range_expansion_ratio": round(range_ratio, 8),
         "a3_volume_zscore": round(vol_z, 8), "a3_close_location_score": round(close_loc, 8),
-        "a3_no_quick_return_post_event_flag": False, "a3_failed_quick_return_post_event_flag": False,
+        "a3_no_quick_return_future_flag": False, "a3_failed_quick_return_future_flag": False,
         "a3_taker_imbalance_score": round(imbalance, 8), "a3_delta_flip_flag": False, "a3_cvd_pressure_score": 0.0,
     }
 
@@ -1135,19 +1284,19 @@ def _group_value(row: Mapping[str, Any], field: str) -> Any:
 
 
 def _context_group_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
-    realized_values = _values(rows, "a3_after_a2_realized_r_proxy_1h") or _values(rows, "a3_preview_realized_r_proxy_1h")
-    fee_field = "a3_after_a2_fee_positive_1h" if any(row.get("a3_after_a2_fee_positive_1h") not in (None, "") for row in rows) else "a3_structural_fee_positive_1h"
+    realized_values = _values(rows, "a3_after_a2_future_realized_r_proxy_1h") or _values(rows, "a3_future_realized_r_proxy_1h")
+    fee_field = "a3_after_a2_future_fee_positive_1h" if any(row.get("a3_after_a2_future_fee_positive_1h") not in (None, "") for row in rows) else "a3_structural_fee_positive_1h_future"
     return {
         "zone_count": len(rows),
         "iceberg_zone_count": sum(1 for row in rows if parse_int(row.get("iceberg_pie_count")) > 0 or str(row.get("result") or "").upper() == "ICEBERG"),
-        "avg_truth_score": _avg(rows, "truth_score_avg", "truth_score_max"),
-        "median_truth_score": _median(rows, "truth_score_avg", "truth_score_max"),
+        "avg_truth_score": _avg(rows, "truth_score_avg_offline", "truth_score_max_offline"),
+        "median_truth_score": _median(rows, "truth_score_avg_offline", "truth_score_max_offline"),
         "a2_pre_pool_count": sum(1 for row in rows if parse_bool(row.get("a2_pre_pool_eligible"))),
         "a2_ready_count": sum(1 for row in rows if parse_bool(row.get("a2_ready_for_a3_watch_flag")) or parse_bool(row.get("a2_validated_candidate_flag"))),
         "a3_count": sum(1 for row in rows if _has_a3(row)),
-        "avg_mfe_r": _avg(rows, "a3_after_a2_net_mfe_1h_r", "a3_preview_net_mfe_1h_r"),
-        "avg_mae_r": _avg(rows, "a3_after_a2_net_mae_1h_r", "a3_preview_net_mae_1h_r"),
-        "fee_positive_rate": _rate(rows, lambda row: parse_bool(row.get(fee_field)) or parse_float(row.get("a3_after_a2_realized_r_proxy_1h")) > 0 or parse_float(row.get("a3_preview_realized_r_proxy_1h")) > 0),
+        "avg_mfe_r": _avg(rows, "a3_after_a2_future_net_mfe_1h_r", "a3_future_net_mfe_1h_r"),
+        "avg_mae_r": _avg(rows, "a3_after_a2_future_net_mae_1h_r", "a3_future_net_mae_1h_r"),
+        "fee_positive_rate": _rate(rows, lambda row: parse_bool(row.get(fee_field)) or parse_float(row.get("a3_after_a2_future_realized_r_proxy_1h")) > 0 or parse_float(row.get("a3_future_realized_r_proxy_1h")) > 0),
         "avg_realized_r_proxy": round(sum(realized_values) / len(realized_values), 8) if realized_values else 0.0,
         "median_realized_r_proxy": round(statistics.median(realized_values), 8) if realized_values else 0.0,
     }
@@ -1163,8 +1312,8 @@ def _context_summary_sort_key(row: Mapping[str, Any]) -> tuple[float, float, flo
 
 
 def _has_a3(row: Mapping[str, Any]) -> bool:
-    typ = str(row.get("a3_aggression_type_v2") or "").upper()
-    return typ not in {"", "UNKNOWN", "NO_AGGRESSION", "PRICE_BREAKOUT_WEAK"} or parse_bool(row.get("a3_preview_breakout_after_a2_flag"))
+    typ = str(row.get("a3_quality_future_type_v2") or "").upper()
+    return typ not in {"", "UNKNOWN", "NO_AGGRESSION", "PRICE_BREAKOUT_WEAK"} or parse_bool(row.get("a3_future_breakout_after_a2_flag"))
 
 
 def _values(rows: list[Mapping[str, Any]], *fields: str) -> list[float]:

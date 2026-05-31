@@ -394,13 +394,13 @@ class ZoneTruthAggregator:
 
         scores = [truth_score(p) for p in pies]
         if scores:
-            row.truth_score_max = max(scores)
-            row.truth_score_avg = sum(scores) / len(scores)
-            row.truth_score_median = round(statistics.median(scores), 6)
-            row.truth_score_min = min(scores)
-            row.truth_ge50_count = sum(1 for s in scores if s >= 50)
-            row.truth_ge65_count = sum(1 for s in scores if s >= 65)
-            row.truth_ge80_count = sum(1 for s in scores if s >= 80)
+            row.truth_score_max_offline = max(scores)
+            row.truth_score_avg_offline = sum(scores) / len(scores)
+            row.truth_score_median_offline = round(statistics.median(scores), 6)
+            row.truth_score_min_offline = min(scores)
+            row.truth_ge50_count_offline = sum(1 for s in scores if s >= 50)
+            row.truth_ge65_count_offline = sum(1 for s in scores if s >= 65)
+            row.truth_ge80_count_offline = sum(1 for s in scores if s >= 80)
         row.truth_not_iceberg_count = sum(1 for p in pies if truth_label(p).upper() == "NOT_ICEBERG")
         row.truth_insufficient_count = sum(1 for p in pies if truth_label(p).upper() == "INSUFFICIENT_POST_DATA")
 
@@ -411,8 +411,8 @@ class ZoneTruthAggregator:
             row.best_pie_price = parse_float(first_present(best, "settle_price", "trigger_price"))
             row.best_pie_min_trade_price = _pie_sweep_low(best) or row.best_pie_price
             row.best_pie_max_trade_price = _pie_sweep_high(best) or row.best_pie_price
-            row.best_pie_truth_score = truth_score(best)
-            row.best_pie_truth_label = truth_label(best)
+            row.best_pie_truth_score_offline = truth_score(best)
+            row.best_pie_truth_label_offline = truth_label(best)
             row.best_pie_quality = str(best.get("quality") or "")
             row.best_pie_behavior = str(best.get("behavior") or "")
             if not row.symbol:

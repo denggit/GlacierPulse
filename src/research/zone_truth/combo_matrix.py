@@ -16,7 +16,7 @@ COMBO_KEY_FIELDS = [
     "a1_strength_tier",
     "a1_best_horizon",
     "a2_accumulation_path_v2",
-    "a3_aggression_type_v2",
+    "a3_quality_future_type_v2",
     "entry_model",
     "stop_model",
     "target_r",
@@ -52,11 +52,8 @@ INVALID_SIMULATED_OUTCOMES = {
 }
 MAINLINE_A1_TYPES = {"ICEBERG"}
 MAINLINE_A3_TYPES = {
-    "PRICE_BREAKOUT_PERSISTENT",
-    "CLOSE_BREAK",
-    "CLOSE_BREAK_NO_QUICK_RETURN",
-    "RETEST_HOLD",
-    "PERSISTENT_BREAKOUT",
+    "STRONG_ORDERFLOW_AGGRESSION",
+    "RECLAIM_AGGRESSION",
 }
 
 
@@ -112,7 +109,7 @@ class _StatsBucket:
         self.complete_count = 0
 
     def add(self, row: Mapping[str, Any]) -> None:
-        realized = parse_float(row.get("realized_r_1h"))
+        realized = parse_float(row.get("realized_r_1h_sim"))
         entry_ts = parse_float(row.get("entry_ts"))
         self.count += 1
         if entry_ts > 0:
@@ -125,17 +122,17 @@ class _StatsBucket:
             self.fee_positive_count += 1
         elif realized < 0:
             self.sum_negative_r_abs += abs(realized)
-        if parse_bool(row.get("target_first_flag")):
+        if parse_bool(row.get("target_first_flag_sim")):
             self.target_first_count += 1
-        if parse_bool(row.get("stop_first_flag")):
+        if parse_bool(row.get("stop_first_flag_sim")):
             self.stop_first_count += 1
-        if parse_bool(row.get("ambiguous_flag")):
+        if parse_bool(row.get("ambiguous_flag_sim")):
             self.ambiguous_count += 1
         self.sum_fee_share_r += parse_float(row.get("fee_share_r"))
         self.sum_risk_u += parse_float(row.get("risk_u"))
-        self.sum_mfe_r += parse_float(row.get("mfe_r_1h"))
-        self.sum_mae_r += parse_float(row.get("mae_r_1h"))
-        if parse_bool(row.get("complete_flag")):
+        self.sum_mfe_r += parse_float(row.get("mfe_r_1h_sim"))
+        self.sum_mae_r += parse_float(row.get("mae_r_1h_sim"))
+        if parse_bool(row.get("complete_flag_sim")):
             self.complete_count += 1
 
     def to_metrics(self) -> dict[str, Any]:
@@ -174,13 +171,13 @@ def is_valid_simulated_trade(trade: Mapping[str, Any]) -> bool:
         and parse_float(trade.get("entry_price")) > 0
         and parse_float(trade.get("risk_u")) > 0
         and str(trade.get("a1_primary_evidence_type") or "").upper() in MAINLINE_A1_TYPES
-        and str(trade.get("a3_aggression_type_v2") or "").upper() in MAINLINE_A3_TYPES
-        and str(trade.get("realized_outcome_1h") or "").upper() not in INVALID_SIMULATED_OUTCOMES
+        and str(trade.get("a3_quality_future_type_v2") or "").upper() in MAINLINE_A3_TYPES
+        and str(trade.get("realized_outcome_1h_sim") or "").upper() not in INVALID_SIMULATED_OUTCOMES
     )
 
 
 def group_stats(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
-    values = [parse_float(row.get("realized_r_1h")) for row in rows]
+    values = [parse_float(row.get("realized_r_1h_sim")) for row in rows]
     positive = [v for v in values if v > 0]
     negative = [abs(v) for v in values if v < 0]
     first_ts = min([parse_float(row.get("entry_ts")) for row in rows if parse_float(row.get("entry_ts")) > 0] or [0.0])
@@ -194,15 +191,15 @@ def group_stats(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "sum_positive_r": round(sum(positive), 8),
         "sum_negative_r_abs": round(sum(negative), 8),
         "profit_factor_proxy": round(sum(positive) / sum(negative), 8) if negative else (round(sum(positive), 8) if positive else 0.0),
-        "fee_positive_rate": _rate(rows, lambda row: parse_float(row.get("realized_r_1h")) > 0),
-        "target_first_rate": _rate(rows, lambda row: parse_bool(row.get("target_first_flag"))),
-        "stop_first_rate": _rate(rows, lambda row: parse_bool(row.get("stop_first_flag"))),
-        "ambiguous_rate": _rate(rows, lambda row: parse_bool(row.get("ambiguous_flag"))),
+        "fee_positive_rate": _rate(rows, lambda row: parse_float(row.get("realized_r_1h_sim")) > 0),
+        "target_first_rate": _rate(rows, lambda row: parse_bool(row.get("target_first_flag_sim"))),
+        "stop_first_rate": _rate(rows, lambda row: parse_bool(row.get("stop_first_flag_sim"))),
+        "ambiguous_rate": _rate(rows, lambda row: parse_bool(row.get("ambiguous_flag_sim"))),
         "avg_fee_share_r": _avg(rows, "fee_share_r"),
         "avg_risk_u": _avg(rows, "risk_u"),
-        "avg_mfe_r": _avg(rows, "mfe_r_1h"),
-        "avg_mae_r": _avg(rows, "mae_r_1h"),
-        "complete_rate": _rate(rows, lambda row: parse_bool(row.get("complete_flag"))),
+        "avg_mfe_r": _avg(rows, "mfe_r_1h_sim"),
+        "avg_mae_r": _avg(rows, "mae_r_1h_sim"),
+        "complete_rate": _rate(rows, lambda row: parse_bool(row.get("complete_flag_sim"))),
     }
 
 

@@ -98,9 +98,9 @@ def test_zone_aggregates_multiple_pies_and_best_pie():
     row = next(row for row in rows if row["zone_id"] == "iz-1")
     assert row["pie_count"] == 3
     assert row["iceberg_pie_count"] == 2
-    assert row["truth_score_max"] == 85
-    assert row["truth_score_avg"] == (60 + 85 + 40) / 3
-    assert row["truth_ge65_count"] == 1
+    assert row["truth_score_max_offline"] == 85
+    assert row["truth_score_avg_offline"] == (60 + 85 + 40) / 3
+    assert row["truth_ge65_count_offline"] == 1
     assert row["best_pie_event_key"] == "pie-b"
 
 

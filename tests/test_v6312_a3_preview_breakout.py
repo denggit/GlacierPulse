@@ -18,11 +18,11 @@ def test_a3_preview_breakout_buy_latency():
 
     preview = compute_a3_preview_breakout(zone, bars)
 
-    assert preview["a3_preview_breakout_raw_flag"] is True
-    assert preview["a3_preview_breakout_raw_latency_sec"] == 180
-    assert preview["a3_preview_breakout_direction"] == "BUY"
-    assert preview["a3_preview_breakout_threshold_u"] == 1.0
-    assert preview["a3_preview_breakout_price"] == 102.0
+    assert preview["a3_future_breakout_seen_flag"] is True
+    assert preview["a3_future_breakout_latency_sec"] == 180
+    assert preview["a3_future_breakout_direction"] == "BUY"
+    assert preview["a3_future_breakout_threshold_u"] == 1.0
+    assert preview["a3_future_breakout_price"] == 102.0
 
 
 def test_a3_preview_breakout_sell_latency():
@@ -41,11 +41,11 @@ def test_a3_preview_breakout_sell_latency():
 
     preview = compute_a3_preview_breakout(zone, bars)
 
-    assert preview["a3_preview_breakout_raw_flag"] is True
-    assert preview["a3_preview_breakout_raw_latency_sec"] == 120
-    assert preview["a3_preview_breakout_direction"] == "SELL"
-    assert preview["a3_preview_breakout_threshold_u"] == 1.0
-    assert preview["a3_preview_breakout_price"] == 98.0
+    assert preview["a3_future_breakout_seen_flag"] is True
+    assert preview["a3_future_breakout_latency_sec"] == 120
+    assert preview["a3_future_breakout_direction"] == "SELL"
+    assert preview["a3_future_breakout_threshold_u"] == 1.0
+    assert preview["a3_future_breakout_price"] == 98.0
 
 
 def test_a3_preview_breakout_unknown_direction_is_raw_false():
@@ -60,9 +60,9 @@ def test_a3_preview_breakout_unknown_direction_is_raw_false():
 
     preview = compute_a3_preview_breakout(zone, bars)
 
-    assert preview["a3_preview_breakout_raw_flag"] is False
-    assert preview["a3_preview_breakout_raw_latency_sec"] == 0
-    assert preview["a3_preview_breakout_direction"] == "UNKNOWN"
+    assert preview["a3_future_breakout_seen_flag"] is False
+    assert preview["a3_future_breakout_latency_sec"] == 0
+    assert preview["a3_future_breakout_direction"] == "UNKNOWN"
 
 
 def test_a3_preview_breakout_after_one_hour_is_ignored():
@@ -81,8 +81,8 @@ def test_a3_preview_breakout_after_one_hour_is_ignored():
 
     preview = compute_a3_preview_breakout(zone, bars)
 
-    assert preview["a3_preview_breakout_raw_flag"] is False
-    assert preview["a3_preview_breakout_raw_latency_sec"] == 0
+    assert preview["a3_future_breakout_seen_flag"] is False
+    assert preview["a3_future_breakout_latency_sec"] == 0
 
 
 def test_a3_preview_breakout_with_anchor_before_first_bar_is_raw_false():
@@ -97,5 +97,5 @@ def test_a3_preview_breakout_with_anchor_before_first_bar_is_raw_false():
 
     preview = compute_a3_preview_breakout(zone, bars)
 
-    assert preview["a3_preview_breakout_raw_flag"] is False
-    assert preview["a3_preview_breakout_raw_latency_sec"] == 0
+    assert preview["a3_future_breakout_seen_flag"] is False
+    assert preview["a3_future_breakout_latency_sec"] == 0

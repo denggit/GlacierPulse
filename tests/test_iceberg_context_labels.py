@@ -345,18 +345,18 @@ def test_v721_value_edge_reclaim_and_sweep_failed_auction_labels():
     value = analyzer._value_edge_labels(buy, future, "BUY", 98.5, "vpsession")
     sweep = analyzer._sweep_failed_auction_labels(buy, future, "BUY", 98.5, "15m", 16)
     assert value["vpsession_value_edge_side"] == "BELOW_VAL"
-    assert value["vpsession_reclaim_value_post_event_flag"] is True
-    assert value["vpsession_bars_to_reclaim"] == 2
-    assert sweep["post_sweep_reclaim_15m_post_event_flag"] is True
-    assert sweep["failed_auction_15m_post_event_flag"] is True
+    assert value["vpsession_reclaim_value_future_flag"] is True
+    assert value["vpsession_bars_to_reclaim_future"] == 2
+    assert sweep["future_sweep_reclaim_15m_future_flag"] is True
+    assert sweep["failed_auction_15m_future_flag"] is True
 
     sell = {"vp24h_proxy_val": 90, "vp24h_proxy_vah": 100, "previous_local_1h_high_12": 101, "zone_v2_structural_risk_u": 2}
     future_sell = [{"timestamp": BASE_TS + 60, "close": 99.5}]
     value_sell = analyzer._value_edge_labels(sell, future_sell, "SELL", 101.5, "vp24h")
     sweep_sell = analyzer._sweep_failed_auction_labels(sell, future_sell, "SELL", 101.5, "1h", 12)
     assert value_sell["vp24h_value_edge_side"] == "ABOVE_VAH"
-    assert value_sell["vp24h_reclaim_value_post_event_flag"] is True
-    assert sweep_sell["failed_auction_1h_post_event_flag"] is True
+    assert value_sell["vp24h_reclaim_value_future_flag"] is True
+    assert sweep_sell["failed_auction_1h_future_flag"] is True
 
 
 def test_v721_aggression_quality_boll_session_and_ob_quality():

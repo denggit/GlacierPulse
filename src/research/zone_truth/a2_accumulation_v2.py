@@ -38,9 +38,9 @@ def classify_a2_accumulation_path_v2(row: Mapping[str, Any]) -> dict[str, Any]:
     if parse_bool(row.get("visible_wall_absorption_flag")):
         return _result("A2_VISIBLE_WALL_HOLD", 0.60, "visible_wall_absorption")
 
-    compression = str(row.get("a2_compression_state") or row.get("a2_pre_ignition_compression_state") or "").upper()
+    compression = str(row.get("a2_compression_state_future") or row.get("a2_pre_ignition_compression_state_future") or "").upper()
     if compression in {"COMPRESSING", "RANGING", "PRE_IGNITION_COMPRESSED", "PRE_IGNITION_RANGING"}:
-        return _result("A2_COMPRESSION", 0.55, compression.lower())
+        return _result("A2_COMPRESSION_FUTURE_PROXY", 0.55, compression.lower())
     if parse_bool(row.get("a2_pre_pool_eligible")):
         return _result("A2_NO_ACCUMULATION", 0.20, "a2_pre_pool_without_v2_path")
     return _result("A2_UNKNOWN", 0.0, "not_a2_pre_pool_or_missing_fields")

@@ -140,22 +140,22 @@ def test_zone_truth_schema_version_updated(tmp_path):
 def test_group_stats_complete_only_forward_averages():
     rows = [
         {
-            "truth_score_avg": 80,
-            "truth_score_max": 80,
-            "truth_ge65_count": 1,
-            "truth_ge80_count": 1,
-            "mfe_1h_u": 10,
-            "mae_1h_u": -2,
-            "is_complete_1h": True,
+            "truth_score_avg_offline": 80,
+            "truth_score_max_offline": 80,
+            "truth_ge65_count_offline": 1,
+            "truth_ge80_count_offline": 1,
+            "mfe_1h_u_future": 10,
+            "mae_1h_u_future": -2,
+            "is_complete_1h_future": True,
         },
         {
-            "truth_score_avg": 80,
-            "truth_score_max": 80,
-            "truth_ge65_count": 1,
-            "truth_ge80_count": 1,
-            "mfe_1h_u": 100,
-            "mae_1h_u": -20,
-            "is_complete_1h": False,
+            "truth_score_avg_offline": 80,
+            "truth_score_max_offline": 80,
+            "truth_ge65_count_offline": 1,
+            "truth_ge80_count_offline": 1,
+            "mfe_1h_u_future": 100,
+            "mae_1h_u_future": -20,
+            "is_complete_1h_future": False,
         },
     ]
     stats = ZoneTruthAnalyzer()._group_stats("all", rows)

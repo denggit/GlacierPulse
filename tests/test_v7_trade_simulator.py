@@ -13,8 +13,8 @@ from src.research.zone_truth.trade_simulator import (
 
 def test_buy_1r_target_first_fee_deducted():
     out = simulate_single_trade({"zone_id": "z1", "direction": "BUY"}, [{"timestamp": 1000, "high": 101.2, "low": 99.5, "close": 101, "open": 100}], entry_model="BREAKOUT", stop_model="V1_ZONE_WIDTH", target_r=1.0, entry_ts=1000, entry_price=100, stop_price=99, risk_u=1)
-    assert out["target_first_flag"] is True
-    assert out["realized_r_1h"] == 0.9
+    assert out["target_first_flag_sim"] is True
+    assert out["realized_r_1h_sim"] == 0.9
 
 
 def test_bar_index_first_hit_result_matches_compat_wrapper():
@@ -26,33 +26,33 @@ def test_bar_index_first_hit_result_matches_compat_wrapper():
     bar_index = build_bar_index(bars)
     future = _future_bars(bar_index, 1000, 3600)
     indexed = simulate_single_trade_with_future_bars({"zone_id": "z1", "direction": "BUY"}, future, entry_model="BREAKOUT", stop_model="V1_ZONE_WIDTH", target_r=1.0, entry_ts=1000, entry_price=100, stop_price=99, risk_u=1)
-    assert indexed["realized_outcome_1h"] == wrapper["realized_outcome_1h"]
-    assert indexed["realized_r_1h"] == wrapper["realized_r_1h"]
+    assert indexed["realized_outcome_1h_sim"] == wrapper["realized_outcome_1h_sim"]
+    assert indexed["realized_r_1h_sim"] == wrapper["realized_r_1h_sim"]
 
 
 def test_buy_stop_first_fee_deducted():
     out = simulate_single_trade({"zone_id": "z1", "direction": "BUY"}, [{"timestamp": 1000, "high": 100.2, "low": 98.9, "close": 99, "open": 100}], entry_model="BREAKOUT", stop_model="V1_ZONE_WIDTH", target_r=1.0, entry_ts=1000, entry_price=100, stop_price=99, risk_u=1)
-    assert out["stop_first_flag"] is True
-    assert out["realized_r_1h"] == -1.1
+    assert out["stop_first_flag_sim"] is True
+    assert out["realized_r_1h_sim"] == -1.1
 
 
 def test_sell_15r_target_first_fee_deducted():
     out = simulate_single_trade({"zone_id": "z1", "direction": "SELL"}, [{"timestamp": 1000, "high": 100.5, "low": 98.4, "close": 99, "open": 100}], entry_model="BREAKOUT", stop_model="V1_ZONE_WIDTH", target_r=1.5, entry_ts=1000, entry_price=100, stop_price=101, risk_u=1)
-    assert out["target_first_flag"] is True
-    assert out["realized_r_1h"] == 1.4
+    assert out["target_first_flag_sim"] is True
+    assert out["realized_r_1h_sim"] == 1.4
 
 
 def test_ambiguous_both_hit_conservative_stop():
     out = simulate_single_trade({"zone_id": "z1", "direction": "BUY"}, [{"timestamp": 1000, "high": 101.2, "low": 98.9, "close": 100, "open": 100}], entry_model="BREAKOUT", stop_model="V1_ZONE_WIDTH", target_r=1.0, entry_ts=1000, entry_price=100, stop_price=99, risk_u=1)
-    assert out["ambiguous_flag"] is True
-    assert out["realized_outcome_1h"] == "AMBIGUOUS_BOTH_HIT"
-    assert out["realized_r_1h"] == -1.1
+    assert out["ambiguous_flag_sim"] is True
+    assert out["realized_outcome_1h_sim"] == "AMBIGUOUS_BOTH_HIT"
+    assert out["realized_r_1h_sim"] == -1.1
 
 
 def test_close_exit():
     out = simulate_single_trade({"zone_id": "z1", "direction": "BUY"}, [{"timestamp": 1000, "high": 100.5, "low": 99.5, "close": 100.25, "open": 100}], entry_model="BREAKOUT", stop_model="V1_ZONE_WIDTH", target_r=1.0, entry_ts=1000, entry_price=100, stop_price=99, risk_u=1)
-    assert out["realized_outcome_1h"] == "CLOSE_EXIT"
-    assert out["realized_r_1h"] == 0.15
+    assert out["realized_outcome_1h_sim"] == "CLOSE_EXIT"
+    assert out["realized_r_1h_sim"] == 0.15
 
 
 def test_bar_close_entry_skips_entry_bar_first_hit():
@@ -75,11 +75,11 @@ def test_bar_close_entry_skips_entry_bar_first_hit():
     )
     assert out["entry_bar_ts"] == 1000
     assert out["entry_price_source"] == "BAR_CLOSE"
-    assert out["target_first_flag"] is False
-    assert out["stop_first_flag"] is False
-    assert out["ambiguous_flag"] is False
-    assert out["realized_outcome_1h"] == "CLOSE_EXIT"
-    assert out["realized_r_1h"] == 0.4
+    assert out["target_first_flag_sim"] is False
+    assert out["stop_first_flag_sim"] is False
+    assert out["ambiguous_flag_sim"] is False
+    assert out["realized_outcome_1h_sim"] == "CLOSE_EXIT"
+    assert out["realized_r_1h_sim"] == 0.4
 
 
 def test_bar_close_future_bars_skip_entry_bar_with_bar_index():
@@ -129,9 +129,9 @@ def test_simulated_trade_outputs_stop_basis_reason():
         {
             "zone_id": "z1",
             "direction": "BUY",
-            "a3_preview_breakout_raw_flag": True,
-            "a3_preview_entry_ts": 1000,
-            "a3_preview_entry_price": 100,
+            "a3_future_breakout_seen_flag": True,
+            "a3_future_breakout_entry_ts": 1000,
+            "a3_future_breakout_entry_price": 100,
             "zone_v2_structural_stop_price": 90,
             "first_iceberg_pie_min_trade_price": 99,
         }
@@ -145,9 +145,9 @@ def test_simulated_trade_outputs_entry_and_stop_metadata_fields():
         {
             "zone_id": "z1",
             "direction": "BUY",
-            "a3_preview_breakout_raw_flag": True,
-            "a3_preview_entry_ts": 1000,
-            "a3_preview_entry_price": 100,
+            "a3_future_breakout_seen_flag": True,
+            "a3_future_breakout_entry_ts": 1000,
+            "a3_future_breakout_entry_price": 100,
             "zone_lower": 99,
             "zone_upper": 100,
         }
@@ -157,6 +157,6 @@ def test_simulated_trade_outputs_entry_and_stop_metadata_fields():
 
 
 def test_target_r_minimum_excludes_half_r():
-    rows = [{"zone_id": "z1", "direction": "BUY", "a3_preview_breakout_raw_flag": True, "a3_preview_entry_ts": 1000, "a3_preview_entry_price": 100, "zone_lower": 99, "zone_upper": 100}]
+    rows = [{"zone_id": "z1", "direction": "BUY", "a3_future_breakout_seen_flag": True, "a3_future_breakout_entry_ts": 1000, "a3_future_breakout_entry_price": 100, "zone_lower": 99, "zone_upper": 100}]
     trades = simulate_3a_proxy_trades(rows, [{"timestamp": 1000, "high": 102, "low": 99.5, "close": 101, "open": 100}], entry_models=["BREAKOUT"], stop_models=["V1_ZONE_WIDTH"], target_r_list=[0.5, 0.75, 1.0])
     assert {t["target_r"] for t in trades if t["target_r"]} == {1.0}
