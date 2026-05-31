@@ -27,6 +27,7 @@ class RuntimeEventSource:
         self.window_reads = 0
         self.max_window_ticks = 0
         self.ticks_materialized_count = 0
+        self.candidate_file_scans = 0
 
     @classmethod
     def from_paths(cls, *paths: str | Path | None) -> "RuntimeEventSource | None":
@@ -41,8 +42,10 @@ class RuntimeEventSource:
     def get_window(self, start_ts: float, end_ts: float, symbol: str | None = None) -> Iterator[dict[str, Any]]:
         self.window_reads += 1
         count = 0
+        candidates = _candidate_files(self.files, start_ts, end_ts)
+        self.candidate_file_scans += len(candidates)
         try:
-            for row in _merge_sorted_files(_candidate_files(self.files, start_ts, end_ts)):
+            for row in _merge_sorted_files(candidates):
                 ts = _event_ts(row)
                 if ts < start_ts:
                     continue
@@ -60,6 +63,7 @@ class RuntimeEventSource:
             "runtime_ticks_materialized_count": self.ticks_materialized_count,
             "runtime_window_reads": self.window_reads,
             "runtime_max_window_ticks": self.max_window_ticks,
+            "runtime_candidate_file_scans": self.candidate_file_scans,
         }
 
 
@@ -95,7 +99,7 @@ def _discover_files(paths: Iterable[str | Path] | str | Path | None) -> list[Run
     for path in raw_paths:
         if path.is_dir():
             files.extend(sorted([*path.glob("*.jsonl"), *path.glob("*.csv")]))
-        elif path.exists():
+        elif path.exists() and _is_runtime_event_file(path):
             files.append(path)
     profiled: list[RuntimeEventFile] = []
     for path in sorted(set(files)):
@@ -123,6 +127,10 @@ def _coerce_paths(paths: object) -> list[Path]:
 
 def _candidate_files(files: list[RuntimeEventFile], start_ts: float, end_ts: float) -> list[RuntimeEventFile]:
     return [file for file in files if file.last_ts >= start_ts and file.first_ts <= end_ts]
+
+
+def _is_runtime_event_file(path: Path) -> bool:
+    return path.suffix.lower() in {".jsonl", ".csv"}
 
 
 def _merge_sorted_files(files: list[RuntimeEventFile]) -> Iterator[dict[str, Any]]:

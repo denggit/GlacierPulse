@@ -133,6 +133,24 @@ def test_expiry_sweep_reexecutes_state_machine():
     assert by_expiry[900]["trade_count"] == 1
 
 
+def test_default_expiry_trade_count_not_inflated_by_sweep():
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=[*_quiet_ticks(), _burst_tick()],
+        expiry_secs=[300, 900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    summary = reports["summary"]
+    assert summary["trade_count_all_expiry_variants"] == 2
+    assert summary["default_expiry_sec"] == 900
+    assert summary["default_expiry_trade_count"] == 1
+    assert summary["unique_signal_count"] == 1
+    assert reports["by_strategy_all_expiry_variants"][0]["trade_count"] == 2
+    assert reports["by_strategy_default_expiry"][0]["trade_count"] == 1
+
+
 def test_runtime_engine_config_uses_cli_min_quiet_and_tick_count_values():
     cfg = default_runtime_engine_config(a2_rt_min_quiet_sec=7, a2_rt_min_tick_count=9)
     engine = RuntimeThreeABacktestEngine(cfg)

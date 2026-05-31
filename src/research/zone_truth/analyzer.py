@@ -107,6 +107,8 @@ V73_RT_SUMMARY_METRIC_FIELDS = [
 ]
 
 V73_RT_BY_STRATEGY_FIELDS = ["strategy_variant"] + V73_RT_SUMMARY_METRIC_FIELDS
+V73_RT_BY_STRATEGY_ALL_EXPIRY_FIELDS = V73_RT_BY_STRATEGY_FIELDS
+V73_RT_BY_STRATEGY_DEFAULT_EXPIRY_FIELDS = V73_RT_BY_STRATEGY_FIELDS
 V73_RT_BY_VP_SETUP_FIELDS = ["a1_vp_setup_rt"] + V73_RT_SUMMARY_METRIC_FIELDS
 V73_RT_BY_EXPIRY_FIELDS = ["expiry_sec"] + V73_RT_SUMMARY_METRIC_FIELDS + [
     "expired_count", "invalidated_count", "a3_triggered_count",
@@ -387,6 +389,7 @@ class ZoneTruthAnalyzer:
             enable_audit=self.enable_no_future_audit,
             a2_rt_min_quiet_sec=self.a2_rt_min_quiet_sec,
             a2_rt_min_tick_count=self.a2_rt_min_tick_count,
+            default_expiry_sec=int(self.a2_rt_max_age_sec),
         )
         runtime_3a_memory_profile.update(rt_reports["summary"].get("runtime_3a_memory_profile", {}))
         runtime_3a_memory_profile["after_runtime_engine_rss_mb"] = _peak_rss_mb()
@@ -486,6 +489,8 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_3a_rt_signals.csv", rt_reports["signals"], V73_RT_SIGNAL_FIELDS)
         write_csv(out / "zone_truth_3a_rt_trades.csv", rt_reports["trades"], V73_RT_TRADE_FIELDS)
         write_csv(out / "zone_truth_3a_rt_by_strategy.csv", rt_reports["by_strategy"], V73_RT_BY_STRATEGY_FIELDS)
+        write_csv(out / "zone_truth_3a_rt_by_strategy_all_expiry_variants.csv", rt_reports["by_strategy_all_expiry_variants"], V73_RT_BY_STRATEGY_ALL_EXPIRY_FIELDS)
+        write_csv(out / "zone_truth_3a_rt_by_strategy_default_expiry.csv", rt_reports["by_strategy_default_expiry"], V73_RT_BY_STRATEGY_DEFAULT_EXPIRY_FIELDS)
         write_csv(out / "zone_truth_3a_rt_by_vp_setup.csv", rt_reports["by_vp_setup"], V73_RT_BY_VP_SETUP_FIELDS)
         write_csv(out / "zone_truth_3a_rt_by_expiry.csv", rt_reports["by_expiry"], V73_RT_BY_EXPIRY_FIELDS)
         write_csv(out / "zone_truth_3a_rt_by_target_candidate.csv", rt_reports["by_target_candidate"], V73_RT_BY_TARGET_CANDIDATE_FIELDS)
@@ -1008,6 +1013,15 @@ class ZoneTruthAnalyzer:
             lines.append(f"  - {key}: {value}")
         lines.append(f"- a3_structural_fee_positive_1h_count: {summary.get('a3_structural_fee_positive_1h_count')}")
         lines.append(f"- a3_structural_fee_positive_1h_rate: {summary.get('a3_structural_fee_positive_1h_rate')}")
+        rt_memory = dict(summary.get("runtime_3a_memory_profile") or {})
+        if rt_memory:
+            lines.extend(["", "## Runtime 3A Memory Profile", ""])
+            lines.append(f"- runtime_event_source_mode: {rt_memory.get('runtime_event_source_mode')}")
+            lines.append(f"- runtime_window_reads: {rt_memory.get('runtime_window_reads')}")
+            lines.append(f"- runtime_candidate_file_scans: {rt_memory.get('runtime_candidate_file_scans')}")
+            lines.append(f"- runtime_max_window_ticks: {rt_memory.get('runtime_max_window_ticks')}")
+            if int(parse_float(rt_memory.get("runtime_window_reads"))) >= 1000:
+                lines.append("- WARNING: Runtime event source is memory-safe but may be slow due to repeated file scans.")
         lines.append(f"- a3_after_a2_future_fee_positive_1h_count: {summary.get('a3_after_a2_future_fee_positive_1h_count')}")
         lines.append(f"- a3_after_a2_future_fee_positive_1h_rate: {summary.get('a3_after_a2_future_fee_positive_1h_rate')}")
         lines.append(f"- a3_after_a2_future_realized_r_proxy_1h_avg: {summary.get('a3_after_a2_future_realized_r_proxy_1h_avg')}")

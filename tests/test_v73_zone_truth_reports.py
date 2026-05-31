@@ -75,6 +75,8 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
         "zone_truth_3a_rt_signals.csv",
         "zone_truth_3a_rt_trades.csv",
         "zone_truth_3a_rt_by_strategy.csv",
+        "zone_truth_3a_rt_by_strategy_all_expiry_variants.csv",
+        "zone_truth_3a_rt_by_strategy_default_expiry.csv",
         "zone_truth_3a_rt_by_vp_setup.csv",
         "zone_truth_3a_rt_by_expiry.csv",
         "zone_truth_3a_rt_by_target_candidate.csv",
@@ -85,6 +87,7 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
         rt_summary = json.load(handle)
     assert rt_summary["runtime_3a_status"] == "SKIPPED_NO_TRADE_EVENTS"
     assert "runtime_3a_memory_profile" in rt_summary
+    assert "default_expiry_trade_count" in rt_summary
     assert summary["no_future_field_hygiene_version"] == "v7.3.0.no_future_field_registry"
 
 

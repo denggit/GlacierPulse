@@ -76,6 +76,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     windows = parse_windows(args.windows_sec)
     runtime_events = _load_runtime_events(args.trades_jsonl, args.trades_dir, args.runtime_events)
+    if _raw_okx_trades_dir_without_runtime_events(args.trades_dir, runtime_events):
+        print(
+            "Error: RuntimeEventSource supports jsonl/csv runtime_events. "
+            "For OKX raw tar.gz, run build_runtime_events_from_okx_trades.py first.",
+            file=sys.stderr,
+        )
+        return 2
     analyzer = ZoneTruthAnalyzer(
         price_tolerance_usdt=args.price_tolerance_usdt,
         time_tolerance_sec=args.time_tolerance_sec,
@@ -134,6 +141,15 @@ def _load_runtime_events(
     runtime_events: str | None,
 ) -> RuntimeEventSource | None:
     return RuntimeEventSource.from_paths(trades_jsonl, trades_dir, runtime_events)
+
+
+def _raw_okx_trades_dir_without_runtime_events(trades_dir: str | None, runtime_events: RuntimeEventSource | None) -> bool:
+    if not trades_dir:
+        return False
+    root = Path(trades_dir)
+    if not root.is_dir() or (runtime_events is not None and runtime_events.files):
+        return False
+    return any(path.is_file() and path.name.lower().endswith((".tar.gz", ".tgz", ".tar")) for path in root.rglob("*"))
 
 
 if __name__ == "__main__":

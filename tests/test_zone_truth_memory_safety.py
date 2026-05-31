@@ -4,9 +4,12 @@
 import csv
 import json
 import subprocess
+import tarfile
 from pathlib import Path
 
 import tools.generate_research_reports as generator
+from tools import analyze_zone_truth
+from tools import build_runtime_events_from_okx_trades as runtime_builder
 from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
 from src.research.zone_truth import analyzer as analyzer_mod
 from src.research.zone_truth.analyzer import (
@@ -240,3 +243,115 @@ def test_rt_report_headers_stable_when_empty(tmp_path):
         assert next(csv.reader(handle)) == V73_RT_BY_STRATEGY_FIELDS
     with (out / "zone_truth_3a_rt_by_vp_setup.csv").open(encoding="utf-8", newline="") as handle:
         assert next(csv.reader(handle)) == V73_RT_BY_VP_SETUP_FIELDS
+
+
+def test_build_runtime_events_from_raw_trades_jsonl(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        "\n".join(
+            [
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}),
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}),
+                json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1004, "px": 12, "sz": 1, "side": "buy"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades,
+        out_path=out,
+        bucket_sec=1,
+        rolling_sec=3,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["total_trades_read"] == 3
+    assert summary["runtime_events_written"] == 3
+    assert rows[1]["active_buy_notional_3s"] == 20
+    assert rows[1]["active_sell_notional_3s"] == 33
+    assert rows[1]["cvd_delta_3s"] == -13
+    assert rows[2]["active_buy_notional_3s"] == 12
+    assert rows[2]["active_sell_notional_3s"] == 33
+    assert rows[2]["cvd_delta_3s"] == -21
+
+
+def test_build_runtime_events_from_okx_trades_tar_gz_data(tmp_path):
+    trades_dir = tmp_path / "okx_raw"
+    trades_dir.mkdir()
+    inner = tmp_path / "ETH-USDT-SWAP-trades.data"
+    inner.write_text(
+        "instId,ts,px,sz,side\n"
+        "ETH-USDT-SWAP,1000,10,2,buy\n"
+        "ETH-USDT-SWAP,1001,11,3,sell\n",
+        encoding="utf-8",
+    )
+    with tarfile.open(trades_dir / "ETH-USDT-SWAP-trades-2026-05-01.tar.gz", "w:gz") as archive:
+        archive.add(inner, arcname="nested/ETH-USDT-SWAP-trades.data")
+    out = tmp_path / "runtime_events_tar.jsonl"
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        bucket_sec=1,
+        rolling_sec=3,
+    )
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert summary["total_trades_read"] == 2
+    assert rows[-1]["active_buy_notional_3s"] == 20
+    assert rows[-1]["active_sell_notional_3s"] == 33
+
+
+def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
+    out = tmp_path / "runtime_events.jsonl"
+    yielded = []
+
+    def fake_discover(path):
+        return [path]
+
+    def fake_iter(paths, *, symbol, contract_multiplier=1.0):
+        for idx in range(5):
+            yielded.append(idx)
+            yield runtime_builder.NormalizedTrade(
+                ts=1000.0 + idx,
+                symbol=symbol,
+                price=10.0 + idx,
+                side="BUY" if idx % 2 == 0 else "SELL",
+                notional=100.0,
+            )
+
+    monkeypatch.setattr(runtime_builder, "discover_trade_files", fake_discover)
+    monkeypatch.setattr(runtime_builder, "iter_normalized_trades", fake_iter)
+    summary = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=tmp_path / "unused",
+        out_path=out,
+        bucket_sec=1,
+        rolling_sec=3,
+    )
+    assert yielded == [0, 1, 2, 3, 4]
+    assert summary["runtime_events_written"] == 5
+    assert out.read_text(encoding="utf-8").count("\n") == 5
+
+
+def test_analyze_zone_truth_warns_raw_tar_without_runtime_events(tmp_path, capsys):
+    paths = _write_inputs(tmp_path)
+    trades_dir = tmp_path / "raw_trades"
+    trades_dir.mkdir()
+    inner = tmp_path / "ETH-USDT-SWAP-trades.data"
+    inner.write_text('{"instId":"ETH-USDT-SWAP","ts":1000,"px":10,"sz":1,"side":"buy"}\n', encoding="utf-8")
+    with tarfile.open(trades_dir / "ETH-USDT-SWAP-trades-2026-05-01.tar.gz", "w:gz") as archive:
+        archive.add(inner, arcname="ETH-USDT-SWAP-trades.data")
+    rc = analyze_zone_truth.main(
+        [
+            "--phase1-candidates", str(paths["phase1"]),
+            "--a1-reactions", str(paths["reactions"]),
+            "--kline", str(paths["kline"]),
+            "--out", str(tmp_path / "out_raw_tar"),
+            "--trades-dir", str(trades_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "RuntimeEventSource supports jsonl/csv runtime_events" in captured.err

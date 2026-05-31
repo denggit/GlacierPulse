@@ -57,6 +57,7 @@ class RuntimeThreeAEngineConfig:
     enable_audit: bool = True
     max_fee_share_r: float = 1.0
     outcome_window_sec: int = 3600
+    default_expiry_sec: int = 900
 
 
 class RuntimeThreeABacktestEngine:
@@ -232,6 +233,7 @@ def default_runtime_engine_config(**overrides: Any) -> RuntimeThreeAEngineConfig
         next_tick_entry=bool(overrides.get("next_tick_entry", getattr(cfg, "V7_3A_RT_NEXT_TICK_ENTRY", False))),
         enable_audit=bool(overrides.get("enable_audit", getattr(cfg, "V7_3A_RT_ENABLE_NO_FUTURE_AUDIT", True))),
         max_fee_share_r=float(overrides.get("max_fee_share_r", getattr(cfg, "V7_3A_RT_MAX_FEE_SHARE_R", 1.0))),
+        default_expiry_sec=int(overrides.get("default_expiry_sec", max_age)),
     )
 
 
@@ -420,6 +422,7 @@ def _runtime_memory_profile(event_source: Any | None, ticks: list[dict[str, Any]
         "runtime_ticks_materialized_count": count,
         "runtime_window_reads": 0,
         "runtime_max_window_ticks": 0,
+        "runtime_candidate_file_scans": 0,
     }
 
 
@@ -544,10 +547,21 @@ def _reports(
         trade for trade in trades
         if not parse_bool(trade.get("uses_future_field_flag")) and not parse_bool(trade.get("trade_blocked_flag"))
     ]
+    default_expiry = int(config.default_expiry_sec)
+    default_expiry_trades = [
+        trade for trade in stats_trades
+        if int(parse_float(trade.get("a2_rt_expiry_sec"))) == default_expiry
+    ]
+    unique_signal_keys = {
+        (str(signal.get("zone_id") or ""), float(parse_float(signal.get("entry_ts"))))
+        for signal in signals
+    }
     return {
         "signals": signals,
         "trades": trades,
         "by_strategy": [_summary_row(name, [t for t in stats_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
+        "by_strategy_all_expiry_variants": [_summary_row(name, [t for t in stats_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
+        "by_strategy_default_expiry": [_summary_row(name, [t for t in default_expiry_trades if fn(t)], "strategy_variant") for name, fn in VARIANTS.items()],
         "by_vp_setup": _group_summary(stats_trades, "a1_vp_setup_rt"),
         "by_expiry": _expiry_summary(stats_trades, expiry_values, expiry_counters),
         "by_target_candidate": _group_summary(stats_trades, "target_model"),
@@ -556,6 +570,10 @@ def _reports(
             "runtime_3a_status": runtime_status,
             "signal_count": len(signals),
             "trade_count": len(stats_trades),
+            "trade_count_all_expiry_variants": len(stats_trades),
+            "default_expiry_sec": default_expiry,
+            "default_expiry_trade_count": len(default_expiry_trades),
+            "unique_signal_count": len(unique_signal_keys),
             "trade_candidate_count": len(trades),
             "trade_blocked_count": sum(1 for trade in trades if parse_bool(trade.get("trade_blocked_flag"))),
             "expiry_secs": expiry_values,
