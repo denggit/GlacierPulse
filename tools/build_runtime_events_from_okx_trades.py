@@ -50,6 +50,10 @@ JSON_FILE_DISABLED_ERROR = (
     "Raw .json files are disabled by default because json.load is not memory-safe. "
     "Use .jsonl/.data or pass --allow-json-file for small files."
 )
+GZ_JSON_DISABLED_ERROR = (
+    "Compressed .json.gz is disabled because uncompressed json.load size is not memory-safe. "
+    "Convert to .jsonl/.data."
+)
 NON_MONOTONIC_ERROR = "Non-monotonic trades detected. Re-run with --merge-sort-files or verify source file ordering."
 NON_MONOTONIC_UNSAFE_WARNING = "runtime_events may be non-monotonic and unsafe for windowed backtest"
 
@@ -88,6 +92,7 @@ class BuildStats:
     first_ts: float = 0.0
     last_ts: float = 0.0
     peak_rss_mb: float = 0.0
+    skipped_json_file_count: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -113,6 +118,7 @@ class BuildStats:
             "first_ts": self.first_ts,
             "last_ts": self.last_ts,
             "peak_rss_mb": self.peak_rss_mb,
+            "skipped_json_file_count": self.skipped_json_file_count,
         }
 
 
@@ -230,10 +236,13 @@ def build_runtime_events(
     success = False
 
     try:
-        if allow_json_file:
-            trade_files = discover_trade_files(trades_path, allow_json_file=True)
-        else:
-            trade_files = discover_trade_files(trades_path)
+        trade_files, skipped_json = discover_trade_files(trades_path, allow_json_file=allow_json_file)
+        stats.skipped_json_file_count = skipped_json
+        if skipped_json > 0:
+            stats.output_warning = _join_warning(
+                stats.output_warning,
+                "raw .json files were skipped; use .jsonl/.data or --allow-json-file for small files",
+            )
         trade_iter_kwargs: dict[str, Any] = {
             "symbol": symbol,
             "contract_multiplier": resolved_multiplier,
@@ -499,22 +508,25 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
         write_json(self.build_root / "runtime_events_manifest.json", manifest)
 
 
-def discover_trade_files(path: Path, *, allow_json_file: bool = False) -> list[Path]:
+def discover_trade_files(path: Path, *, allow_json_file: bool = False) -> tuple[list[Path], int]:
+    """Return (trade_files, skipped_json_file_count)."""
     if path.is_file():
         if _is_raw_json_path(path) and not allow_json_file:
             raise SystemExit(JSON_FILE_DISABLED_ERROR)
-        return [path] if _is_supported_trade_path(path, allow_json_file=allow_json_file) else []
+        return ([path] if _is_supported_trade_path(path, allow_json_file=allow_json_file) else [], 0)
     if not path.exists():
         raise SystemExit(f"trades path does not exist: {path}")
     files: list[Path] = []
+    skipped_json: int = 0
     for child in sorted(path.rglob("*")):
         if not child.is_file() or any(part.startswith(".") for part in child.parts):
             continue
         if _is_raw_json_path(child) and not allow_json_file:
-            raise SystemExit(JSON_FILE_DISABLED_ERROR)
+            skipped_json += 1
+            continue
         if _is_supported_trade_path(child, allow_json_file=allow_json_file):
             files.append(child)
-    return files
+    return files, skipped_json
 
 
 def iter_normalized_trades(
@@ -633,8 +645,7 @@ def iter_trade_rows(
     if name.endswith(".gz"):
         inner_suffix = path.with_suffix("").suffix.lower()
         if inner_suffix == ".json":
-            _ensure_json_file_allowed(allow_json_file)
-            _ensure_json_file_size(path, max_json_file_bytes)
+            raise SystemExit(GZ_JSON_DISABLED_ERROR)
         with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as handle:
             yield from iter_text_rows(
                 handle,

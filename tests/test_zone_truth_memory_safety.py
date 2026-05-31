@@ -546,8 +546,8 @@ def test_build_runtime_events_streaming_memory_safe(tmp_path, monkeypatch):
     out = tmp_path / "runtime_events.jsonl"
     yielded = []
 
-    def fake_discover(path):
-        return [path]
+    def fake_discover(path, *, allow_json_file=False):
+        return [path], 0
 
     def fake_iter(paths, *, symbol, contract_multiplier=1.0, merge_sort_files=False, max_json_line_bytes=runtime_builder.MAX_JSON_LINE_BYTES):
         for idx in range(5):
@@ -881,3 +881,167 @@ def test_runtime_input_wrong_format_errors(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 2
     assert "No runtime event jsonl/csv files found" in captured.err
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1: .json.gz must be disabled regardless of --allow-json-file
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_json_gz_disabled_by_default(tmp_path):
+    """Compressed .json.gz files must raise SystemExit with GZ_JSON_DISABLED_ERROR."""
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    gz_path = tmp_path / "trades.json.gz"
+    import gzip
+
+    with gzip.open(gz_path, "wt", encoding="utf-8") as gz:
+        gz.write(
+            json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}])
+        )
+    try:
+        list(runtime_builder.iter_trade_rows(gz_path))
+        assert False, ".json.gz must be disabled"
+    except SystemExit as exc:
+        assert "Compressed .json.gz is disabled" in str(exc)
+
+
+def test_json_gz_disabled_even_with_allow_json_file_flag(tmp_path):
+    """.json.gz must remain disabled even when --allow-json-file is passed."""
+    gz_path = tmp_path / "trades.json.gz"
+    import gzip
+
+    with gzip.open(gz_path, "wt", encoding="utf-8") as gz:
+        gz.write(
+            json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}])
+        )
+    try:
+        list(runtime_builder.iter_trade_rows(gz_path, allow_json_file=True))
+        assert False, ".json.gz must be disabled even with --allow-json-file"
+    except SystemExit as exc:
+        assert "Compressed .json.gz is disabled" in str(exc)
+
+
+def test_jsonl_gz_streams_normally(tmp_path):
+    """.jsonl.gz files still stream line-by-line normally."""
+    gz_path = tmp_path / "trades.jsonl.gz"
+    import gzip
+
+    with gzip.open(gz_path, "wt", encoding="utf-8") as gz:
+        gz.write(
+            json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n"
+        )
+        gz.write(
+            json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}) + "\n"
+        )
+    rows = list(runtime_builder.iter_trade_rows(gz_path))
+    assert len(rows) == 2
+    assert rows[0]["ts"] == 1000
+    assert rows[1]["ts"] == 1001
+
+
+def test_data_gz_streams_normally(tmp_path):
+    """.data.gz files still stream line-by-line normally."""
+    gz_path = tmp_path / "trades.data.gz"
+    import gzip
+
+    with gzip.open(gz_path, "wt", encoding="utf-8") as gz:
+        gz.write(
+            json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]) + "\n"
+        )
+        gz.write(
+            json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1001, "px": 11, "sz": 3, "side": "sell"}]) + "\n"
+        )
+    rows = list(runtime_builder.iter_trade_rows(gz_path))
+    assert len(rows) == 2
+    assert rows[0]["ts"] == 1000
+    assert rows[1]["ts"] == 1001
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# V7.3.0 P1: directory scan skips unrelated .json instead of failing
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_directory_with_unrelated_json_succeeds(tmp_path):
+    """Directory containing valid .jsonl + unrelated summary.json should build successfully."""
+    trades_dir = tmp_path / "trades_dir"
+    trades_dir.mkdir()
+
+    valid_jsonl = trades_dir / "trades.jsonl"
+    valid_jsonl.write_text(
+        "\n".join(
+            json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000 + i, "px": 10 + i, "sz": 2, "side": "buy"})
+            for i in range(3)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = trades_dir / "summary.json"
+    summary.write_text(
+        json.dumps({"total": 3, "source": "some_other_tool"}),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "runtime_events.jsonl"
+    summary_out = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        contract_multiplier=1.0,
+    )
+    assert summary_out["total_trades_read"] == 3
+    assert summary_out["runtime_events_written"] == 3
+    assert summary_out["skipped_json_file_count"] == 1
+    assert "raw .json files were skipped" in summary_out["output_warning"]
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 3
+
+
+def test_directory_with_allow_json_file_processes_json(tmp_path):
+    """With --allow-json-file, directory .json files ARE processed (subject to size limit)."""
+    trades_dir = tmp_path / "trades_dir"
+    trades_dir.mkdir()
+
+    trades_json = trades_dir / "trades.json"
+    trades_json.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+
+    out = tmp_path / "runtime_events.jsonl"
+    summary_out = runtime_builder.build_runtime_events(
+        symbol="ETH-USDT-SWAP",
+        trades_path=trades_dir,
+        out_path=out,
+        contract_multiplier=1.0,
+        allow_json_file=True,
+    )
+    assert summary_out["skipped_json_file_count"] == 0
+    assert summary_out["total_trades_read"] == 1
+    rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+
+
+def test_direct_json_file_path_still_fails(tmp_path):
+    """Directly passing a .json file as trades_path still raises (unchanged behavior)."""
+    trades = tmp_path / "trades.json"
+    trades.write_text(
+        json.dumps([{"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}]),
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="ETH-USDT-SWAP",
+            trades_path=trades,
+            out_path=out,
+            contract_multiplier=1.0,
+        )
+        assert False, "direct .json path must still fail"
+    except SystemExit as exc:
+        assert str(exc) == runtime_builder.JSON_FILE_DISABLED_ERROR
