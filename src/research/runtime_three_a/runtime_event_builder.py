@@ -709,13 +709,22 @@ def build_runtime_events(
         writer = _ShardedRuntimeEventWriter(out_dir, overwrite=overwrite)
     else:
         writer = _SingleRuntimeEventWriter(out_path, overwrite=overwrite)  # type: ignore[arg-type]
-    accumulator = RuntimeEventAccumulator(
-        symbol=symbol,
-        bucket_sec=bucket_sec,
-        rolling_sec=rolling_sec,
-        contract_multiplier=resolved_multiplier,
-        notional_mode=stats.notional_mode,
-    )
+    def new_accumulator() -> RuntimeEventAccumulator:
+        return RuntimeEventAccumulator(
+            symbol=symbol,
+            bucket_sec=bucket_sec,
+            rolling_sec=rolling_sec,
+            contract_multiplier=resolved_multiplier,
+            notional_mode=stats.notional_mode,
+        )
+
+    def write_accumulator_event(event: dict[str, Any]) -> None:
+        event["condition_source"] = "okx_raw_trades_builder"
+        writer.write(event)
+        stats.runtime_events_written += 1
+
+    accumulator = new_accumulator()
+    current_day: str | None = None
     prev_ts: float | None = None
     success = False
 
@@ -779,33 +788,28 @@ def build_runtime_events(
                 if NON_MONOTONIC_UNSAFE_WARNING not in stats.output_warning:
                     stats.output_warning = _join_warning(stats.output_warning, NON_MONOTONIC_UNSAFE_WARNING)
                 for event in accumulator.flush():
-                    event["condition_source"] = "okx_raw_trades_builder"
-                    writer.write(event)
-                    stats.runtime_events_written += 1
-                accumulator = RuntimeEventAccumulator(
-                    symbol=symbol,
-                    bucket_sec=bucket_sec,
-                    rolling_sec=rolling_sec,
-                    contract_multiplier=resolved_multiplier,
-                    notional_mode=stats.notional_mode,
-                )
+                    write_accumulator_event(event)
+                accumulator = new_accumulator()
+                current_day = None
             stats.first_ts = trade.ts if stats.first_ts <= 0 else min(stats.first_ts, trade.ts)
             stats.last_ts = max(stats.last_ts, trade.ts)
+            trade_day = _utc_day(trade.ts)
+            if current_day is not None and trade_day != current_day:
+                for event in accumulator.flush():
+                    write_accumulator_event(event)
+                accumulator = new_accumulator()
+            current_day = trade_day
             for event in accumulator.update_trade(
                 trade.ts,
                 trade.price,
                 trade.side,
                 notional=trade.notional,
             ):
-                event["condition_source"] = "okx_raw_trades_builder"
-                writer.write(event)
-                stats.runtime_events_written += 1
+                write_accumulator_event(event)
             prev_ts = trade.ts
 
         for event in accumulator.flush():
-            event["condition_source"] = "okx_raw_trades_builder"
-            writer.write(event)
-            stats.runtime_events_written += 1
+            write_accumulator_event(event)
         writer.close()
 
         stats.skipped_json_file_count += read_stats.skipped_json_file_count

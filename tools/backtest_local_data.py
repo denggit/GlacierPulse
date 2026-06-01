@@ -578,7 +578,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     multiplier = resolve_contract_multiplier_for_replay(str(args.symbol), args.contract_multiplier)
     runtime_cache_enabled = parse_bool_arg(args.enable_runtime_events_cache)
     runtime_cache_manager: RuntimeEventCacheManager | None = None
-    runtime_accumulator: RuntimeEventAccumulator | None = None
+    runtime_accumulators: dict[str, RuntimeEventAccumulator] = {}
     runtime_writers: dict[str, Any] = {}
     selected_days = parse_runtime_cache_days(args.runtime_events_cache_days) or infer_utc_days_from_paths(trades_files)
     actual_runtime_days: set[str] = set()
@@ -601,14 +601,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cache_hit_days.add(day)
             else:
                 cache_miss_days.add(day)
-        if not selected_days or cache_miss_days:
-            runtime_accumulator = RuntimeEventAccumulator(
-                symbol=str(args.symbol),
-                bucket_sec=float(args.runtime_events_bucket_sec),
-                rolling_sec=float(args.runtime_events_rolling_sec),
-                contract_multiplier=float(multiplier),
-                notional_mode="price_x_size_x_contract_multiplier",
-            )
     book_cleaning = BookCleaningOptions(
         event_mode=str(args.books_event_mode),
         depth_limit=max(1, int(args.books_depth_limit)),
@@ -693,7 +685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         trade=event.payload,
                         event_ts=event.ts,
                         manager=runtime_cache_manager,
-                        accumulator=runtime_accumulator,
+                        accumulators=runtime_accumulators,
                         writers=runtime_writers,
                         selected_days=selected_days,
                         actual_days=actual_runtime_days,
@@ -724,7 +716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if replay_success:
                 finalize_runtime_cache_writers(
                     manager=runtime_cache_manager,
-                    accumulator=runtime_accumulator,
+                    accumulators=runtime_accumulators,
                     writers=runtime_writers,
                     cache_miss_days=cache_miss_days,
                     generated_days=generated_days,
@@ -924,7 +916,7 @@ def handle_runtime_cache_trade(
     trade: Mapping[str, Any],
     event_ts: float,
     manager: Any,
-    accumulator: Any,
+    accumulators: dict[str, Any],
     writers: dict[str, Any],
     selected_days: list[str],
     actual_days: set[str],
@@ -939,8 +931,20 @@ def handle_runtime_cache_trade(
             cache_hit_days.add(day)
         else:
             cache_miss_days.add(day)
-    if accumulator is None:
+    if day in cache_hit_days:
         return
+    accumulator = accumulators.get(day)
+    if accumulator is None:
+        from src.research.runtime_three_a.runtime_event_builder import RuntimeEventAccumulator
+
+        accumulator = RuntimeEventAccumulator(
+            symbol=manager.symbol,
+            bucket_sec=manager.bucket_sec,
+            rolling_sec=manager.rolling_sec,
+            contract_multiplier=manager.contract_multiplier,
+            notional_mode=manager.notional_mode,
+        )
+        accumulators[day] = accumulator
     raw_size = trade.get("raw_size", trade.get("size"))
     events = accumulator.update_trade(
         ts=float(event_ts),
@@ -973,13 +977,13 @@ def write_runtime_cache_event(
 def finalize_runtime_cache_writers(
     *,
     manager: Any,
-    accumulator: Any,
+    accumulators: dict[str, Any],
     writers: dict[str, Any],
     cache_miss_days: set[str],
     generated_days: set[str],
 ) -> None:
     try:
-        if accumulator is not None:
+        for accumulator in accumulators.values():
             for event in accumulator.flush():
                 write_runtime_cache_event(event, manager, writers, cache_miss_days, generated_days)
         for day, writer in list(writers.items()):
@@ -990,6 +994,7 @@ def finalize_runtime_cache_writers(
             writer.cleanup()
         raise
     finally:
+        accumulators.clear()
         writers.clear()
 
 
