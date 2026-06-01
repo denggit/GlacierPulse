@@ -375,6 +375,20 @@ def test_runtime_engine_config_uses_light_a2_values():
     assert engine.config.a2.enable_light_ready is False
 
 
+def test_runtime_engine_config_uses_cfg_light_a2_values(monkeypatch):
+    from config import research_evaluator as research_cfg
+
+    monkeypatch.setattr(research_cfg, "A2_RT_ENABLE_LIGHT_READY", False)
+    monkeypatch.setattr(research_cfg, "A2_RT_MIN_LIGHT_SEC", 5.0)
+    monkeypatch.setattr(research_cfg, "A2_RT_MIN_LIGHT_TICK_COUNT", 4)
+
+    cfg = default_runtime_engine_config()
+
+    assert cfg.a2.enable_light_ready is False
+    assert cfg.a2.min_light_sec == 5.0
+    assert cfg.a2.min_light_tick_count == 4
+
+
 def test_a2_with_expiry_preserves_light_a2_config():
     base = default_runtime_engine_config(
         a2_rt_min_light_sec=5,

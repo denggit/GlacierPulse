@@ -26,6 +26,7 @@ EXCLUDED_DIR_NAMES = {
     "data",
     "logs",
     "node_modules",
+    "reports",
     "venv",
 }
 
@@ -41,6 +42,7 @@ EXCLUDED_SUFFIXES = {
     ".pyo",
     ".sqlite",
     ".sqlite3",
+    ".zip",
 }
 
 

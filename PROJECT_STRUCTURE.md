@@ -6,6 +6,7 @@
 
 ```text
 GlacierPulse/
+|-- .claude/
 |-- config/
 |   |-- run_profiles/
 |   |   |-- a1_edge_capture.json
@@ -14,9 +15,14 @@ GlacierPulse/
 |   |-- env_loader.py
 |   |-- research_evaluator.py
 |   `-- runtime_profile.json
-|-- DOCS/
-|   |-- local_okx_backtest_runbook.md
+|-- docs/
+|   |-- research/
+|   |   |-- NO_FUTURE_FIELD_GUIDE.md
+|   |   |-- V7.3_RUNTIME_3A_RUNBOOK.md
+|   |   `-- V7.3_RUNTIME_3A_STRATEGY.md
+|   |-- LOCAL_OKX_BACKTEST_RUNBOOK.md
 |   |-- PROJECT_PLAN.md
+|   |-- replay_output_equivalence_check.md
 |   |-- RESEARCH_REPORTS_RUNBOOK.md
 |   |-- V6.2_SHADOW_RUN_GUIDE.md
 |   |-- V6.2总体定位
@@ -69,6 +75,9 @@ GlacierPulse/
 |   |   |   |-- random_baseline.py
 |   |   |   |-- report_builder.py
 |   |   |   `-- schema.py
+|   |   |-- context/
+|   |   |   |-- __init__.py
+|   |   |   `-- iceberg_context_labels.py
 |   |   |-- phase1_truth/
 |   |   |   |-- __init__.py
 |   |   |   |-- analyzer.py
@@ -76,15 +85,37 @@ GlacierPulse/
 |   |   |   |-- recorder.py
 |   |   |   |-- scorer.py
 |   |   |   `-- tracker.py
+|   |   |-- runtime_three_a/
+|   |   |   |-- __init__.py
+|   |   |   |-- a2_runtime_state.py
+|   |   |   |-- a3_runtime_entry.py
+|   |   |   |-- contract_specs.py
+|   |   |   |-- runtime_engine.py
+|   |   |   |-- runtime_event_builder.py
+|   |   |   |-- runtime_event_source.py
+|   |   |   |-- stop_models.py
+|   |   |   |-- target_models.py
+|   |   |   |-- three_a_strategy_backtest.py
+|   |   |   `-- vp_a1_setup.py
 |   |   |-- zone_truth/
 |   |   |   |-- __init__.py
+|   |   |   |-- a1_evidence_v2.py
+|   |   |   |-- a2_accumulation_v2.py
+|   |   |   |-- a2_state.py
+|   |   |   |-- a3_aggression_v2.py
+|   |   |   |-- a3_quality_future_v2.py
 |   |   |   |-- aggregator.py
 |   |   |   |-- analyzer.py
+|   |   |   |-- combo_matrix.py
 |   |   |   |-- forward.py
 |   |   |   |-- market_context.py
-|   |   |   `-- models.py
+|   |   |   |-- models.py
+|   |   |   |-- trade_simulator.py
+|   |   |   `-- zone_boundary_v2.py
 |   |   |-- __init__.py
-|   |   `-- a1_frozen_metadata.py
+|   |   |-- a1_frozen_metadata.py
+|   |   |-- field_registry.py
+|   |   `-- no_future_audit.py
 |   |-- strategy/
 |   |   |-- a1_absorption/
 |   |   |   |-- __init__.py
@@ -131,9 +162,18 @@ GlacierPulse/
 |   |-- test_backtest_local_data_book_cleaner.py
 |   |-- test_backtest_local_data_cache.py
 |   |-- test_backtest_local_data_coverage.py
+|   |-- test_backtest_local_data_reports.py
 |   |-- test_backtest_local_data_time_alignment.py
+|   |-- test_download_okx_historical_data.py
+|   |-- test_iceberg_context_labels.py
 |   |-- test_market_context.py
+|   |-- test_no_future_field_hygiene.py
 |   |-- test_phase1_live.py
+|   |-- test_runtime_a2_state_machine.py
+|   |-- test_runtime_a3_entry.py
+|   |-- test_runtime_events_cache_integration.py
+|   |-- test_three_a_rt_strategy_backtest.py
+|   |-- test_trade_simulator_streaming.py
 |   |-- test_v62_logging_controls.py
 |   |-- test_v62_research_evaluator.py
 |   |-- test_v63102_main_loads_runtime_profile_early.py
@@ -159,6 +199,12 @@ GlacierPulse/
 |   |-- test_v6311_phase1_candidate_recorder.py
 |   |-- test_v6311_phase1_parameter_grid.py
 |   |-- test_v6311_phase1_truth_scorer.py
+|   |-- test_v6312_a2_state_classifier.py
+|   |-- test_v6312_a3_preview_breakout.py
+|   |-- test_v6312_fee_aware_a3_preview.py
+|   |-- test_v6312_reaction_event_timestamp.py
+|   |-- test_v6312_structural_stop_proxy.py
+|   |-- test_v6312_zone_truth_a2_fields.py
 |   |-- test_v638_a1_reaction_no_direct_virtual_by_default.py
 |   |-- test_v638_candidate_log_a1_fields.py
 |   |-- test_v638_event_schema_a1_fields.py
@@ -176,18 +222,30 @@ GlacierPulse/
 |   |-- test_v63_a1_research_report.py
 |   |-- test_v63_a1_schema_adapters.py
 |   |-- test_v63_a1_virtual_chain_switch.py
-|   `-- test_v63_phase1_engine_semantic_imports.py
+|   |-- test_v63_phase1_engine_semantic_imports.py
+|   |-- test_v73_zone_truth_reports.py
+|   |-- test_v7_a1_evidence_v2.py
+|   |-- test_v7_a2_accumulation_path.py
+|   |-- test_v7_a3_aggression_v2.py
+|   |-- test_v7_combo_matrix.py
+|   |-- test_v7_generate_reports.py
+|   |-- test_v7_trade_simulator.py
+|   |-- test_v7_zone_boundary_v2.py
+|   |-- test_vp_directional_nodes.py
+|   `-- test_zone_truth_memory_safety.py
 |-- tools/
 |   |-- __init__.py
 |   |-- analyze_a1_edge.py
 |   |-- analyze_phase1_candidates.py
 |   |-- analyze_zone_truth.py
 |   |-- backtest_local_data.py
+|   |-- build_runtime_events_from_okx_trades.py
 |   |-- download_okx_historical_data.py
 |   |-- export_history_k.py
 |   |-- generate_project_tree.py
 |   |-- generate_research_reports.py
-|   `-- parse_iceberg_log.py
+|   |-- parse_iceberg_log.py
+|   `-- send_file.py
 |-- .gitattributes
 |-- .gitignore
 |-- delete_table.py

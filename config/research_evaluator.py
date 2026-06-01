@@ -138,6 +138,9 @@ A2_RT_MAX_BOX_WIDTH_MULTIPLIER = _float_config("A2_RT_MAX_BOX_WIDTH_MULTIPLIER",
 A2_RT_QUIET_VOLUME_RATIO_MAX = _float_config("A2_RT_QUIET_VOLUME_RATIO_MAX", 0.45)
 A2_RT_CVD_STALL_RATIO_MAX = _float_config("A2_RT_CVD_STALL_RATIO_MAX", 0.35)
 A2_RT_INVALIDATION_BUFFER_U = _float_config("A2_RT_INVALIDATION_BUFFER_U", 0.5)
+A2_RT_ENABLE_LIGHT_READY = _bool_config("A2_RT_ENABLE_LIGHT_READY", True)
+A2_RT_MIN_LIGHT_SEC = _float_config("A2_RT_MIN_LIGHT_SEC", 2.0)
+A2_RT_MIN_LIGHT_TICK_COUNT = _int_config("A2_RT_MIN_LIGHT_TICK_COUNT", 2)
 
 A3_RT_BREAKOUT_BUFFER_U = _float_config("A3_RT_BREAKOUT_BUFFER_U", 0.5)
 A3_RT_ACTIVE_FLOW_RATIO = _float_config("A3_RT_ACTIVE_FLOW_RATIO", 1.5)
@@ -169,27 +172,27 @@ def _log_default_for_profile(
 
 V62_LOG_PENDING_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_PENDING_ICEBERG_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_IGNORE_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_IGNORE_ICEBERG_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_SPOOFING_WITHDRAWAL_ENABLED = _bool_config(
     "V62_LOG_SPOOFING_WITHDRAWAL_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_SETTLED_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_SETTLED_ICEBERG_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_PHASE1_QUALITY_ENABLED = _bool_config(
     "V62_LOG_PHASE1_QUALITY_ENABLED",
-    False,
+    _log_default_for_profile(True, True, False),
 )
 V62_LOG_CANCEL_ICEBERG_ENABLED = _bool_config(
     "V62_LOG_CANCEL_ICEBERG_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_PENDING_DROP_ENABLED = _bool_config(
     "V62_LOG_PENDING_DROP_ENABLED",
@@ -201,11 +204,11 @@ V62_LOG_A1_ICEBERG_EVENT_ENABLED = _bool_config(
 )
 V62_LOG_A1_ZONE_NEW_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_NEW_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_A1_ZONE_UPDATE_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_UPDATE_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_A1_ZONE_BROKEN_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_BROKEN_ENABLED",
@@ -213,27 +216,27 @@ V62_LOG_A1_ZONE_BROKEN_ENABLED = _bool_config(
 )
 V62_LOG_A1_ZONE_EXPIRED_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_EXPIRED_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_A1_ZONE_STRESSED_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_STRESSED_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_A1_ZONE_FROZEN_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_FROZEN_ENABLED",
-    False,
+    _log_default_for_profile(True, True, True),
 )
 V62_LOG_A1_ZONE_OUTCOME_ENABLED = _bool_config(
     "V62_LOG_A1_ZONE_OUTCOME_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_PHASE2_REGISTERED_ENABLED = _bool_config(
     "V62_LOG_PHASE2_REGISTERED_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_PHASE2_STATE_ENABLED = _bool_config(
     "V62_LOG_PHASE2_STATE_ENABLED",
-    False,
+    _log_default_for_profile(True, False, False),
 )
 V62_LOG_PHASE2_CONFIRMED_ENABLED = _bool_config(
     "V62_LOG_PHASE2_CONFIRMED_ENABLED",
