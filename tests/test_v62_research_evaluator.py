@@ -126,7 +126,8 @@ def test_a1_frozen_metadata_field_schema_consistent():
     assert "net_score" in A1_SCORE_METADATA_FIELDS
 
 
-def test_phase2_registers_frozen_zone_once(caplog):
+def test_phase2_registers_frozen_zone_once(caplog, monkeypatch):
+    monkeypatch.setattr(research_config, "V62_LOG_PHASE2_REGISTERED_ENABLED", True)
     evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
     zone = _frozen_zone()
 
@@ -430,7 +431,8 @@ def test_phase2_expired_log_includes_expire_reason(caplog):
     assert all("relevant_book_depth_available=" in message for message in expired_logs)
 
 
-def test_phase2_buy_clean_sweep_reclaim_path_confirms(caplog):
+def test_phase2_buy_clean_sweep_reclaim_path_confirms(caplog, monkeypatch):
+    monkeypatch.setattr(research_config, "V62_LOG_PHASE2_STATE_ENABLED", True)
     evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=1800)
     assert evaluator.register_frozen_zone(_frozen_zone("iz-buy-clean", frozen_ts=100.0), now_ts=100.0) is True
 
@@ -632,7 +634,8 @@ def test_phase2_break_depth_hard_fails():
     assert snapshot["phase2_reason"] == "hard_sweep_depth_exceeded"
 
 
-def test_phase2_timeout_transitions_before_prune(caplog):
+def test_phase2_timeout_transitions_before_prune(caplog, monkeypatch):
+    monkeypatch.setattr(research_config, "V62_LOG_PHASE2_STATE_ENABLED", True)
     evaluator = Phase2OrderflowEvaluator(max_active_zones=20, zone_ttl_seconds=10)
     assert evaluator.register_frozen_zone(_frozen_zone("iz-timeout-state", frozen_ts=100.0), now_ts=100.0) is True
 
@@ -1285,7 +1288,8 @@ def test_virtual_dynamic_stop_used_for_stop_loss(monkeypatch):
     assert closed["realized_r_multiple"] != original_stop_r
 
 
-def test_virtual_same_direction_support_update_does_not_add_position(caplog):
+def test_virtual_same_direction_support_update_does_not_add_position(caplog, monkeypatch):
+    monkeypatch.setattr(research_config, "V62_LOG_VIRTUAL_SUPPORT_UPDATE_ENABLED", True)
     m = VirtualPositionManager()
     m.on_candidate(_accepted_candidate(direction="BUY", price=3000.0, stop=2998.0, zone_id="z1"))
     first = m.get_active_position()

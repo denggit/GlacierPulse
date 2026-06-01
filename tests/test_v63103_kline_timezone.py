@@ -91,10 +91,11 @@ def test_no_overlap_cli_emits_time_warning(tmp_path):
 
 
 def test_insufficient_future_data_flag_when_future_bars_are_too_sparse():
-    event = A1EdgeEvent.from_mapping({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
+    BASE_TS = 1_700_000_000
+    event = A1EdgeEvent.from_mapping({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": BASE_TS + 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
     bars = [
-        {"timestamp": 0, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1},
-        {"timestamp": 60, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
+        {"timestamp": BASE_TS, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1},
+        {"timestamp": BASE_TS + 60, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
     ]
     metric = compute_forward_metric(event, bars, 900)
     assert metric.future_bar_count == 1
@@ -120,10 +121,11 @@ def test_insufficient_rows_do_not_enter_comparator_core_stats():
 
 
 def test_hypothesis_summary_excludes_insufficient_future_data():
-    event = A1EdgeEvent.from_mapping({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
+    BASE_TS = 1_700_000_000
+    event = A1EdgeEvent.from_mapping({"zone_id": "z1", "direction": "BUY", "reaction_event_ts": BASE_TS + 30, "last_price": 100, "frozen_low": 99, "frozen_high": 101})
     bars = [
-        {"timestamp": 0, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1},
-        {"timestamp": 60, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
+        {"timestamp": BASE_TS, "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1},
+        {"timestamp": BASE_TS + 60, "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
     ]
     simulator = A1HypothesisSimulator(window_sec=900, min_group_sample_size=1)
     rows = simulator.simulate([event], bars)
