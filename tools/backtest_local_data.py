@@ -49,7 +49,6 @@ logger = None
 TEXT_SUFFIXES = {".csv", ".jsonl", ".ndjson", ".json"}
 JSON_LINE_SUFFIXES = {".jsonl", ".ndjson"}
 JSON_SUFFIXES = {".json", ".jsonl", ".ndjson"}
-CONTRACT_MULTIPLIERS = {"ETH-USDT-SWAP": 0.1}
 LOCAL_REPLAY_LOG_OVERRIDE_ENV_KEYS = (
     "V62_INTEGRATION_HEARTBEAT_ENABLED",
     "V62_LOG_SAFETY_AND_HEARTBEAT_ENABLED",
@@ -505,7 +504,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--runtime-events-bucket-sec", type=float, default=1.0)
     p.add_argument("--runtime-events-rolling-sec", type=float, default=3.0)
     p.add_argument("--runtime-events-cache-overwrite", choices=["true", "false"], default="false")
-    p.add_argument("--runtime-events-cache-days", help="Optional comma-separated UTC dates, YYYY-MM-DD.")
+    p.add_argument(
+        "--runtime-events-cache-days",
+        help="Advanced/debug override for runtime_events cache days. Normal research should use --start-date/--end-date.",
+    )
     p.add_argument("--disable-runtime-3a", action="store_true", help="Disable V7.3 runtime A2/A3 report generation for this run.")
     p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD at 00:00:00 UTC.")
     p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next day 00:00:00 UTC.")
@@ -575,7 +577,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     global logger
     logger = get_logger("BacktestLocalData")
 
-    multiplier = resolve_contract_multiplier_for_replay(str(args.symbol), args.contract_multiplier)
+    multiplier_resolution = resolve_contract_multiplier_for_replay(str(args.symbol), args.contract_multiplier)
+    multiplier = multiplier_resolution.multiplier
+    multiplier_source = multiplier_resolution.source
     runtime_cache_enabled = parse_bool_arg(args.enable_runtime_events_cache)
     runtime_cache_manager: RuntimeEventCacheManager | None = None
     runtime_accumulators: dict[str, RuntimeEventAccumulator] = {}
@@ -593,6 +597,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bucket_sec=float(args.runtime_events_bucket_sec),
             rolling_sec=float(args.runtime_events_rolling_sec),
             contract_multiplier=float(multiplier),
+            contract_multiplier_source=multiplier_source,
             notional_mode="price_x_size_x_contract_multiplier",
             overwrite=parse_bool_arg(args.runtime_events_cache_overwrite),
         )
@@ -744,7 +749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report_start = time.perf_counter()
         runtime_events_source = None
         if runtime_cache_enabled and runtime_cache_manager is not None:
-            effective_days = sorted(actual_runtime_days or set(selected_days))
+            effective_days = sorted(set(selected_days) or actual_runtime_days)
             runtime_events_source = runtime_cache_manager.selected_source(effective_days)
             runtime_events_used_by_zone_truth = bool(runtime_events_source is not None and not args.disable_runtime_3a)
             runtime_cache_manager.write_run_ref(
@@ -765,7 +770,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             patch_zone_truth_runtime_status(resolve_report_run_name(args), "SKIPPED_NO_RUNTIME_EVENTS_CACHE")
         profiler.report_generation_sec = time.perf_counter() - report_start
     elif runtime_cache_enabled and runtime_cache_manager is not None:
-        effective_days = sorted(actual_runtime_days or set(selected_days))
+        effective_days = sorted(set(selected_days) or actual_runtime_days)
         runtime_cache_manager.write_run_ref(
             out_dir,
             effective_days,
@@ -780,6 +785,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run_name": args.run_name,
         "symbol": args.symbol,
         "contract_multiplier": multiplier,
+        "contract_multiplier_source": multiplier_source,
         "trades_path": str(trades_input),
         "books_path": str(books_input) if books_input else "",
         "time_window": {
@@ -809,11 +815,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "runtime_events_cache": {
             "enabled": runtime_cache_enabled,
             "cache_dir": str(runtime_cache_manager.cache_dir()) if runtime_cache_manager is not None else "",
-            "selected_days": sorted(actual_runtime_days or set(selected_days)),
-            "cache_hit_days": sorted(cache_hit_days & set(actual_runtime_days or selected_days)),
-            "cache_miss_days": sorted(cache_miss_days & set(actual_runtime_days or selected_days)),
-            "generated_days": sorted(generated_days & set(actual_runtime_days or selected_days)),
-            "reused_days": sorted(cache_hit_days & set(actual_runtime_days or selected_days)),
+            "contract_multiplier": multiplier,
+            "contract_multiplier_source": multiplier_source,
+            "selected_days": sorted(set(selected_days) or actual_runtime_days),
+            "cache_hit_days": sorted(cache_hit_days & (set(selected_days) or actual_runtime_days)),
+            "cache_miss_days": sorted(cache_miss_days & (set(selected_days) or actual_runtime_days)),
+            "generated_days": sorted(generated_days & (set(selected_days) or actual_runtime_days)),
+            "reused_days": sorted(cache_hit_days & (set(selected_days) or actual_runtime_days)),
             "estimated_cache_size_mb": estimated_runtime_cache_size_mb(runtime_cache_manager.cache_dir()) if runtime_cache_manager is not None else 0.0,
             "runtime_events_used_by_zone_truth": runtime_events_used_by_zone_truth,
         },
@@ -873,10 +881,13 @@ def parse_bool_arg(value: Any) -> bool:
     return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
 
 
-def resolve_contract_multiplier_for_replay(symbol: str, value: float | None) -> float:
-    if value is None and "-SWAP" in str(symbol).upper():
-        raise SystemExit("--contract-multiplier is required for SWAP symbols to avoid incorrect notional.")
-    return float(1.0 if value is None else value)
+def resolve_contract_multiplier_for_replay(symbol: str, value: float | None):
+    from src.research.runtime_three_a.contract_specs import resolve_contract_multiplier
+
+    try:
+        return resolve_contract_multiplier(symbol, value)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def parse_runtime_cache_days(value: str | None) -> list[str]:
@@ -926,6 +937,8 @@ def handle_runtime_cache_trade(
 ) -> None:
     day = utc_day(event_ts)
     actual_days.add(day)
+    if selected_days and day not in set(selected_days):
+        return
     if day not in cache_hit_days and day not in cache_miss_days:
         if manager.has_valid_day(day):
             cache_hit_days.add(day)

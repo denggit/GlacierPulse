@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from src.research.runtime_three_a.contract_specs import resolve_contract_multiplier
 from src.research.runtime_three_a import runtime_event_builder as runtime_builder
 from src.research.runtime_three_a.runtime_event_builder import (
     RuntimeEventAccumulator,
@@ -89,15 +90,20 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(backtest, "LocalA1ResearchRuntime", Runtime)
 
 
-def _run_backtest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, days=("2026-04-01",), generate_reports=False):
+def _run_backtest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    days=("2026-04-01",),
+    generate_reports=False,
+    contract_multiplier: float | None = 0.01,
+    extra_args: list[str] | None = None,
+):
     _patch_runtime(monkeypatch)
     trades_dir, books, kline = _write_replay_inputs(tmp_path, days=days)
     out = tmp_path / "out"
     argv = [
         "--symbol",
         "ETH-USDT-SWAP",
-        "--contract-multiplier",
-        "0.01",
         "--trades-dir",
         str(trades_dir),
         "--books-file",
@@ -107,8 +113,12 @@ def _run_backtest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, days=("2026-0
         "--runtime-events-cache-root",
         str(tmp_path / "cache"),
     ]
+    if contract_multiplier is not None:
+        argv.extend(["--contract-multiplier", str(contract_multiplier)])
     if generate_reports:
         argv.extend(["--generate-reports", "--kline", str(kline)])
+    if extra_args:
+        argv.extend(extra_args)
     code = backtest.main(argv)
     return code, out, tmp_path / "cache"
 
@@ -168,6 +178,33 @@ def _build_runtime_events_for_rows(tmp_path: Path, rows_by_day: dict[str, list[d
     return out_dir
 
 
+def _write_dated_replay_dirs(tmp_path: Path, days=("2026-04-01", "2026-04-02")) -> tuple[Path, Path, Path]:
+    trades_dir = tmp_path / "trades"
+    books_dir = tmp_path / "books"
+    kline = tmp_path / "kline.csv"
+    trades_dir.mkdir(parents=True, exist_ok=True)
+    books_dir.mkdir(parents=True, exist_ok=True)
+    base_ts = {
+        "2026-04-01": 1775001600.1,
+        "2026-04-02": 1775088000.1,
+    }
+    for day in days:
+        ts = base_ts[day]
+        (trades_dir / f"ETH-USDT-SWAP-trades-{day}.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"ts": ts, "price": 100.0, "size": 10.0, "side": "buy", "instId": "ETH-USDT-SWAP"}),
+                    json.dumps({"ts": ts + 1.0, "price": 101.0, "size": 5.0, "side": "sell", "instId": "ETH-USDT-SWAP"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (books_dir / f"ETH-USDT-SWAP-books-{day}.jsonl").write_text("", encoding="utf-8")
+    kline.write_text("ts,open,high,low,close,volume\n", encoding="utf-8")
+    return trades_dir, books_dir, kline
+
+
 def _day_boundary_rows() -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
     day1_buy = {
         "ts": _utc_ts("2026-04-01", 23, 59, 59.5),
@@ -218,6 +255,29 @@ def test_runtime_events_imports_available():
     assert runtime_events_param_key(bucket_sec=1, rolling_sec=3, contract_multiplier=0.01)
 
 
+def test_eth_swap_contract_multiplier_defaults_to_0p1():
+    resolved = resolve_contract_multiplier("ETH-USDT-SWAP", None)
+    assert resolved.multiplier == 0.1
+    assert resolved.source == "okx_known_default"
+
+
+def test_cli_explicit_multiplier_overrides_eth_default():
+    resolved = resolve_contract_multiplier("ETH-USDT-SWAP", 0.01)
+    assert resolved.multiplier == 0.01
+    assert resolved.source == "cli_explicit"
+
+
+def test_unknown_swap_requires_multiplier():
+    with pytest.raises(ValueError, match="contract multiplier is required for unknown SWAP symbol: SOL-USDT-SWAP"):
+        resolve_contract_multiplier("SOL-USDT-SWAP", None)
+
+
+def test_non_swap_defaults_to_1():
+    resolved = resolve_contract_multiplier("ETH-USDT", None)
+    assert resolved.multiplier == 1.0
+    assert resolved.source == "non_swap_default"
+
+
 def test_backtest_local_data_generates_missing_day_cache(tmp_path, monkeypatch):
     code, out, cache_root = _run_backtest(tmp_path, monkeypatch)
     ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
@@ -226,6 +286,41 @@ def test_backtest_local_data_generates_missing_day_cache(tmp_path, monkeypatch):
     assert ref["generated_days"] == ["2026-04-01"]
     assert (Path(ref["cache_dir"]) / "2026-04-01.jsonl").exists()
     assert not list(out.rglob("*.jsonl.tmp"))
+
+
+def test_backtest_local_data_eth_runs_without_contract_multiplier(tmp_path, monkeypatch):
+    code, out, _cache_root = _run_backtest(tmp_path, monkeypatch, contract_multiplier=None)
+    ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert ref["contract_multiplier"] == 0.1
+    assert ref["contract_multiplier_source"] == "okx_known_default"
+
+
+def test_runtime_events_ref_records_multiplier_source(tmp_path, monkeypatch):
+    code, out, _cache_root = _run_backtest(tmp_path, monkeypatch, contract_multiplier=None)
+    ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert ref["contract_multiplier"] == 0.1
+    assert ref["contract_multiplier_source"] == "okx_known_default"
+
+
+def test_cache_key_uses_default_eth_multiplier(tmp_path, monkeypatch):
+    code, out, _cache_root = _run_backtest(tmp_path, monkeypatch, contract_multiplier=None)
+    ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert "cm_0p1" in Path(ref["cache_dir"]).name
+
+
+def test_cli_explicit_multiplier_uses_different_cache_key(tmp_path, monkeypatch):
+    code, default_out, _cache_root = _run_backtest(tmp_path / "default", monkeypatch, contract_multiplier=None)
+    explicit_code, explicit_out, _explicit_cache_root = _run_backtest(tmp_path / "explicit", monkeypatch, contract_multiplier=0.01)
+    default_ref = json.loads((default_out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    explicit_ref = json.loads((explicit_out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert explicit_code == 0
+    assert "cm_0p1" in Path(default_ref["cache_dir"]).name
+    assert "cm_0p01" in Path(explicit_ref["cache_dir"]).name
+    assert default_ref["cache_dir"] != explicit_ref["cache_dir"]
 
 
 def test_backtest_local_data_reuses_existing_day_cache(tmp_path, monkeypatch):
@@ -248,6 +343,105 @@ def test_backtest_local_data_partial_cache_hit(tmp_path, monkeypatch):
     assert ref["cache_hit_days"] == ["2026-04-01"]
     assert ref["cache_miss_days"] == ["2026-04-02"]
     assert ref["generated_days"] == ["2026-04-02"]
+
+
+def test_start_end_date_is_normal_runtime_cache_entry(tmp_path, monkeypatch):
+    _patch_runtime(monkeypatch)
+    trades_dir, books_dir, _kline = _write_dated_replay_dirs(tmp_path)
+    out = tmp_path / "out"
+    code = backtest.main(
+        [
+            "--symbol",
+            "ETH-USDT-SWAP",
+            "--trades-dir",
+            str(trades_dir),
+            "--books-dir",
+            str(books_dir),
+            "--out-dir",
+            str(out),
+            "--runtime-events-cache-root",
+            str(tmp_path / "cache"),
+            "--start-date",
+            "2026-04-01",
+            "--end-date",
+            "2026-04-01",
+        ]
+    )
+    ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert ref["selected_days"] == ["2026-04-01"]
+    assert ref["generated_days"] == ["2026-04-01"]
+    assert [Path(path).name for path in summary["selected_files"]["trades"]] == ["ETH-USDT-SWAP-trades-2026-04-01.jsonl"]
+    assert [Path(path).name for path in summary["selected_files"]["books"]] == ["ETH-USDT-SWAP-books-2026-04-01.jsonl"]
+
+
+def test_second_run_same_start_end_date_reuses_cache(tmp_path, monkeypatch):
+    _patch_runtime(monkeypatch)
+    trades_dir, books_dir, _kline = _write_dated_replay_dirs(tmp_path)
+    cache_root = tmp_path / "cache"
+
+    def run(out: Path) -> None:
+        assert backtest.main(
+            [
+                "--symbol",
+                "ETH-USDT-SWAP",
+                "--trades-dir",
+                str(trades_dir),
+                "--books-dir",
+                str(books_dir),
+                "--out-dir",
+                str(out),
+                "--runtime-events-cache-root",
+                str(cache_root),
+                "--start-date",
+                "2026-04-01",
+                "--end-date",
+                "2026-04-01",
+            ]
+        ) == 0
+
+    run(tmp_path / "out_first")
+    run(tmp_path / "out_second")
+    ref = json.loads((tmp_path / "out_second" / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert ref["selected_days"] == ["2026-04-01"]
+    assert ref["cache_hit_days"] == ["2026-04-01"]
+    assert ref["generated_days"] == []
+
+
+def test_runtime_events_cache_days_help_marked_advanced(capsys):
+    with pytest.raises(SystemExit):
+        backtest.parse_args(["--help"])
+    output = capsys.readouterr().out
+    assert "Advanced/debug override for runtime_events cache days" in output
+    assert "Normal research should use --start-date/--end-date" in output
+
+
+def test_runtime_events_cache_days_override_still_works(tmp_path, monkeypatch):
+    _patch_runtime(monkeypatch)
+    trades_dir, books_dir, _kline = _write_dated_replay_dirs(tmp_path)
+    out = tmp_path / "out"
+    code = backtest.main(
+        [
+            "--symbol",
+            "ETH-USDT-SWAP",
+            "--trades-dir",
+            str(trades_dir),
+            "--books-dir",
+            str(books_dir),
+            "--out-dir",
+            str(out),
+            "--runtime-events-cache-root",
+            str(tmp_path / "cache"),
+            "--runtime-events-cache-days",
+            "2026-04-02",
+        ]
+    )
+    ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert ref["selected_days"] == ["2026-04-02"]
+    assert ref["generated_days"] == ["2026-04-02"]
+    assert not (Path(ref["cache_dir"]) / "2026-04-01.jsonl").exists()
 
 
 def test_backtest_runtime_cache_day_shard_is_independent_of_previous_day(tmp_path, monkeypatch):
@@ -371,6 +565,39 @@ def test_existing_builder_cli_still_works(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert out.exists()
+
+
+def test_builder_cli_eth_runs_without_contract_multiplier(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    out = tmp_path / "runtime_events.jsonl"
+    summary = tmp_path / "runtime_events.summary.json"
+    trades.write_text(
+        '{"ts":1775001600100,"px":"100","sz":"10","side":"buy","instId":"ETH-USDT-SWAP"}\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/build_runtime_events_from_okx_trades.py",
+            "--symbol",
+            "ETH-USDT-SWAP",
+            "--trades-dir",
+            str(trades),
+            "--out",
+            str(out),
+            "--summary-out",
+            str(summary),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    payload = json.loads(summary.read_text(encoding="utf-8"))
+    assert result.returncode == 0, result.stderr
+    assert out.exists()
+    assert payload["contract_multiplier"] == 0.1
+    assert payload["contract_multiplier_source"] == "okx_known_default"
 
 
 def test_standalone_builder_resets_accumulator_at_day_boundary(tmp_path):

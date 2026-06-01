@@ -704,30 +704,39 @@ def test_single_large_runtime_file_warning_or_not_recommended(tmp_path):
     assert "not recommended" in summary["output_warning"]
 
 
-def test_swap_requires_explicit_contract_multiplier(tmp_path):
+def test_unknown_swap_requires_explicit_contract_multiplier(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    trades.write_text(
+        json.dumps({"instId": "SOL-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "runtime_events.jsonl"
+    try:
+        runtime_builder.build_runtime_events(
+            symbol="SOL-USDT-SWAP",
+            trades_path=trades,
+            out_path=out,
+        )
+        assert False, "unknown SWAP builder must require explicit contract multiplier"
+    except SystemExit as exc:
+        assert "contract multiplier is required for unknown SWAP symbol" in str(exc)
+
+
+def test_eth_swap_uses_known_default_contract_multiplier(tmp_path):
     trades = tmp_path / "trades.jsonl"
     trades.write_text(
         json.dumps({"instId": "ETH-USDT-SWAP", "ts": 1000, "px": 10, "sz": 2, "side": "buy"}) + "\n",
         encoding="utf-8",
     )
     out = tmp_path / "runtime_events.jsonl"
-    try:
-        runtime_builder.build_runtime_events(
-            symbol="ETH-USDT-SWAP",
-            trades_path=trades,
-            out_path=out,
-        )
-        assert False, "SWAP builder must require explicit contract multiplier"
-    except SystemExit as exc:
-        assert "contract-multiplier" in str(exc)
     summary = runtime_builder.build_runtime_events(
         symbol="ETH-USDT-SWAP",
         trades_path=trades,
         out_path=out,
-        contract_multiplier=0.1,
     )
     rows = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     assert summary["contract_multiplier"] == 0.1
+    assert summary["contract_multiplier_source"] == "okx_known_default"
     assert rows[0]["contract_multiplier"] == 0.1
     assert rows[0]["active_buy_notional_3s"] == 2.0
 

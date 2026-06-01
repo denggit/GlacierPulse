@@ -28,6 +28,10 @@ if str(ROOT) not in sys.path:
 
 from src.research.a1_edge.io_utils import ensure_dir, write_json
 from src.research.a1_edge.schema import parse_float, parse_timestamp
+from src.research.runtime_three_a.contract_specs import (
+    ContractMultiplierResolution,
+    resolve_contract_multiplier,
+)
 from src.research.runtime_three_a.runtime_event_source import RuntimeEventSource
 
 
@@ -99,6 +103,7 @@ class RuntimeReadStats:
 class BuildStats:
     symbol: str = ""
     contract_multiplier: float = 0.0
+    contract_multiplier_source: str = ""
     notional_mode: str = ""
     bucket_sec: float = 0.0
     rolling_sec: float = 0.0
@@ -129,6 +134,7 @@ class BuildStats:
         return {
             "symbol": self.symbol,
             "contract_multiplier": self.contract_multiplier,
+            "contract_multiplier_source": self.contract_multiplier_source,
             "notional_mode": self.notional_mode,
             "bucket_sec": self.bucket_sec,
             "rolling_sec": self.rolling_sec,
@@ -192,12 +198,14 @@ class RuntimeEventAccumulator:
         bucket_sec: float,
         rolling_sec: float,
         contract_multiplier: float,
+        contract_multiplier_source: str = "",
         notional_mode: str = "price_x_size_x_contract_multiplier",
     ):
         self.symbol = str(symbol)
         self.bucket_sec = max(float(bucket_sec), 0.001)
         self.rolling_sec = max(float(rolling_sec), 0.001)
         self.contract_multiplier = float(contract_multiplier)
+        self.contract_multiplier_source = str(contract_multiplier_source or "")
         self.notional_mode = str(notional_mode)
         self.rolling: deque[NormalizedTrade] = deque()
         self.price_window: deque[tuple[float, float]] = deque()
@@ -356,6 +364,7 @@ class RuntimeEventCacheManager:
         bucket_sec: float,
         rolling_sec: float,
         contract_multiplier: float,
+        contract_multiplier_source: str = "",
         notional_mode: str = "price_x_size_x_contract_multiplier",
         schema_version: str = RUNTIME_EVENTS_SCHEMA_VERSION,
         overwrite: bool = False,
@@ -365,6 +374,7 @@ class RuntimeEventCacheManager:
         self.bucket_sec = max(float(bucket_sec), 0.001)
         self.rolling_sec = max(float(rolling_sec), 0.001)
         self.contract_multiplier = float(contract_multiplier)
+        self.contract_multiplier_source = str(contract_multiplier_source or "")
         self.notional_mode = str(notional_mode)
         self.schema_version = str(schema_version)
         self.overwrite = bool(overwrite)
@@ -470,6 +480,7 @@ class RuntimeEventCacheManager:
             "bucket_sec": self.bucket_sec,
             "rolling_sec": self.rolling_sec,
             "contract_multiplier": self.contract_multiplier,
+            "contract_multiplier_source": self.contract_multiplier_source,
             "notional_mode": self.notional_mode,
             "schema_version": self.schema_version,
             "cache_hit_days": list(cache_hit_days),
@@ -593,7 +604,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shard-by", choices=["day"], default="day", help="Shard runtime events by UTC day.")
     parser.add_argument("--bucket-sec", type=float, default=1.0)
     parser.add_argument("--rolling-sec", type=float, default=3.0)
-    parser.add_argument("--contract-multiplier", type=float, default=None, help="Multiplier applied to raw size before notional = price * size. Required for SWAP symbols.")
+    parser.add_argument(
+        "--contract-multiplier",
+        type=float,
+        default=None,
+        help="Multiplier applied to raw size before notional = price * size. Required for unknown SWAP symbols; ETH-USDT-SWAP defaults to 0.1.",
+    )
     parser.add_argument("--merge-sort-files", action="store_true", help="Heap-merge all files by timestamp. Default is sequential to avoid opening many files.")
     parser.add_argument("--allow-non-monotonic-output", action="store_true", help="Allow non-monotonic runtime events with a strong warning. Unsafe for windowed backtests.")
     parser.add_argument("--max-json-line-bytes", type=int, default=MAX_JSON_LINE_BYTES, help="Maximum bytes per JSONL/.data/.ndjson line.")
@@ -608,7 +624,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    multiplier = _resolve_contract_multiplier(args.symbol, args.contract_multiplier)
+    multiplier_resolution = _resolve_contract_multiplier_resolution(args.symbol, args.contract_multiplier)
+    multiplier = multiplier_resolution.multiplier
     out_path = Path(args.out) if args.out else None
     out_dir = None
     if out_path is None:
@@ -619,6 +636,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bucket_sec=float(args.bucket_sec),
             rolling_sec=float(args.rolling_sec),
             contract_multiplier=multiplier,
+            contract_multiplier_source=multiplier_resolution.source,
             notional_mode="price_x_size_x_contract_multiplier",
             overwrite=bool(args.overwrite),
         )
@@ -633,7 +651,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         shard_by="day" if out_dir is not None else args.shard_by,
         bucket_sec=float(args.bucket_sec),
         rolling_sec=float(args.rolling_sec),
-        contract_multiplier=multiplier,
+        contract_multiplier=args.contract_multiplier,
         merge_sort_files=bool(args.merge_sort_files),
         allow_non_monotonic_output=bool(args.allow_non_monotonic_output),
         max_json_line_bytes=int(args.max_json_line_bytes),
@@ -684,12 +702,14 @@ def build_runtime_events(
         raise SystemExit("one of --out or --out-dir is required")
     if out_dir is not None and shard_by != "day":
         raise SystemExit("--out-dir requires --shard-by day")
-    resolved_multiplier = _resolve_contract_multiplier(symbol, contract_multiplier)
+    multiplier_resolution = _resolve_contract_multiplier_resolution(symbol, contract_multiplier)
+    resolved_multiplier = multiplier_resolution.multiplier
     bucket_sec = max(float(bucket_sec), 0.001)
     rolling_sec = max(float(rolling_sec), 0.001)
     stats = BuildStats(
         symbol=symbol,
         contract_multiplier=float(resolved_multiplier),
+        contract_multiplier_source=multiplier_resolution.source,
         notional_mode="price_x_size_x_contract_multiplier",
         bucket_sec=bucket_sec,
         rolling_sec=rolling_sec,
@@ -1357,10 +1377,15 @@ def _price_velocity(
     return 0.0
 
 
+def _resolve_contract_multiplier_resolution(symbol: str, value: float | None) -> ContractMultiplierResolution:
+    try:
+        return resolve_contract_multiplier(symbol, value)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def _resolve_contract_multiplier(symbol: str, value: float | None) -> float:
-    if value is None and "-SWAP" in str(symbol).upper():
-        raise SystemExit("--contract-multiplier is required for SWAP symbols to avoid incorrect notional.")
-    return float(1.0 if value is None else value)
+    return _resolve_contract_multiplier_resolution(symbol, value).multiplier
 
 
 def _join_warning(existing: str, warning: str) -> str:
