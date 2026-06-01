@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from src.research.runtime_three_a import contract_specs
 from src.research.runtime_three_a.contract_specs import resolve_contract_multiplier
 from src.research.runtime_three_a import runtime_event_builder as runtime_builder
 from src.research.runtime_three_a.runtime_event_builder import (
@@ -19,6 +20,7 @@ from tools import backtest_local_data as backtest
 
 
 def _write_replay_inputs(tmp_path: Path, days=("2026-04-01",)) -> tuple[Path, Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     trades_dir = tmp_path / "trades"
     books = tmp_path / "books.jsonl"
     kline = tmp_path / "kline.csv"
@@ -261,10 +263,27 @@ def test_eth_swap_contract_multiplier_defaults_to_0p1():
     assert resolved.source == "okx_known_default"
 
 
+def test_known_contract_multiplier_rejects_non_positive_default(monkeypatch):
+    monkeypatch.setitem(contract_specs.KNOWN_OKX_CONTRACT_MULTIPLIERS, "BAD-USDT-SWAP", 0)
+
+    with pytest.raises(ValueError, match="contract multiplier must be positive: 0.0"):
+        resolve_contract_multiplier("BAD-USDT-SWAP", None)
+
+
 def test_cli_explicit_multiplier_overrides_eth_default():
     resolved = resolve_contract_multiplier("ETH-USDT-SWAP", 0.01)
     assert resolved.multiplier == 0.01
     assert resolved.source == "cli_explicit"
+
+
+def test_cli_explicit_multiplier_rejects_zero():
+    with pytest.raises(ValueError, match="contract multiplier must be positive: 0.0"):
+        resolve_contract_multiplier("ETH-USDT-SWAP", 0)
+
+
+def test_cli_explicit_multiplier_rejects_negative():
+    with pytest.raises(ValueError, match="contract multiplier must be positive: -0.1"):
+        resolve_contract_multiplier("ETH-USDT-SWAP", -0.1)
 
 
 def test_unknown_swap_requires_multiplier():
@@ -309,6 +328,11 @@ def test_cache_key_uses_default_eth_multiplier(tmp_path, monkeypatch):
     ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
     assert code == 0
     assert "cm_0p1" in Path(ref["cache_dir"]).name
+
+
+def test_backtest_local_data_rejects_zero_contract_multiplier(tmp_path, monkeypatch):
+    with pytest.raises(SystemExit, match="contract multiplier must be positive: 0.0"):
+        _run_backtest(tmp_path, monkeypatch, contract_multiplier=0)
 
 
 def test_cli_explicit_multiplier_uses_different_cache_key(tmp_path, monkeypatch):
@@ -598,6 +622,36 @@ def test_builder_cli_eth_runs_without_contract_multiplier(tmp_path):
     assert out.exists()
     assert payload["contract_multiplier"] == 0.1
     assert payload["contract_multiplier_source"] == "okx_known_default"
+
+
+def test_builder_cli_rejects_zero_contract_multiplier(tmp_path):
+    trades = tmp_path / "trades.jsonl"
+    out = tmp_path / "runtime_events.jsonl"
+    trades.write_text(
+        '{"ts":1775001600100,"px":"100","sz":"10","side":"buy","instId":"ETH-USDT-SWAP"}\n',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/build_runtime_events_from_okx_trades.py",
+            "--symbol",
+            "ETH-USDT-SWAP",
+            "--trades-dir",
+            str(trades),
+            "--out",
+            str(out),
+            "--contract-multiplier",
+            "0",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "contract multiplier must be positive: 0.0" in result.stderr
+    assert not out.exists()
 
 
 def test_standalone_builder_resets_accumulator_at_day_boundary(tmp_path):

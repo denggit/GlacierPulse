@@ -19,16 +19,22 @@ def resolve_contract_multiplier(
     explicit_multiplier: float | None = None,
 ) -> ContractMultiplierResolution:
     if explicit_multiplier is not None:
+        multiplier = float(explicit_multiplier)
+        if multiplier <= 0:
+            raise ValueError(f"contract multiplier must be positive: {multiplier}")
         return ContractMultiplierResolution(
-            multiplier=float(explicit_multiplier),
+            multiplier=multiplier,
             source="cli_explicit",
         )
 
     normalized_symbol = str(symbol).upper()
     known_multiplier = KNOWN_OKX_CONTRACT_MULTIPLIERS.get(normalized_symbol)
     if known_multiplier is not None:
+        multiplier = float(known_multiplier)
+        if multiplier <= 0:
+            raise ValueError(f"contract multiplier must be positive: {multiplier}")
         return ContractMultiplierResolution(
-            multiplier=float(known_multiplier),
+            multiplier=multiplier,
             source="okx_known_default",
         )
 
