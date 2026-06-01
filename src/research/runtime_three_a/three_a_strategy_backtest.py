@@ -21,6 +21,9 @@ def build_runtime_strategy_reports(
     a2_rt_max_age_sec: float | None = None,
     a2_rt_min_quiet_sec: float | None = None,
     a2_rt_min_tick_count: int | None = None,
+    a2_rt_enable_light_ready: bool | None = None,
+    a2_rt_min_light_sec: float | None = None,
+    a2_rt_min_light_tick_count: int | None = None,
     default_expiry_sec: int | None = None,
 ) -> dict[str, list[dict[str, Any]] | dict[str, Any]]:
     overrides: dict[str, Any] = {}
@@ -40,6 +43,12 @@ def build_runtime_strategy_reports(
         overrides["a2_rt_min_quiet_sec"] = a2_rt_min_quiet_sec
     if a2_rt_min_tick_count is not None:
         overrides["a2_rt_min_tick_count"] = a2_rt_min_tick_count
+    if a2_rt_enable_light_ready is not None:
+        overrides["a2_rt_enable_light_ready"] = a2_rt_enable_light_ready
+    if a2_rt_min_light_sec is not None:
+        overrides["a2_rt_min_light_sec"] = a2_rt_min_light_sec
+    if a2_rt_min_light_tick_count is not None:
+        overrides["a2_rt_min_light_tick_count"] = a2_rt_min_light_tick_count
     if default_expiry_sec is not None:
         overrides["default_expiry_sec"] = default_expiry_sec
     config = default_runtime_engine_config(**overrides)

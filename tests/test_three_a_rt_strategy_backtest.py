@@ -4,6 +4,7 @@
 from src.research.runtime_three_a.runtime_engine import (
     RuntimeThreeABacktestEngine,
     RuntimeThreeAEngineConfig,
+    _a2_with_expiry,
     default_runtime_engine_config,
     normalize_runtime_bars,
     simulate_runtime_trade_exit,
@@ -360,6 +361,45 @@ def test_runtime_engine_config_uses_cli_min_quiet_and_tick_count_values():
     engine = RuntimeThreeABacktestEngine(cfg)
     assert engine.config.a2.min_quiet_sec == 7
     assert engine.config.a2.min_tick_count == 9
+
+
+def test_runtime_engine_config_uses_light_a2_values():
+    cfg = default_runtime_engine_config(
+        a2_rt_min_light_sec=5,
+        a2_rt_min_light_tick_count=4,
+        a2_rt_enable_light_ready=False,
+    )
+    engine = RuntimeThreeABacktestEngine(cfg)
+    assert engine.config.a2.min_light_sec == 5
+    assert engine.config.a2.min_light_tick_count == 4
+    assert engine.config.a2.enable_light_ready is False
+
+
+def test_a2_with_expiry_preserves_light_a2_config():
+    base = default_runtime_engine_config(
+        a2_rt_min_light_sec=5,
+        a2_rt_min_light_tick_count=4,
+        a2_rt_enable_light_ready=False,
+    ).a2
+    child = _a2_with_expiry(base, 300)
+    assert child.max_age_sec == 300
+    assert child.enable_light_ready is False
+    assert child.min_light_sec == 5
+    assert child.min_light_tick_count == 4
+
+
+def test_runtime_engine_disable_light_ready_does_not_trigger_early_light_a2():
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=[*_quiet_ticks(count=2), _burst_tick(ts=1003.0)],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=30,
+        a2_rt_min_tick_count=30,
+        a2_rt_enable_light_ready=False,
+    )
+    assert reports["summary"]["runtime_3a_status"] == "NO_RT_A3_SIGNALS"
+    assert reports["summary"]["signal_count"] == 0
 
 
 def test_runtime_engine_windowed_reads():

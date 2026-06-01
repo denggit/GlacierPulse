@@ -222,6 +222,9 @@ def default_runtime_engine_config(**overrides: Any) -> RuntimeThreeAEngineConfig
         quiet_volume_ratio_max=float(overrides.get("a2_rt_quiet_volume_ratio_max", getattr(cfg, "A2_RT_QUIET_VOLUME_RATIO_MAX", 0.45))),
         cvd_stall_ratio_max=float(overrides.get("a2_rt_cvd_stall_ratio_max", getattr(cfg, "A2_RT_CVD_STALL_RATIO_MAX", 0.35))),
         invalidation_buffer_u=float(overrides.get("a2_rt_invalidation_buffer_u", getattr(cfg, "A2_RT_INVALIDATION_BUFFER_U", 0.5))),
+        enable_light_ready=parse_bool(overrides.get("a2_rt_enable_light_ready", getattr(cfg, "A2_RT_ENABLE_LIGHT_READY", True)), default=True),
+        min_light_sec=float(overrides.get("a2_rt_min_light_sec", getattr(cfg, "A2_RT_MIN_LIGHT_SEC", 2.0))),
+        min_light_tick_count=int(overrides.get("a2_rt_min_light_tick_count", getattr(cfg, "A2_RT_MIN_LIGHT_TICK_COUNT", 2))),
     )
     a3 = A3RuntimeConfig(
         breakout_buffer_u=float(overrides.get("a3_rt_breakout_buffer_u", getattr(cfg, "A3_RT_BREAKOUT_BUFFER_U", 0.5))),
@@ -427,6 +430,9 @@ def _a2_with_expiry(config: A2RuntimeConfig, expiry: int) -> A2RuntimeConfig:
         quiet_volume_ratio_max=config.quiet_volume_ratio_max,
         cvd_stall_ratio_max=config.cvd_stall_ratio_max,
         invalidation_buffer_u=config.invalidation_buffer_u,
+        enable_light_ready=config.enable_light_ready,
+        min_light_sec=config.min_light_sec,
+        min_light_tick_count=config.min_light_tick_count,
     )
 
 
