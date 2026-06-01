@@ -498,7 +498,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--books-file", type=Path)
     p.add_argument("--run-name", default="local_a1_research_replay")
     p.add_argument("--out-dir", type=Path)
-    p.add_argument("--contract-multiplier", type=float, default=0.1)
+    p.add_argument("--contract-multiplier", type=float)
     p.add_argument("--enable-runtime-events-cache", choices=["true", "false"], default="true")
     p.add_argument("--runtime-events-cache-root", type=Path, default=ROOT / "data" / "derived" / "runtime_events")
     p.add_argument("--runtime-events-bucket-sec", type=float, default=1.0)
