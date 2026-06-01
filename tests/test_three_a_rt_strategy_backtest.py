@@ -36,6 +36,27 @@ def _zone():
     }
 
 
+def _sell_zone(setup="SELL_ABOVE_VAH_ABSORB", zone_id="sell1"):
+    return {
+        "zone_id": zone_id,
+        "symbol": "BTC-USDT",
+        "direction": "SELL",
+        "zone_lower": 99.0,
+        "zone_upper": 106.0,
+        "zone_mid": 102.5,
+        "zone_width": 7.0,
+        "reaction_event_ts": 1000.0,
+        "defended_high": 106.0,
+        "max_active_notional": 1_000_000.0,
+        "iceberg_pie_count": 1,
+        "vp24h_a1_vp_setup_rt": setup,
+        "vp24h_a1_target_poc_price_rt": 90.0,
+        "vp24h_a1_target_hvn_price_rt": 88.0,
+        "vp24h_a1_target_value_edge_price_rt": 86.0,
+        "vp24h_a1_target_lvn_price_rt": 92.0,
+    }
+
+
 def _quiet_ticks(start=1000.0, count=3):
     return [
         {
@@ -60,6 +81,18 @@ def _burst_tick(ts=1004.0):
         "active_sell_notional_3s": 20_000,
         "cvd_delta_3s": 50_000,
         "price_velocity_u_per_sec": 0.5,
+    }
+
+
+def _sell_burst_tick(ts=1004.0, price=98.0):
+    return {
+        "symbol": "BTC-USDT",
+        "ts": ts,
+        "last_price": price,
+        "active_buy_notional_3s": 20_000,
+        "active_sell_notional_3s": 250_000,
+        "cvd_delta_3s": -50_000,
+        "price_velocity_u_per_sec": -0.5,
     }
 
 
@@ -95,6 +128,44 @@ def test_runtime_engine_generates_a2_a3_from_ticks():
     assert trade["exit_reason"] == "TARGET_FIRST"
     assert trade["realized_r_sim"] > 1.9
     assert "a3_future_realized_r_proxy_1h" not in trade["entry_condition_fields"]
+
+
+def test_runtime_3a_trades_include_a2_quality_fields():
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=[*_quiet_ticks(), _burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    trade = reports["trades"][0]
+    for field in (
+        "unique_signal_id",
+        "a2_rt_quality",
+        "a2_rt_light_ready_for_a3_flag",
+        "a2_rt_confirmed_ready_for_a3_flag",
+    ):
+        assert field in trade
+
+
+def test_runtime_3a_signals_include_a2_quality_fields():
+    reports = build_runtime_strategy_reports(
+        [_zone()],
+        _bars(),
+        trade_events=[*_quiet_ticks(), _burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    signal = reports["signals"][0]
+    for field in (
+        "unique_signal_id",
+        "a2_rt_quality",
+        "a2_rt_light_ready_for_a3_flag",
+        "a2_rt_confirmed_ready_for_a3_flag",
+    ):
+        assert field in signal
 
 
 def test_runtime_engine_without_trades_is_skipped_not_fake_empty():
@@ -151,6 +222,137 @@ def test_default_expiry_trade_count_not_inflated_by_sweep():
     assert summary["unique_signal_count"] == 1
     assert reports["by_strategy_all_expiry_variants"][0]["trade_count"] == 2
     assert reports["by_strategy_default_expiry"][0]["trade_count"] == 1
+
+
+def test_mvp_only_allows_sell_above_vah_by_default():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone()],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert reports["mvp_summary"]["strategy_name"] == "MVP_VP_3A_LITE"
+    assert len(reports["mvp_trades"]) == 1
+    assert {row["a1_vp_setup_rt"] for row in reports["mvp_trades"]} == {"SELL_ABOVE_VAH_ABSORB"}
+
+
+def test_mvp_blocks_bad_vp_setups():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone("SELL_INSIDE_VALUE_ABOVE_POC_ABSORB"), _sell_zone("SELL_NO_VP_EDGE", zone_id="sell2")],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert reports["mvp_trades"] == []
+    assert reports["mvp_summary"]["blocked_count_by_reason"]["VP_SETUP_BLOCKED"] == 2
+
+
+def test_mvp_observe_only_not_in_mvp_trades():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone("BUY_NO_VP_EDGE"), _sell_zone("BUY_BELOW_VAL_ABSORB", zone_id="sell2")],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert len(reports["trades"]) == 2
+    assert reports["mvp_trades"] == []
+    assert reports["mvp_summary"]["blocked_count_by_reason"]["VP_SETUP_OBSERVE_ONLY"] == 2
+
+
+def test_mvp_applies_fee_risk_filter():
+    small_risk = _sell_zone(zone_id="small_risk")
+    small_risk["defended_high"] = 103.0
+    risk_reports = build_runtime_strategy_reports(
+        [small_risk],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert risk_reports["mvp_trades"] == []
+    assert risk_reports["mvp_summary"]["blocked_count_by_reason"]["RISK_U_TOO_SMALL"] == 1
+
+    high_fee = _sell_zone(zone_id="high_fee")
+    high_fee.update({"zone_lower": 1979.0, "zone_upper": 1986.0, "zone_mid": 1982.5, "defended_high": 1985.0})
+    high_price_ticks = [
+        {"symbol": "BTC-USDT", "ts": 1001.0, "last_price": 1982.0, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0.0, "price_velocity_u_per_sec": -0.01},
+        {"symbol": "BTC-USDT", "ts": 1002.0, "last_price": 1981.8, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0.0, "price_velocity_u_per_sec": -0.01},
+        {"symbol": "BTC-USDT", "ts": 1003.0, "last_price": 1981.7, "active_buy_notional_3s": 10_000, "active_sell_notional_3s": 10_000, "cvd_delta_3s": 0.0, "price_velocity_u_per_sec": -0.01},
+        {"symbol": "BTC-USDT", "ts": 1004.0, "last_price": 1979.0, "active_buy_notional_3s": 20_000, "active_sell_notional_3s": 250_000, "cvd_delta_3s": -50_000, "price_velocity_u_per_sec": -0.5},
+    ]
+    fee_reports = build_runtime_strategy_reports(
+        [high_fee],
+        [{"timestamp": 1004.0, "open": 1979, "high": 1980, "low": 1960, "close": 1962}],
+        trade_events=high_price_ticks,
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert fee_reports["mvp_trades"] == []
+    assert fee_reports["mvp_summary"]["blocked_count_by_reason"]["FEE_SHARE_R_TOO_HIGH"] == 1
+
+
+def test_mvp_deduplicates_unique_signal():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone()],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[300, 900, 1200],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert len(reports["trades"]) == 3
+    assert len(reports["mvp_trades"]) == 1
+    assert reports["mvp_trades"][0]["unique_signal_id"] == reports["trades"][1]["unique_signal_id"]
+    assert reports["mvp_summary"]["blocked_count_by_reason"]["NOT_DEFAULT_EXPIRY"] == 2
+
+
+def test_mvp_live_gate_not_ready_on_low_sample():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone()],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert reports["mvp_summary"]["unique_signal_count"] < 20
+    assert reports["mvp_summary"]["live_readiness_gate"]["status"] == "NOT_READY"
+
+
+def test_mvp_does_not_use_best_expiry_for_live_readiness():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone()],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[300, 900, 1200],
+        default_expiry_sec=1200,
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    scope = reports["mvp_summary"]["live_readiness_gate"]["requirements"]["scope"]
+    assert "best_expiry" in scope
+    assert reports["mvp_summary"]["default_expiry_sec"] == 900
+    assert reports["mvp_summary"]["trade_count"] == 1
+
+
+def test_mvp_outputs_uses_future_field_false():
+    reports = build_runtime_strategy_reports(
+        [_sell_zone()],
+        [{"timestamp": 1004.0, "open": 98, "high": 99, "low": 80, "close": 82}],
+        trade_events=[*_quiet_ticks(), _sell_burst_tick()],
+        expiry_secs=[900],
+        a2_rt_min_quiet_sec=3,
+        a2_rt_min_tick_count=3,
+    )
+    assert reports["mvp_trades"][0]["uses_future_field_flag"] is False
 
 
 def test_runtime_engine_config_uses_cli_min_quiet_and_tick_count_values():

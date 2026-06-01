@@ -78,15 +78,21 @@ V7_SIMULATED_TRADE_FIELDS = [
 ]
 
 V73_RT_SIGNAL_FIELDS = [
-    "zone_id", "direction", "a1_ts", "a1_price", "a1_vp_setup_rt", "a2_rt_ready_ts",
+    "unique_signal_id", "zone_id", "direction", "a1_ts", "a1_price", "a1_vp_setup_rt",
+    "a2_rt_quality", "a2_rt_light_ready_for_a3_flag", "a2_rt_confirmed_ready_for_a3_flag",
+    "a2_rt_ready_for_a3_flag", "a2_rt_state_reason", "a2_rt_box_width_u",
+    "a2_rt_duration_sec", "a2_rt_tick_count", "a2_rt_quiet_volume_ratio", "a2_rt_ready_ts",
     "a2_rt_expiry_sec", "entry_ts", "entry_price", "entry_reason",
     "condition_available_ts_max", "uses_future_field_flag", "future_field_names",
 ]
 
 V73_RT_TRADE_FIELDS = [
-    "trade_id", "zone_id", "direction", "a1_ts", "a1_price", "a1_vp_setup_rt",
+    "trade_id", "unique_signal_id", "zone_id", "direction", "a1_ts", "a1_price", "a1_vp_setup_rt",
     "a1_vp_context_prefix", "a2_rt_start_ts", "a2_rt_ready_ts", "a2_rt_expiry_sec",
-    "a2_rt_state", "entry_ts", "entry_price", "entry_reason", "condition_available_ts_max",
+    "a2_rt_state", "a2_rt_quality", "a2_rt_light_ready_for_a3_flag",
+    "a2_rt_confirmed_ready_for_a3_flag", "a2_rt_ready_for_a3_flag",
+    "a2_rt_state_reason", "a2_rt_box_width_u", "a2_rt_duration_sec",
+    "a2_rt_tick_count", "a2_rt_quiet_volume_ratio", "entry_ts", "entry_price", "entry_reason", "condition_available_ts_max",
     "condition_source", "uses_future_field_flag", "future_field_names", "trade_blocked_flag", "trade_blocked_reason",
     "stop_model", "stop_price", "risk_u",
     "stop_reason", "fee_share_r", "target_model", "target_price", "target_r", "exit_ts",
@@ -97,6 +103,7 @@ V73_RT_TRADE_FIELDS = [
     "target_opposite_value_edge_price_rt", "target_next_lvn_price_rt", "target_poc_r_rt",
     "target_hvn_r_rt", "target_opposite_value_edge_r_rt", "target_next_lvn_r_rt",
     "target_hybrid_min_2r_available_rt", "target_hybrid_min_2r_price_rt", "target_hybrid_min_2r_r_rt",
+    "mvp_trade_candidate_flag", "mvp_trade_blocked_reason",
 ]
 
 V73_RT_SUMMARY_METRIC_FIELDS = [
@@ -114,6 +121,24 @@ V73_RT_BY_EXPIRY_FIELDS = ["expiry_sec"] + V73_RT_SUMMARY_METRIC_FIELDS + [
     "expired_count", "invalidated_count", "a3_triggered_count",
 ]
 V73_RT_BY_TARGET_CANDIDATE_FIELDS = ["target_model"] + V73_RT_SUMMARY_METRIC_FIELDS
+
+V73_MVP_TRADE_FIELDS = [
+    "mvp_trade_id", "unique_signal_id", "zone_id", "direction", "a1_ts", "a1_price",
+    "a1_vp_setup_rt", "a2_rt_quality", "a2_rt_state", "a2_rt_state_reason",
+    "a2_rt_box_width_u", "a2_rt_duration_sec", "a2_rt_tick_count", "entry_ts",
+    "entry_price", "entry_reason", "stop_price", "risk_u", "fee_share_r",
+    "target_price", "target_r", "exit_ts", "exit_price", "exit_reason",
+    "realized_r_sim", "mfe_r_future", "mae_r_future", "uses_future_field_flag",
+    "trade_blocked_flag", "trade_blocked_reason",
+]
+V73_MVP_BY_VP_SETUP_FIELDS = [
+    "a1_vp_setup_rt", "trade_count", "unique_signal_count", "avg_realized_r_sim",
+    "win_rate", "profit_factor", "fee_share_r_avg", "sample_warning",
+]
+V73_MVP_BY_A2_QUALITY_FIELDS = [
+    "a2_rt_quality", "trade_count", "unique_signal_count", "avg_realized_r_sim",
+    "win_rate", "profit_factor", "fee_share_r_avg", "sample_warning",
+]
 
 GROUP_METRIC_FIELDS = [
     "count",
@@ -498,6 +523,11 @@ class ZoneTruthAnalyzer:
         write_csv(out / "zone_truth_3a_rt_by_expiry.csv", rt_reports["by_expiry"], V73_RT_BY_EXPIRY_FIELDS)
         write_csv(out / "zone_truth_3a_rt_by_target_candidate.csv", rt_reports["by_target_candidate"], V73_RT_BY_TARGET_CANDIDATE_FIELDS)
         write_json(out / "zone_truth_3a_rt_summary.json", rt_reports["summary"])
+        write_csv(out / "zone_truth_3a_mvp_trades.csv", rt_reports["mvp_trades"], V73_MVP_TRADE_FIELDS)
+        write_json(out / "zone_truth_3a_mvp_summary.json", rt_reports["mvp_summary"])
+        (out / "zone_truth_3a_mvp_decision.md").write_text(str(rt_reports["mvp_decision_md"]), encoding="utf-8")
+        write_csv(out / "zone_truth_3a_mvp_by_vp_setup.csv", rt_reports["mvp_by_vp_setup"], V73_MVP_BY_VP_SETUP_FIELDS)
+        write_csv(out / "zone_truth_3a_mvp_by_a2_quality.csv", rt_reports["mvp_by_a2_quality"], V73_MVP_BY_A2_QUALITY_FIELDS)
         memory_profile["after_csv_write_rss_mb"] = _peak_rss_mb()
         memory_profile["peak_rss_mb"] = _peak_rss_mb()
         summary = self.summary(rows, aggregator.unmatched_pie_count)

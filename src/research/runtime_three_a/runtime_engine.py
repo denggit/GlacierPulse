@@ -7,6 +7,7 @@ import statistics
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from config import research_evaluator as cfg
@@ -31,6 +32,13 @@ RUNTIME_STATUS_SKIPPED_NO_TRADE_EVENTS = "SKIPPED_NO_TRADE_EVENTS"
 RUNTIME_STATUS_NO_RT_A3_SIGNALS = "NO_RT_A3_SIGNALS"
 RUNTIME_STATUS_OK = "OK"
 RUNTIME_TICK_ENTRY_BUFFER_SEC = 5.0
+MVP_STRATEGY_NAME = "MVP_VP_3A_LITE"
+MVP_DEFAULT_EXPIRY_SEC = 900
+MVP_ALLOWED_VP_SETUPS = {"SELL_ABOVE_VAH_ABSORB"}
+MVP_OBSERVE_ONLY_VP_SETUPS = {"BUY_NO_VP_EDGE", "BUY_BELOW_VAL_ABSORB"}
+MVP_BLOCKED_VP_SETUPS = {"SELL_INSIDE_VALUE_ABOVE_POC_ABSORB", "SELL_NO_VP_EDGE"}
+MVP_MIN_RISK_U = 6.0
+MVP_MAX_FEE_SHARE_R = 0.25
 
 
 VARIANTS = {
@@ -496,12 +504,23 @@ def _runtime_memory_profile(event_source: Any | None, ticks: list[dict[str, Any]
 
 
 def _signal_row(zone: Mapping[str, Any], a2: Mapping[str, Any], a3: Mapping[str, Any], expiry_sec: int) -> dict[str, Any]:
+    unique_signal_id = _unique_signal_id(zone, a3)
     return {
+        "unique_signal_id": unique_signal_id,
         "zone_id": zone.get("zone_id", ""),
         "direction": a3.get("a3_entry_rt_direction") or zone.get("direction", ""),
         "a1_ts": _zone_start_ts(zone),
         "a1_price": zone.get("iceberg_context_price") or zone.get("zone_mid") or 0.0,
         "a1_vp_setup_rt": _vp_setup(zone),
+        "a2_rt_quality": a2.get("a2_rt_quality") or "",
+        "a2_rt_light_ready_for_a3_flag": parse_bool(a2.get("a2_rt_light_ready_for_a3_flag")),
+        "a2_rt_confirmed_ready_for_a3_flag": parse_bool(a2.get("a2_rt_confirmed_ready_for_a3_flag")),
+        "a2_rt_ready_for_a3_flag": parse_bool(a2.get("a2_rt_ready_for_a3_flag")),
+        "a2_rt_state_reason": a2.get("a2_rt_state_reason") or "",
+        "a2_rt_box_width_u": a2.get("a2_rt_box_width_u") or 0.0,
+        "a2_rt_duration_sec": a2.get("a2_rt_duration_sec") or 0.0,
+        "a2_rt_tick_count": a2.get("a2_rt_tick_count") or 0,
+        "a2_rt_quiet_volume_ratio": a2.get("a2_rt_quiet_volume_ratio") or 0.0,
         "a2_rt_ready_ts": a2.get("a2_rt_last_update_ts") or 0.0,
         "a2_rt_expiry_sec": expiry_sec,
         "entry_ts": a3.get("a3_entry_rt_ts") or 0.0,
@@ -526,6 +545,7 @@ def _trade_row(
     direction = str(a3.get("a3_entry_rt_direction") or zone.get("direction") or "").upper()
     entry = parse_float(a3.get("a3_entry_rt_price"))
     entry_ts = parse_float(a3.get("a3_entry_rt_ts"))
+    unique_signal_id = _unique_signal_id(zone, a3)
     stop = build_stop(row, entry, direction, config.stop_model)
     risk = parse_float(stop.get("risk_u"))
     targets = build_target_candidates(row, entry, direction, risk)
@@ -545,6 +565,7 @@ def _trade_row(
     )
     trade = {
         "trade_id": f"{zone.get('zone_id', '')}:{expiry_sec}:{int(parse_float(a3.get('a3_entry_rt_ts')))}",
+        "unique_signal_id": unique_signal_id,
         "zone_id": zone.get("zone_id", ""),
         "direction": direction,
         "a1_ts": _zone_start_ts(zone),
@@ -555,6 +576,15 @@ def _trade_row(
         "a2_rt_ready_ts": a2.get("a2_rt_last_update_ts") or 0.0,
         "a2_rt_expiry_sec": expiry_sec,
         "a2_rt_state": a2.get("a2_rt_state") or "",
+        "a2_rt_quality": a2.get("a2_rt_quality") or "",
+        "a2_rt_light_ready_for_a3_flag": parse_bool(a2.get("a2_rt_light_ready_for_a3_flag")),
+        "a2_rt_confirmed_ready_for_a3_flag": parse_bool(a2.get("a2_rt_confirmed_ready_for_a3_flag")),
+        "a2_rt_ready_for_a3_flag": parse_bool(a2.get("a2_rt_ready_for_a3_flag")),
+        "a2_rt_state_reason": a2.get("a2_rt_state_reason") or "",
+        "a2_rt_box_width_u": a2.get("a2_rt_box_width_u") or 0.0,
+        "a2_rt_duration_sec": a2.get("a2_rt_duration_sec") or 0.0,
+        "a2_rt_tick_count": a2.get("a2_rt_tick_count") or 0,
+        "a2_rt_quiet_volume_ratio": a2.get("a2_rt_quiet_volume_ratio") or 0.0,
         "entry_ts": a3.get("a3_entry_rt_ts") or 0.0,
         "entry_price": entry,
         "entry_reason": a3.get("a3_entry_rt_reason") or "",
@@ -573,6 +603,8 @@ def _trade_row(
         **exit_result,
         "a3_quality_future_type_v2": zone.get("a3_quality_future_type_v2") or "NO_AGGRESSION",
         "a3_quality_future_score_v2": zone.get("a3_quality_future_score_v2") or 0.0,
+        "mvp_trade_candidate_flag": False,
+        "mvp_trade_blocked_reason": "",
     }
     if risk <= 0 or parse_float(stop.get("fee_share_r")) > config.max_fee_share_r:
         trade["trade_blocked_flag"] = True
@@ -615,6 +647,7 @@ def _reports(
     config: RuntimeThreeAEngineConfig,
     memory_profile: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]] | dict[str, Any]]:
+    _attach_mvp_blocking(trades)
     stats_trades = [
         trade for trade in trades
         if not parse_bool(trade.get("uses_future_field_flag")) and not parse_bool(trade.get("trade_blocked_flag"))
@@ -624,10 +657,8 @@ def _reports(
         trade for trade in stats_trades
         if int(parse_float(trade.get("a2_rt_expiry_sec"))) == default_expiry
     ]
-    unique_signal_keys = {
-        (str(signal.get("zone_id") or ""), float(parse_float(signal.get("entry_ts"))))
-        for signal in signals
-    }
+    unique_signal_keys = {str(signal.get("unique_signal_id") or "") for signal in signals if str(signal.get("unique_signal_id") or "")}
+    mvp_reports = _mvp_reports(trades, MVP_DEFAULT_EXPIRY_SEC)
     return {
         "signals": signals,
         "trades": trades,
@@ -637,6 +668,11 @@ def _reports(
         "by_vp_setup": _group_summary(stats_trades, "a1_vp_setup_rt"),
         "by_expiry": _expiry_summary(stats_trades, expiry_values, expiry_counters),
         "by_target_candidate": _group_summary(stats_trades, "target_model"),
+        "mvp_trades": mvp_reports["trades"],
+        "mvp_by_vp_setup": mvp_reports["by_vp_setup"],
+        "mvp_by_a2_quality": mvp_reports["by_a2_quality"],
+        "mvp_summary": mvp_reports["summary"],
+        "mvp_decision_md": mvp_reports["decision_md"],
         "summary": {
             "runtime_3a_strategy_version": "v7.3.0",
             "runtime_3a_status": runtime_status,
@@ -681,6 +717,282 @@ def _summary_row(name: str, trades: list[Mapping[str, Any]], label: str | None =
         "a2_expiry_split": dict(Counter(str(t.get("a2_rt_expiry_sec") or "") for t in trades)),
         "target_candidate_split": dict(Counter(str(t.get("target_model") or "") for t in trades)),
     }
+
+
+def _attach_mvp_blocking(trades: list[dict[str, Any]]) -> None:
+    default_expiry = MVP_DEFAULT_EXPIRY_SEC
+    prelim_ok: list[dict[str, Any]] = []
+    for trade in trades:
+        reason = _mvp_prelim_block_reason(trade, default_expiry)
+        if reason == "OK":
+            prelim_ok.append(trade)
+        trade["mvp_trade_candidate_flag"] = reason == "OK"
+        trade["mvp_trade_blocked_reason"] = reason
+
+    first_by_signal: dict[str, dict[str, Any]] = {}
+    for trade in sorted(prelim_ok, key=lambda row: (parse_float(row.get("entry_ts")), str(row.get("trade_id") or ""))):
+        unique_id = str(trade.get("unique_signal_id") or "")
+        if unique_id and unique_id not in first_by_signal:
+            first_by_signal[unique_id] = trade
+
+    for trade in prelim_ok:
+        unique_id = str(trade.get("unique_signal_id") or "")
+        if unique_id and first_by_signal.get(unique_id) is not trade:
+            trade["mvp_trade_candidate_flag"] = False
+            trade["mvp_trade_blocked_reason"] = "DUPLICATE_UNIQUE_SIGNAL"
+
+
+def _mvp_prelim_block_reason(trade: Mapping[str, Any], default_expiry: int) -> str:
+    if int(parse_float(trade.get("a2_rt_expiry_sec"))) != int(default_expiry):
+        return "NOT_DEFAULT_EXPIRY"
+    if parse_bool(trade.get("uses_future_field_flag")):
+        return "FUTURE_FIELD_USED"
+    if parse_bool(trade.get("trade_blocked_flag")):
+        return "TRADE_ALREADY_BLOCKED"
+    setup = str(trade.get("a1_vp_setup_rt") or "")
+    if setup in MVP_OBSERVE_ONLY_VP_SETUPS:
+        return "VP_SETUP_OBSERVE_ONLY"
+    if setup in MVP_BLOCKED_VP_SETUPS:
+        return "VP_SETUP_BLOCKED"
+    if setup not in MVP_ALLOWED_VP_SETUPS:
+        return "VP_SETUP_NOT_ALLOWED"
+    if parse_float(trade.get("risk_u")) < MVP_MIN_RISK_U:
+        return "RISK_U_TOO_SMALL"
+    if parse_float(trade.get("fee_share_r")) > MVP_MAX_FEE_SHARE_R:
+        return "FEE_SHARE_R_TOO_HIGH"
+    return "OK"
+
+
+def _mvp_reports(trades: list[Mapping[str, Any]], default_expiry: int) -> dict[str, Any]:
+    mvp_trades = [
+        _mvp_trade_row(idx + 1, trade)
+        for idx, trade in enumerate(trade for trade in trades if str(trade.get("mvp_trade_blocked_reason") or "") == "OK")
+    ]
+    summary = _mvp_summary(mvp_trades, trades, default_expiry)
+    return {
+        "trades": mvp_trades,
+        "by_vp_setup": _mvp_group_summary(mvp_trades, "a1_vp_setup_rt"),
+        "by_a2_quality": _mvp_group_summary(mvp_trades, "a2_rt_quality"),
+        "summary": summary,
+        "decision_md": _mvp_decision_md(summary),
+    }
+
+
+def _mvp_trade_row(idx: int, trade: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "mvp_trade_id": f"{MVP_STRATEGY_NAME}:{idx}",
+        "unique_signal_id": trade.get("unique_signal_id") or "",
+        "zone_id": trade.get("zone_id") or "",
+        "direction": trade.get("direction") or "",
+        "a1_ts": trade.get("a1_ts") or 0.0,
+        "a1_price": trade.get("a1_price") or 0.0,
+        "a1_vp_setup_rt": trade.get("a1_vp_setup_rt") or "",
+        "a2_rt_quality": trade.get("a2_rt_quality") or "",
+        "a2_rt_state": trade.get("a2_rt_state") or "",
+        "a2_rt_state_reason": trade.get("a2_rt_state_reason") or "",
+        "a2_rt_box_width_u": trade.get("a2_rt_box_width_u") or 0.0,
+        "a2_rt_duration_sec": trade.get("a2_rt_duration_sec") or 0.0,
+        "a2_rt_tick_count": trade.get("a2_rt_tick_count") or 0,
+        "entry_ts": trade.get("entry_ts") or 0.0,
+        "entry_price": trade.get("entry_price") or 0.0,
+        "entry_reason": trade.get("entry_reason") or "",
+        "stop_price": trade.get("stop_price") or 0.0,
+        "risk_u": trade.get("risk_u") or 0.0,
+        "fee_share_r": trade.get("fee_share_r") or 0.0,
+        "target_price": trade.get("target_price") or 0.0,
+        "target_r": trade.get("target_r") or 0.0,
+        "exit_ts": trade.get("exit_ts") or 0.0,
+        "exit_price": trade.get("exit_price") or 0.0,
+        "exit_reason": trade.get("exit_reason") or "",
+        "realized_r_sim": trade.get("realized_r_sim") or 0.0,
+        "mfe_r_future": trade.get("mfe_r_future") or 0.0,
+        "mae_r_future": trade.get("mae_r_future") or 0.0,
+        "uses_future_field_flag": parse_bool(trade.get("uses_future_field_flag")),
+        "trade_blocked_flag": False,
+        "trade_blocked_reason": "OK",
+    }
+
+
+def _mvp_summary(mvp_trades: list[Mapping[str, Any]], all_trades: list[Mapping[str, Any]], default_expiry: int) -> dict[str, Any]:
+    row = _summary_row(MVP_STRATEGY_NAME, mvp_trades, "strategy_name")
+    unique_ids = {str(t.get("unique_signal_id") or "") for t in mvp_trades if str(t.get("unique_signal_id") or "")}
+    blocked = Counter(str(t.get("mvp_trade_blocked_reason") or "UNKNOWN") for t in all_trades if str(t.get("mvp_trade_blocked_reason") or "") != "OK")
+    sample_days = _natural_day_span([parse_float(t.get("entry_ts")) for t in mvp_trades])
+    gate = _mvp_live_readiness_gate(
+        unique_signal_count=len(unique_ids),
+        profit_factor=parse_float(row.get("profit_factor")),
+        avg_realized_r=parse_float(row.get("avg_realized_r_sim")),
+        fee_share_r_avg=parse_float(row.get("fee_share_r_avg")),
+        max_drawdown_r=parse_float(row.get("max_drawdown_r")),
+        sample_days=sample_days,
+    )
+    return {
+        "strategy_name": MVP_STRATEGY_NAME,
+        "default_expiry_sec": int(default_expiry),
+        "selected_vp_setups": sorted(MVP_ALLOWED_VP_SETUPS),
+        "observe_only_vp_setups": sorted(MVP_OBSERVE_ONLY_VP_SETUPS),
+        "blocked_vp_setups": sorted(MVP_BLOCKED_VP_SETUPS),
+        "min_risk_u": MVP_MIN_RISK_U,
+        "max_fee_share_r": MVP_MAX_FEE_SHARE_R,
+        "trade_count": len(mvp_trades),
+        "unique_signal_count": len(unique_ids),
+        "avg_realized_r_sim": row["avg_realized_r_sim"],
+        "median_realized_r_sim": row["median_realized_r_sim"],
+        "win_rate": row["win_rate"],
+        "profit_factor": row["profit_factor"],
+        "max_drawdown_r": row["max_drawdown_r"],
+        "max_consecutive_losses": row["max_consecutive_losses"],
+        "fee_share_r_avg": row["fee_share_r_avg"],
+        "direction_split": dict(Counter(str(t.get("direction") or "") for t in mvp_trades)),
+        "a2_quality_split": dict(Counter(str(t.get("a2_rt_quality") or "") for t in mvp_trades)),
+        "vp_setup_split": dict(Counter(str(t.get("a1_vp_setup_rt") or "") for t in mvp_trades)),
+        "blocked_count_by_reason": dict(sorted(blocked.items())),
+        "duplicate_signal_blocked_count": int(blocked.get("DUPLICATE_UNIQUE_SIGNAL", 0)),
+        "sample_natural_day_count": sample_days,
+        "live_readiness_gate": gate,
+    }
+
+
+def _mvp_live_readiness_gate(
+    *,
+    unique_signal_count: int,
+    profit_factor: float,
+    avg_realized_r: float,
+    fee_share_r_avg: float,
+    max_drawdown_r: float,
+    sample_days: int,
+) -> dict[str, Any]:
+    paper_req = {
+        "unique_signal_count_gte": 20,
+        "profit_factor_gte": 1.15,
+        "avg_realized_r_sim_gte": 0.10,
+        "fee_share_r_avg_lte": 0.25,
+        "max_drawdown_r_gte": -8.0,
+    }
+    small_req = {
+        "unique_signal_count_gte": 50,
+        "profit_factor_gte": 1.30,
+        "avg_realized_r_sim_gte": 0.20,
+        "fee_share_r_avg_lte": 0.20,
+        "max_drawdown_r_gte": -10.0,
+        "sample_natural_day_count_gte": 14,
+    }
+    paper_ok = (
+        unique_signal_count >= 20
+        and profit_factor >= 1.15
+        and avg_realized_r >= 0.10
+        and fee_share_r_avg <= 0.25
+        and max_drawdown_r >= -8.0
+    )
+    small_ok = (
+        unique_signal_count >= 50
+        and profit_factor >= 1.30
+        and avg_realized_r >= 0.20
+        and fee_share_r_avg <= 0.20
+        and max_drawdown_r >= -10.0
+        and sample_days >= 14
+    )
+    if small_ok:
+        status = "SMALL_SIZE_READY"
+        reason = "MVP default 900s deduplicated trades pass small-size thresholds."
+    elif paper_ok:
+        status = "PAPER_READY"
+        reason = "MVP default 900s deduplicated trades pass paper thresholds."
+    else:
+        status = "NOT_READY"
+        reason = "MVP default 900s deduplicated trades do not pass paper thresholds."
+    return {
+        "status": status,
+        "reason": reason,
+        "requirements": {
+            "paper_ready": paper_req,
+            "small_size_ready": small_req,
+            "actual": {
+                "unique_signal_count": unique_signal_count,
+                "profit_factor": round(profit_factor, 8),
+                "avg_realized_r_sim": round(avg_realized_r, 8),
+                "fee_share_r_avg": round(fee_share_r_avg, 8),
+                "max_drawdown_r": round(max_drawdown_r, 8),
+                "sample_natural_day_count": sample_days,
+            },
+            "scope": "MVP default expiry only; best_expiry and all expiry variants are excluded.",
+        },
+    }
+
+
+def _mvp_group_summary(trades: list[Mapping[str, Any]], field: str) -> list[dict[str, Any]]:
+    groups: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for trade in trades:
+        groups[str(trade.get(field) or "UNKNOWN")].append(trade)
+    rows = []
+    for key, group in sorted(groups.items()):
+        row = _summary_row(key, group, field)
+        unique_count = len({str(t.get("unique_signal_id") or "") for t in group if str(t.get("unique_signal_id") or "")})
+        rows.append({
+            field: key,
+            "trade_count": row["trade_count"],
+            "unique_signal_count": unique_count,
+            "avg_realized_r_sim": row["avg_realized_r_sim"],
+            "win_rate": row["win_rate"],
+            "profit_factor": row["profit_factor"],
+            "fee_share_r_avg": row["fee_share_r_avg"],
+            "sample_warning": "LOW_SAMPLE" if unique_count < 20 else "",
+        })
+    return rows
+
+
+def _mvp_decision_md(summary: Mapping[str, Any]) -> str:
+    gate = summary.get("live_readiness_gate") if isinstance(summary.get("live_readiness_gate"), Mapping) else {}
+    status = str(gate.get("status") or "NOT_READY")
+    lines = [
+        f"# {status}",
+        "",
+        f"- strategy_name: {summary.get('strategy_name')}",
+        "- sample_scope: MVP default 900s, deduplicated unique signals",
+        f"- selected_vp_setups: {', '.join(summary.get('selected_vp_setups') or [])}",
+        f"- trade_count: {summary.get('trade_count')}",
+        f"- unique_signal_count: {summary.get('unique_signal_count')}",
+        f"- avg_realized_r_sim: {summary.get('avg_realized_r_sim')}",
+        f"- profit_factor: {summary.get('profit_factor')}",
+        f"- win_rate: {summary.get('win_rate')}",
+        f"- max_drawdown_r: {summary.get('max_drawdown_r')}",
+        f"- fee_share_r_avg: {summary.get('fee_share_r_avg')}",
+        f"- live_readiness: {status}",
+        f"- reason: {gate.get('reason') or ''}",
+        "",
+        "Next steps:",
+        "- Validate 3d output shape first.",
+        "- Run 7d only if MVP metrics remain usable.",
+        "- Run 30d before paper trading.",
+        "- Do not use best_expiry or all expiry variants for live readiness.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _natural_day_span(timestamps: list[float]) -> int:
+    valid = [ts for ts in timestamps if ts > 0]
+    if not valid:
+        return 0
+    days = {
+        datetime.fromtimestamp(ts, tz=timezone.utc).date()
+        for ts in valid
+    }
+    return len(days)
+
+
+def _unique_signal_id(zone: Mapping[str, Any], a3: Mapping[str, Any]) -> str:
+    for name in ("unique_signal_id", "signal_id", "a3_entry_rt_signal_id"):
+        value = str(a3.get(name) or zone.get(name) or "").strip()
+        if value:
+            return value
+    parts = [
+        str(zone.get("zone_id") or ""),
+        str(a3.get("a3_entry_rt_direction") or zone.get("direction") or "").upper(),
+        f"{parse_float(a3.get('a3_entry_rt_ts')):.8f}",
+        f"{parse_float(a3.get('a3_entry_rt_price')):.8f}",
+        _vp_setup(zone),
+    ]
+    return "|".join(parts)
 
 
 def _group_summary(trades: list[Mapping[str, Any]], field: str) -> list[dict[str, Any]]:

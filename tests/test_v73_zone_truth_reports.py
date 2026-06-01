@@ -91,6 +91,11 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
         "zone_truth_3a_rt_by_expiry.csv",
         "zone_truth_3a_rt_by_target_candidate.csv",
         "zone_truth_3a_rt_summary.json",
+        "zone_truth_3a_mvp_trades.csv",
+        "zone_truth_3a_mvp_summary.json",
+        "zone_truth_3a_mvp_decision.md",
+        "zone_truth_3a_mvp_by_vp_setup.csv",
+        "zone_truth_3a_mvp_by_a2_quality.csv",
         "zone_truth_by_a3_quality_future_type_v2.csv",
         "zone_truth_by_a3_aggression_type_v2.csv",
         "zone_truth_by_aggression_quality_future_context.csv",
@@ -102,6 +107,10 @@ def test_v73_zone_truth_outputs_future_offline_and_rt_report_files(tmp_path):
     assert rt_summary["runtime_3a_status"] == "SKIPPED_NO_TRADE_EVENTS"
     assert "runtime_3a_memory_profile" in rt_summary
     assert "default_expiry_trade_count" in rt_summary
+    with (out / "zone_truth_3a_mvp_summary.json").open(encoding="utf-8") as handle:
+        mvp_summary = json.load(handle)
+    assert mvp_summary["strategy_name"] == "MVP_VP_3A_LITE"
+    assert mvp_summary["live_readiness_gate"]["status"] == "NOT_READY"
     assert summary["no_future_field_hygiene_version"] == "v7.3.0.no_future_field_registry"
     assert "zone_truth_by_a3_aggression_type_v2.csv" in summary["deprecated_report_aliases"]
     assert "zone_truth_by_aggression_quality_context.csv" in summary["deprecated_report_aliases"]
@@ -138,9 +147,48 @@ def test_v73_zone_truth_runtime_reports_use_supplied_trade_events(tmp_path):
     with (out / "zone_truth_3a_rt_trades.csv").open(encoding="utf-8", newline="") as handle:
         trades = list(csv.DictReader(handle))
     assert len(trades) == 1
+    assert "unique_signal_id" in trades[0]
+    assert "a2_rt_quality" in trades[0]
+    assert "a2_rt_light_ready_for_a3_flag" in trades[0]
+    assert "a2_rt_confirmed_ready_for_a3_flag" in trades[0]
     assert trades[0]["entry_ts"] == str(float(BASE_TS + 4))
     assert "trade_blocked_flag" in trades[0]
     assert "ambiguous_flag_sim" in trades[0]
+    with (out / "zone_truth_3a_rt_signals.csv").open(encoding="utf-8", newline="") as handle:
+        signals = list(csv.DictReader(handle))
+    assert "unique_signal_id" in signals[0]
+    assert "a2_rt_quality" in signals[0]
+    assert "a2_rt_light_ready_for_a3_flag" in signals[0]
+    assert "a2_rt_confirmed_ready_for_a3_flag" in signals[0]
+
+
+def test_mvp_decision_md_is_short(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_mvp_decision"
+    ZoneTruthAnalyzer(enable_3a_simulator=False).analyze_files(phase1, reactions, kline, out)
+    lines = (out / "zone_truth_3a_mvp_decision.md").read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 80
+
+
+def test_mvp_trades_file_exists(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_mvp_trades"
+    ZoneTruthAnalyzer(enable_3a_simulator=False).analyze_files(phase1, reactions, kline, out)
+    assert (out / "zone_truth_3a_mvp_trades.csv").exists()
+
+
+def test_mvp_summary_file_exists(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_mvp_summary"
+    ZoneTruthAnalyzer(enable_3a_simulator=False).analyze_files(phase1, reactions, kline, out)
+    assert (out / "zone_truth_3a_mvp_summary.json").exists()
+
+
+def test_mvp_decision_file_exists(tmp_path):
+    phase1, reactions, kline = _inputs(tmp_path)
+    out = tmp_path / "out_mvp_decision_exists"
+    ZoneTruthAnalyzer(enable_3a_simulator=False).analyze_files(phase1, reactions, kline, out)
+    assert (out / "zone_truth_3a_mvp_decision.md").exists()
 
 
 def test_default_expiry_sec_plumbed_from_analyzer(tmp_path):
