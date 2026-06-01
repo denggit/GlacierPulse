@@ -614,11 +614,31 @@ def _acquire_runtime_events_lock(
             except FileNotFoundError:
                 continue
             age = max(time.time() - mtime, 0.0)
-            if age < stale_lock_sec:
+            lock_pid = _read_lock_pid(lock_path)
+            lock_pid_alive = _pid_is_alive(lock_pid) if lock_pid is not None else None
+            if lock_pid is not None and lock_pid_alive:
                 raise RuntimeError(
-                    f"{locked_message}: {lock_path} "
-                    f"lock_age_sec={age:.3f} stale_lock_sec={stale_lock_sec:.3f}; "
-                    f"{locked_hint}"
+                    _runtime_events_lock_error(
+                        locked_message,
+                        lock_path=lock_path,
+                        age=age,
+                        stale_lock_sec=stale_lock_sec,
+                        locked_hint=locked_hint,
+                        lock_pid=lock_pid,
+                        lock_pid_alive=lock_pid_alive,
+                    )
+                ) from exc
+            if lock_pid is None and age < stale_lock_sec:
+                raise RuntimeError(
+                    _runtime_events_lock_error(
+                        locked_message,
+                        lock_path=lock_path,
+                        age=age,
+                        stale_lock_sec=stale_lock_sec,
+                        locked_hint="lock has no pid; pass --runtime-events-lock-stale-sec 0 only if no writer process is running",
+                        lock_pid=None,
+                        lock_pid_alive=None,
+                    )
                 ) from exc
             try:
                 lock_path.unlink()
@@ -633,6 +653,51 @@ def _acquire_runtime_events_lock(
     fd = os.open(lock_path, flags)
     _write_runtime_events_lock_info(fd, lock_path=lock_path, kind=kind)
     return fd
+
+
+def _read_lock_pid(lock_path: Path) -> int | None:
+    try:
+        data = json.loads(Path(lock_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, Mapping):
+        return None
+    pid = data.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        return pid
+    return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _runtime_events_lock_error(
+    locked_message: str,
+    *,
+    lock_path: Path,
+    age: float,
+    stale_lock_sec: float,
+    locked_hint: str,
+    lock_pid: int | None,
+    lock_pid_alive: bool | None,
+) -> str:
+    pid_text = str(lock_pid) if lock_pid is not None else "UNKNOWN"
+    alive_text = "" if lock_pid_alive is None else f" lock_pid_alive={lock_pid_alive}"
+    return (
+        f"{locked_message}: {lock_path} "
+        f"lock_pid={pid_text}{alive_text} "
+        f"lock_age_sec={age:.3f} stale_lock_sec={stale_lock_sec:.3f}; "
+        f"{locked_hint}"
+    )
 
 
 def _write_runtime_events_lock_info(fd: int, *, lock_path: Path, kind: str) -> None:

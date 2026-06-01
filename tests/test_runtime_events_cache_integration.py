@@ -592,6 +592,43 @@ def test_runtime_events_cache_cleans_stale_day_lock(tmp_path):
     assert not lock.exists()
 
 
+def test_runtime_events_cache_cleans_dead_pid_day_lock(tmp_path):
+    path = tmp_path / "2026-04-02.jsonl"
+    lock = path.with_name("2026-04-02.jsonl.lock")
+    tmp = path.with_name("2026-04-02.jsonl.tmp")
+    lock.write_text(json.dumps({"pid": 999999999, "kind": "day_shard"}), encoding="utf-8")
+    tmp.write_text("stale tmp\n", encoding="utf-8")
+    now = time.time()
+    os.utime(lock, (now, now))
+
+    writer = RuntimeEventDailyCacheWriter(path, overwrite=True, stale_lock_sec=3600)
+    try:
+        lock_payload = json.loads(lock.read_text(encoding="utf-8"))
+        assert lock_payload["kind"] == "day_shard"
+        assert lock_payload["pid"] == os.getpid()
+        assert tmp.exists()
+        assert "stale tmp" not in tmp.read_text(encoding="utf-8")
+    finally:
+        writer.cleanup()
+
+    assert not lock.exists()
+
+
+def test_runtime_events_cache_keeps_alive_pid_day_lock(tmp_path):
+    path = tmp_path / "2026-04-02.jsonl"
+    lock = path.with_name("2026-04-02.jsonl.lock")
+    lock.write_text(json.dumps({"pid": os.getpid(), "kind": "day_shard"}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as exc:
+        RuntimeEventDailyCacheWriter(path, overwrite=True, stale_lock_sec=0)
+
+    message = str(exc.value)
+    assert "runtime_events day shard is locked" in message
+    assert f"lock_pid={os.getpid()}" in message
+    assert "lock_pid_alive=True" in message
+    assert lock.exists()
+
+
 def test_runtime_events_cache_keeps_fresh_day_lock(tmp_path):
     path = tmp_path / "2026-04-02.jsonl"
     lock = path.with_name("2026-04-02.jsonl.lock")
@@ -603,8 +640,10 @@ def test_runtime_events_cache_keeps_fresh_day_lock(tmp_path):
     message = str(exc.value)
     assert "runtime_events day shard is locked" in message
     assert str(lock) in message
+    assert "lock_pid=UNKNOWN" in message
     assert "lock_age_sec" in message
     assert "stale_lock_sec" in message
+    assert "lock has no pid; pass --runtime-events-lock-stale-sec 0 only if no writer process is running" in message
     assert lock.exists()
 
 
@@ -629,6 +668,41 @@ def test_runtime_events_cache_cleans_stale_manifest_lock(tmp_path):
     assert not lock.exists()
 
 
+def test_runtime_events_cache_cleans_dead_pid_manifest_lock(tmp_path):
+    manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, stale_lock_sec=3600)
+    manager.cache_dir().mkdir(parents=True)
+    lock = manager.manifest_lock_path
+    lock.write_text(json.dumps({"pid": 999999999, "kind": "manifest"}), encoding="utf-8")
+    now = time.time()
+    os.utime(lock, (now, now))
+
+    fd = manager._acquire_manifest_lock()
+    try:
+        lock_payload = json.loads(lock.read_text(encoding="utf-8"))
+        assert lock_payload["kind"] == "manifest"
+        assert lock_payload["pid"] == os.getpid()
+    finally:
+        manager._release_manifest_lock(fd)
+
+    assert not lock.exists()
+
+
+def test_runtime_events_cache_keeps_alive_pid_manifest_lock(tmp_path):
+    manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, stale_lock_sec=3600)
+    manager.cache_dir().mkdir(parents=True)
+    lock = manager.manifest_lock_path
+    lock.write_text(json.dumps({"pid": os.getpid(), "kind": "manifest"}), encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as exc:
+        manager._acquire_manifest_lock()
+
+    message = str(exc.value)
+    assert "runtime_events manifest is locked" in message
+    assert f"lock_pid={os.getpid()}" in message
+    assert "lock_pid_alive=True" in message
+    assert lock.exists()
+
+
 def test_runtime_events_cache_keeps_fresh_manifest_lock(tmp_path):
     manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, stale_lock_sec=3600)
     manager.cache_dir().mkdir(parents=True)
@@ -640,8 +714,10 @@ def test_runtime_events_cache_keeps_fresh_manifest_lock(tmp_path):
 
     message = str(exc.value)
     assert "runtime_events manifest is locked" in message
+    assert "lock_pid=UNKNOWN" in message
     assert "lock_age_sec" in message
     assert "stale_lock_sec" in message
+    assert "lock has no pid; pass --runtime-events-lock-stale-sec 0 only if no writer process is running" in message
     assert lock.exists()
 
 
