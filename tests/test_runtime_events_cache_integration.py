@@ -1,6 +1,8 @@
 import json
+import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -560,6 +562,116 @@ def test_runtime_events_cache_lock(tmp_path):
             RuntimeEventDailyCacheWriter(path)
     finally:
         writer.cleanup()
+
+
+def test_runtime_events_cache_cleans_stale_day_lock(tmp_path):
+    path = tmp_path / "2026-04-02.jsonl"
+    lock = path.with_name("2026-04-02.jsonl.lock")
+    tmp = path.with_name("2026-04-02.jsonl.tmp")
+    lock.write_text("old lock\n", encoding="utf-8")
+    tmp.write_text("stale tmp\n", encoding="utf-8")
+    old_time = time.time() - 10.0
+    os.utime(lock, (old_time, old_time))
+
+    writer = RuntimeEventDailyCacheWriter(path, overwrite=True, stale_lock_sec=1)
+    try:
+        assert lock.exists()
+        lock_payload = json.loads(lock.read_text(encoding="utf-8"))
+        assert lock_payload["kind"] == "day_shard"
+        assert lock_payload["pid"] > 0
+        assert lock_payload["created_at"]
+        assert lock_payload["path"] == str(lock)
+        assert tmp.exists()
+        assert "stale tmp" not in tmp.read_text(encoding="utf-8")
+        writer.write({"ts": 1775088000.1})
+        writer.commit()
+    finally:
+        writer.cleanup()
+
+    assert path.exists()
+    assert not lock.exists()
+
+
+def test_runtime_events_cache_keeps_fresh_day_lock(tmp_path):
+    path = tmp_path / "2026-04-02.jsonl"
+    lock = path.with_name("2026-04-02.jsonl.lock")
+    lock.write_text("fresh lock\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as exc:
+        RuntimeEventDailyCacheWriter(path, overwrite=True, stale_lock_sec=3600)
+
+    message = str(exc.value)
+    assert "runtime_events day shard is locked" in message
+    assert str(lock) in message
+    assert "lock_age_sec" in message
+    assert "stale_lock_sec" in message
+    assert lock.exists()
+
+
+def test_runtime_events_cache_cleans_stale_manifest_lock(tmp_path):
+    manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, stale_lock_sec=1)
+    manager.cache_dir().mkdir(parents=True)
+    lock = manager.manifest_lock_path
+    lock.write_text("old manifest lock\n", encoding="utf-8")
+    old_time = time.time() - 10.0
+    os.utime(lock, (old_time, old_time))
+
+    fd = manager._acquire_manifest_lock()
+    try:
+        lock_payload = json.loads(lock.read_text(encoding="utf-8"))
+        assert lock_payload["kind"] == "manifest"
+        assert lock_payload["pid"] > 0
+        assert lock_payload["created_at"]
+        assert lock_payload["path"] == str(lock)
+    finally:
+        manager._release_manifest_lock(fd)
+
+    assert not lock.exists()
+
+
+def test_runtime_events_cache_keeps_fresh_manifest_lock(tmp_path):
+    manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, stale_lock_sec=3600)
+    manager.cache_dir().mkdir(parents=True)
+    lock = manager.manifest_lock_path
+    lock.write_text("fresh manifest lock\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as exc:
+        manager._acquire_manifest_lock()
+
+    message = str(exc.value)
+    assert "runtime_events manifest is locked" in message
+    assert "lock_age_sec" in message
+    assert "stale_lock_sec" in message
+    assert lock.exists()
+
+
+def test_stale_lock_cleanup_does_not_delete_committed_day_file(tmp_path):
+    path = tmp_path / "2026-04-02.jsonl"
+    lock = path.with_name("2026-04-02.jsonl.lock")
+    tmp = path.with_name("2026-04-02.jsonl.tmp")
+    path.write_text('{"ts":1}\n', encoding="utf-8")
+    lock.write_text("old lock\n", encoding="utf-8")
+    tmp.write_text("stale tmp\n", encoding="utf-8")
+    old_time = time.time() - 10.0
+    os.utime(lock, (old_time, old_time))
+
+    with pytest.raises(RuntimeError, match="runtime_events day shard already exists"):
+        RuntimeEventDailyCacheWriter(path, overwrite=False, stale_lock_sec=1)
+
+    assert path.read_text(encoding="utf-8") == '{"ts":1}\n'
+
+    lock.write_text("old lock\n", encoding="utf-8")
+    tmp.write_text("stale tmp\n", encoding="utf-8")
+    os.utime(lock, (old_time, old_time))
+    writer = RuntimeEventDailyCacheWriter(path, overwrite=True, stale_lock_sec=1)
+    try:
+        writer.write({"ts": 2})
+        writer.commit()
+    finally:
+        writer.cleanup()
+
+    assert path.read_text(encoding="utf-8") == '{"ts": 2}\n'
+    assert not lock.exists()
 
 
 def test_existing_builder_cli_still_works(tmp_path):

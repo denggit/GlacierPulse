@@ -504,6 +504,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--runtime-events-bucket-sec", type=float, default=1.0)
     p.add_argument("--runtime-events-rolling-sec", type=float, default=3.0)
     p.add_argument("--runtime-events-cache-overwrite", choices=["true", "false"], default="false")
+    p.add_argument("--runtime-events-lock-stale-sec", type=float, default=3600.0)
     p.add_argument(
         "--runtime-events-cache-days",
         help="Advanced/debug override for runtime_events cache days. Normal research should use --start-date/--end-date.",
@@ -600,6 +601,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             contract_multiplier_source=multiplier_source,
             notional_mode="price_x_size_x_contract_multiplier",
             overwrite=parse_bool_arg(args.runtime_events_cache_overwrite),
+            stale_lock_sec=float(args.runtime_events_lock_stale_sec),
         )
         for day in selected_days:
             if runtime_cache_manager.has_valid_day(day):

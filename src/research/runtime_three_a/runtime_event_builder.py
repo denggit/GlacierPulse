@@ -15,6 +15,7 @@ import resource
 import shutil
 import sys
 import tarfile
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -77,6 +78,7 @@ SKIPPED_METADATA_JSON_GZ_WARNING = (
     "metadata-like .json.gz files were skipped; use --include-metadata-json to force"
 )
 RUNTIME_EVENTS_SCHEMA_VERSION = "v7.3.runtime_events.1"
+DEFAULT_RUNTIME_EVENTS_LOCK_STALE_SEC = 3600.0
 
 
 RuntimeEventFields = RUNTIME_EVENT_FIELDS
@@ -296,18 +298,28 @@ class RuntimeEventAccumulator:
 
 
 class RuntimeEventDailyCacheWriter:
-    def __init__(self, path: Path, *, overwrite: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        overwrite: bool = False,
+        stale_lock_sec: float = DEFAULT_RUNTIME_EVENTS_LOCK_STALE_SEC,
+    ) -> None:
         self.path = Path(path)
         self.tmp_path = self.path.with_name(f"{self.path.name}.tmp")
         self.lock_path = self.path.with_name(f"{self.path.name}.lock")
         self.overwrite = bool(overwrite)
+        self.stale_lock_sec = float(stale_lock_sec)
         self.stats = RuntimeEventDayStats(day=self.path.stem, path=self.path.name)
         ensure_dir(self.path.parent)
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        try:
-            self._lock_fd = os.open(self.lock_path, flags)
-        except FileExistsError as exc:
-            raise RuntimeError(f"runtime_events day shard is locked: {self.lock_path}") from exc
+        self._lock_fd = _acquire_runtime_events_lock(
+            self.lock_path,
+            kind="day_shard",
+            stale_lock_sec=self.stale_lock_sec,
+            tmp_path=self.tmp_path,
+            locked_message="runtime_events day shard is locked",
+            locked_hint="confirm no other process is writing this runtime_events day cache",
+        )
         if self.path.exists() and not self.overwrite:
             self._release_lock()
             raise RuntimeError(f"runtime_events day shard already exists: {self.path}")
@@ -368,6 +380,7 @@ class RuntimeEventCacheManager:
         notional_mode: str = "price_x_size_x_contract_multiplier",
         schema_version: str = RUNTIME_EVENTS_SCHEMA_VERSION,
         overwrite: bool = False,
+        stale_lock_sec: float = DEFAULT_RUNTIME_EVENTS_LOCK_STALE_SEC,
     ):
         self.cache_root = Path(cache_root)
         self.symbol = str(symbol)
@@ -378,6 +391,7 @@ class RuntimeEventCacheManager:
         self.notional_mode = str(notional_mode)
         self.schema_version = str(schema_version)
         self.overwrite = bool(overwrite)
+        self.stale_lock_sec = float(stale_lock_sec)
 
     def cache_dir(self) -> Path:
         return self.cache_root / self.symbol / runtime_events_param_key(
@@ -424,7 +438,11 @@ class RuntimeEventCacheManager:
         return self._shard_matches(shard, day) and int(parse_float(shard.get("row_count"))) > 0
 
     def begin_day_writer(self, day: str) -> RuntimeEventDailyCacheWriter:
-        return RuntimeEventDailyCacheWriter(self.expected_day_path(day), overwrite=True)
+        return RuntimeEventDailyCacheWriter(
+            self.expected_day_path(day),
+            overwrite=True,
+            stale_lock_sec=self.stale_lock_sec,
+        )
 
     def finalize_day(self, day: str, stats: RuntimeEventDayStats | Mapping[str, Any]) -> None:
         ensure_dir(self.cache_dir())
@@ -529,10 +547,14 @@ class RuntimeEventCacheManager:
         return {**self._manifest_header(), "shards": []}
 
     def _acquire_manifest_lock(self) -> int:
-        try:
-            return os.open(self.manifest_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as exc:
-            raise RuntimeError("runtime_events manifest is locked") from exc
+        ensure_dir(self.cache_dir())
+        return _acquire_runtime_events_lock(
+            self.manifest_lock_path,
+            kind="manifest",
+            stale_lock_sec=self.stale_lock_sec,
+            locked_message="runtime_events manifest is locked",
+            locked_hint="confirm no other process is writing the runtime_events manifest",
+        )
 
     def _release_manifest_lock(self, lock_fd: int) -> None:
         os.close(lock_fd)
@@ -565,6 +587,62 @@ def estimated_cache_size_mb(path: Path) -> float:
         if child.is_file():
             total += child.stat().st_size
     return round(total / (1024.0 * 1024.0), 6)
+
+
+def _acquire_runtime_events_lock(
+    lock_path: Path,
+    *,
+    kind: str,
+    stale_lock_sec: float,
+    locked_message: str,
+    locked_hint: str,
+    tmp_path: Path | None = None,
+) -> int:
+    lock_path = Path(lock_path)
+    stale_lock_sec = max(float(stale_lock_sec), 0.0)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    attempts = 0
+    while attempts < 3:
+        attempts += 1
+        try:
+            fd = os.open(lock_path, flags)
+            _write_runtime_events_lock_info(fd, lock_path=lock_path, kind=kind)
+            return fd
+        except FileExistsError as exc:
+            try:
+                mtime = lock_path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            age = max(time.time() - mtime, 0.0)
+            if age < stale_lock_sec:
+                raise RuntimeError(
+                    f"{locked_message}: {lock_path} "
+                    f"lock_age_sec={age:.3f} stale_lock_sec={stale_lock_sec:.3f}; "
+                    f"{locked_hint}"
+                ) from exc
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                continue
+            if tmp_path is not None:
+                try:
+                    Path(tmp_path).unlink()
+                except FileNotFoundError:
+                    pass
+            continue
+    fd = os.open(lock_path, flags)
+    _write_runtime_events_lock_info(fd, lock_path=lock_path, kind=kind)
+    return fd
+
+
+def _write_runtime_events_lock_info(fd: int, *, lock_path: Path, kind: str) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "path": str(lock_path),
+        "kind": str(kind),
+    }
+    os.write(fd, (json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
 
 
 def _safe_number(value: float) -> str:
@@ -616,6 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-json-file", action="store_true", help="Allow small raw .json files that require json.load. Disabled by default.")
     parser.add_argument("--max-json-file-bytes", type=int, default=MAX_JSON_FILE_BYTES, help="Maximum bytes for --allow-json-file inputs.")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output file/directory after a successful build.")
+    parser.add_argument("--runtime-events-lock-stale-sec", type=float, default=DEFAULT_RUNTIME_EVENTS_LOCK_STALE_SEC)
     parser.add_argument("--allow-empty", action="store_true", help="Allow empty output when no trade files are found or no trades match.")
     parser.add_argument("--include-metadata-json", action="store_true", help="Include metadata-like .json files (summary, manifest, metadata, meta, stats) when --allow-json-file is set.")
     parser.add_argument("--summary-out", help="Optional summary JSON path. Default: <out>.summary.json")
@@ -639,6 +718,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             contract_multiplier_source=multiplier_resolution.source,
             notional_mode="price_x_size_x_contract_multiplier",
             overwrite=bool(args.overwrite),
+            stale_lock_sec=float(args.runtime_events_lock_stale_sec),
         )
         out_dir = manager.cache_dir()
     elif args.out_dir:
