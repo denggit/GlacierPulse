@@ -9,6 +9,8 @@ from src.research.runtime_three_a.runtime_event_builder import (
     RuntimeEventAccumulator,
     RuntimeEventCacheManager,
     RuntimeEventDailyCacheWriter,
+    RuntimeEventDayStats,
+    runtime_events_param_key,
 )
 from tools import backtest_local_data as backtest
 
@@ -86,8 +88,23 @@ def test_runtime_events_cache_path_is_parameterized(tmp_path):
     b = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 2, 3, 0.01).cache_dir()
     c = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 5, 0.01).cache_dir()
     d = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 1.0).cache_dir()
-    assert len({a, b, c, d}) == 4
-    assert a.name == "bucket_1s_rolling_3s_cm_0p01"
+    e = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, schema_version="v.next").cache_dir()
+    f = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01, notional_mode="raw_notional").cache_dir()
+    assert len({a, b, c, d, e, f}) == 6
+    assert a.name.startswith("bucket_1s_rolling_3s_cm_0p01_")
+    assert "_nm_price_x_size_x_contract_multiplier_" in a.name
+    assert "_sv_v7p3_runtime_events_1" in a.name
+
+
+def test_runtime_events_param_key_includes_schema_and_notional():
+    base = runtime_events_param_key(bucket_sec=1, rolling_sec=3, contract_multiplier=0.01)
+    schema = runtime_events_param_key(bucket_sec=1, rolling_sec=3, contract_multiplier=0.01, schema_version="v7.3.runtime_events.2")
+    notional = runtime_events_param_key(bucket_sec=1, rolling_sec=3, contract_multiplier=0.01, notional_mode="raw_notional")
+    assert base != schema
+    assert base != notional
+    assert base.startswith("bucket_1s_rolling_3s_cm_0p01_")
+    assert "_nm_price_x_size_x_contract_multiplier_" in base
+    assert "_sv_v7p3_runtime_events_1" in base
 
 
 def test_backtest_local_data_generates_missing_day_cache(tmp_path, monkeypatch):
@@ -199,3 +216,90 @@ def test_existing_builder_cli_still_works(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert out.exists()
+
+
+def test_standalone_builder_cache_manifest_is_reusable_by_backtest(tmp_path, monkeypatch):
+    trades = tmp_path / "standalone_trades.jsonl"
+    trades.write_text(
+        "\n".join(
+            [
+                '{"ts":1775001600100,"px":"100","sz":"10","side":"buy","instId":"ETH-USDT-SWAP"}',
+                '{"ts":1775001601100,"px":"101","sz":"5","side":"sell","instId":"ETH-USDT-SWAP"}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cache_root = tmp_path / "cache"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/build_runtime_events_from_okx_trades.py",
+            "--symbol",
+            "ETH-USDT-SWAP",
+            "--trades-dir",
+            str(trades),
+            "--out-dir",
+            str(cache_root),
+            "--contract-multiplier",
+            "0.01",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    manager = RuntimeEventCacheManager(cache_root, "ETH-USDT-SWAP", 1, 3, 0.01)
+    assert manager.has_valid_day("2026-04-01") is True
+
+    _patch_runtime(monkeypatch)
+    trades_dir, books, _kline = _write_replay_inputs(tmp_path, days=("2026-04-01",))
+    out = tmp_path / "out"
+    code = backtest.main(
+        [
+            "--symbol",
+            "ETH-USDT-SWAP",
+            "--contract-multiplier",
+            "0.01",
+            "--trades-dir",
+            str(trades_dir),
+            "--books-file",
+            str(books),
+            "--out-dir",
+            str(out),
+            "--runtime-events-cache-root",
+            str(cache_root),
+        ]
+    )
+    ref = json.loads((out / "runtime_events_ref.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert ref["cache_hit_days"] == ["2026-04-01"]
+    assert ref["generated_days"] == []
+
+
+def test_runtime_events_manifest_lock(tmp_path):
+    manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01)
+    manager.cache_dir().mkdir(parents=True)
+    fd = manager._acquire_manifest_lock()
+    try:
+        with pytest.raises(RuntimeError, match="runtime_events manifest is locked"):
+            manager.finalize_day("2026-04-01", RuntimeEventDayStats(day="2026-04-01", path="2026-04-01.jsonl", first_ts=1.0, last_ts=2.0, row_count=1))
+    finally:
+        manager._release_manifest_lock(fd)
+    assert not manager.manifest_lock_path.exists()
+
+
+def test_runtime_events_manifest_lock_released_and_preserves_multiple_days(tmp_path):
+    manager = RuntimeEventCacheManager(tmp_path, "ETH-USDT-SWAP", 1, 3, 0.01)
+    manager.cache_dir().mkdir(parents=True)
+    (manager.cache_dir() / "2026-04-01.jsonl").write_text('{"ts":1}\n', encoding="utf-8")
+    (manager.cache_dir() / "2026-04-02.jsonl").write_text('{"ts":2}\n', encoding="utf-8")
+    manager.finalize_day("2026-04-01", RuntimeEventDayStats(day="2026-04-01", path="2026-04-01.jsonl", first_ts=1.0, last_ts=1.0, row_count=1))
+    assert not manager.manifest_lock_path.exists()
+    manager.finalize_day("2026-04-02", RuntimeEventDayStats(day="2026-04-02", path="2026-04-02.jsonl", first_ts=2.0, last_ts=2.0, row_count=1))
+    manifest = manager.load_manifest()
+    assert [shard["day"] for shard in manifest["shards"]] == ["2026-04-01", "2026-04-02"]
+    assert manager.has_valid_day("2026-04-01") is True
+    assert manager.has_valid_day("2026-04-02") is True
+    assert not manager.manifest_lock_path.exists()

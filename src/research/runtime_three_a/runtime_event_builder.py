@@ -357,6 +357,7 @@ class RuntimeEventCacheManager:
         rolling_sec: float,
         contract_multiplier: float,
         notional_mode: str = "price_x_size_x_contract_multiplier",
+        schema_version: str = RUNTIME_EVENTS_SCHEMA_VERSION,
         overwrite: bool = False,
     ):
         self.cache_root = Path(cache_root)
@@ -365,7 +366,7 @@ class RuntimeEventCacheManager:
         self.rolling_sec = max(float(rolling_sec), 0.001)
         self.contract_multiplier = float(contract_multiplier)
         self.notional_mode = str(notional_mode)
-        self.schema_version = RUNTIME_EVENTS_SCHEMA_VERSION
+        self.schema_version = str(schema_version)
         self.overwrite = bool(overwrite)
 
     def cache_dir(self) -> Path:
@@ -383,6 +384,10 @@ class RuntimeEventCacheManager:
     @property
     def manifest_path(self) -> Path:
         return self.cache_dir() / "runtime_events_manifest.json"
+
+    @property
+    def manifest_lock_path(self) -> Path:
+        return self.cache_dir() / "runtime_events_manifest.lock"
 
     @property
     def cache_meta_path(self) -> Path:
@@ -412,30 +417,34 @@ class RuntimeEventCacheManager:
         return RuntimeEventDailyCacheWriter(self.expected_day_path(day), overwrite=True)
 
     def finalize_day(self, day: str, stats: RuntimeEventDayStats | Mapping[str, Any]) -> None:
-        shard = dict(stats.as_dict() if hasattr(stats, "as_dict") else stats)
-        shard.update(
-            {
-                "path": f"{day}.jsonl",
-                "day": day,
-                "bucket_sec": self.bucket_sec,
-                "rolling_sec": self.rolling_sec,
-                "contract_multiplier": self.contract_multiplier,
-                "notional_mode": self.notional_mode,
-                "schema_version": self.schema_version,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-        manifest = self.load_manifest()
-        shards = [
-            item for item in (manifest.get("shards") or [])
-            if isinstance(item, Mapping) and str(item.get("day") or Path(str(item.get("path") or "")).stem) != day
-        ]
-        shards.append(shard)
-        manifest.update(self._manifest_header())
-        manifest["shards"] = sorted(shards, key=lambda item: str(item.get("day") or item.get("path") or ""))
         ensure_dir(self.cache_dir())
-        _atomic_write_json(self.manifest_path, manifest)
-        _atomic_write_json(self.cache_meta_path, {**self._manifest_header(), "updated_at": datetime.now(timezone.utc).isoformat()})
+        lock_fd = self._acquire_manifest_lock()
+        try:
+            shard = dict(stats.as_dict() if hasattr(stats, "as_dict") else stats)
+            shard.update(
+                {
+                    "path": f"{day}.jsonl",
+                    "day": day,
+                    "bucket_sec": self.bucket_sec,
+                    "rolling_sec": self.rolling_sec,
+                    "contract_multiplier": self.contract_multiplier,
+                    "notional_mode": self.notional_mode,
+                    "schema_version": self.schema_version,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            manifest = self.load_manifest()
+            shards = [
+                item for item in (manifest.get("shards") or [])
+                if isinstance(item, Mapping) and str(item.get("day") or Path(str(item.get("path") or "")).stem) != day
+            ]
+            shards.append(shard)
+            manifest.update(self._manifest_header())
+            manifest["shards"] = sorted(shards, key=lambda item: str(item.get("day") or item.get("path") or ""))
+            _atomic_write_json(self.manifest_path, manifest)
+            _atomic_write_json(self.cache_meta_path, {**self._manifest_header(), "updated_at": datetime.now(timezone.utc).isoformat()})
+        finally:
+            self._release_manifest_lock(lock_fd)
 
     def selected_source(self, days: list[str]) -> RuntimeEventSource | None:
         if not days:
@@ -508,6 +517,17 @@ class RuntimeEventCacheManager:
     def _empty_manifest(self) -> dict[str, Any]:
         return {**self._manifest_header(), "shards": []}
 
+    def _acquire_manifest_lock(self) -> int:
+        try:
+            return os.open(self.manifest_lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise RuntimeError("runtime_events manifest is locked") from exc
+
+    def _release_manifest_lock(self, lock_fd: int) -> None:
+        os.close(lock_fd)
+        if self.manifest_lock_path.exists():
+            self.manifest_lock_path.unlink()
+
 
 def runtime_events_param_key(
     *,
@@ -517,7 +537,13 @@ def runtime_events_param_key(
     notional_mode: str = "price_x_size_x_contract_multiplier",
     schema_version: str = RUNTIME_EVENTS_SCHEMA_VERSION,
 ) -> str:
-    return f"bucket_{_safe_number(bucket_sec)}s_rolling_{_safe_number(rolling_sec)}s_cm_{_safe_number(contract_multiplier)}"
+    return (
+        f"bucket_{_safe_number(bucket_sec)}s"
+        f"_rolling_{_safe_number(rolling_sec)}s"
+        f"_cm_{_safe_number(contract_multiplier)}"
+        f"_nm_{_safe_token(notional_mode)}"
+        f"_sv_{_safe_token(schema_version)}"
+    )
 
 
 def estimated_cache_size_mb(path: Path) -> float:
@@ -538,7 +564,16 @@ def _safe_number(value: float) -> str:
 
 
 def _safe_token(value: str) -> str:
-    return "".join(ch if ch.isalnum() else "_" for ch in str(value)).strip("_").lower()
+    text = str(value)
+    chars: list[str] = []
+    for idx, ch in enumerate(text):
+        if ch == "." and idx > 0 and idx + 1 < len(text) and text[idx - 1].isdigit() and text[idx + 1].isdigit():
+            chars.append("p")
+        elif ch.isalnum():
+            chars.append(ch)
+        else:
+            chars.append("_")
+    return "".join(chars).strip("_").lower()
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -982,15 +1017,35 @@ class _ShardedRuntimeEventWriter(_RuntimeEventWriter):
         contract_multiplier: float,
         notional_mode: str,
         output_mode: str,
+        schema_version: str = RUNTIME_EVENTS_SCHEMA_VERSION,
     ) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        shards: list[dict[str, Any]] = []
+        for path in sorted(self._shards):
+            shard = dict(self._shards[path])
+            day = str(shard.get("day") or Path(str(shard.get("path") or path.name)).stem)
+            shard.update(
+                {
+                    "day": day,
+                    "path": f"{day}.jsonl",
+                    "bucket_sec": float(bucket_sec),
+                    "rolling_sec": float(rolling_sec),
+                    "contract_multiplier": float(contract_multiplier),
+                    "notional_mode": str(notional_mode),
+                    "schema_version": str(schema_version),
+                    "created_at": created_at,
+                }
+            )
+            shards.append(shard)
         manifest = {
             "symbol": symbol,
-            "bucket_sec": bucket_sec,
-            "rolling_sec": rolling_sec,
-            "contract_multiplier": contract_multiplier,
+            "bucket_sec": float(bucket_sec),
+            "rolling_sec": float(rolling_sec),
+            "contract_multiplier": float(contract_multiplier),
             "notional_mode": notional_mode,
+            "schema_version": str(schema_version),
             "output_mode": output_mode,
-            "shards": [self._shards[path] for path in sorted(self._shards)],
+            "shards": shards,
         }
         write_json(self.build_root / "runtime_events_manifest.json", manifest)
 
