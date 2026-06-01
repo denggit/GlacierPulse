@@ -53,6 +53,7 @@ class A2RuntimeStateMachine:
         self.cvd_max = 0.0
         self.defended_low = _defended_low(zone)
         self.defended_high = _defended_high(zone)
+        self.ready_quality = "NONE"
         self.a1_buy_peak = max(parse_float(zone.get("active_buy_notional_3s")), parse_float(zone.get("max_active_notional")), 1.0)
         self.a1_sell_peak = max(parse_float(zone.get("active_sell_notional_3s")), parse_float(zone.get("max_active_notional")), 1.0)
 
@@ -96,9 +97,12 @@ class A2RuntimeStateMachine:
             self.reason = "first_runtime_tick"
         elif self._confirmed_ready():
             self.state = A2_READY_FOR_A3
+            self.ready_quality = "CONFIRMED"
             self.reason = "confirmed_quiet_hold|box_width_ok|flow_exhaustion|cvd_stall"
         elif self._light_ready():
             self.state = A2_LIGHT_READY
+            if self.ready_quality != "CONFIRMED":
+                self.ready_quality = "LIGHT"
             self.reason = "light_ready|defended_level_hold|box_width_ok"
         else:
             self.state = A2_QUIET_HOLD
@@ -106,6 +110,8 @@ class A2RuntimeStateMachine:
         return self.snapshot()
 
     def mark_a3_triggered(self) -> dict[str, Any]:
+        if self.ready_quality not in {"LIGHT", "CONFIRMED"}:
+            self.ready_quality = "LIGHT"
         self.state = A2_A3_TRIGGERED
         self.reason = "runtime_a3_triggered"
         return self.snapshot()
@@ -116,8 +122,9 @@ class A2RuntimeStateMachine:
         buy_avg = self.buy_notional_sum / max(self.tick_count, 1)
         sell_avg = self.sell_notional_sum / max(self.tick_count, 1)
         quiet_ratio = self._quiet_volume_ratio()
-        light_ready = self.state in {A2_LIGHT_READY, A2_READY_FOR_A3, A2_A3_TRIGGERED}
-        confirmed_ready = self.state in {A2_READY_FOR_A3, A2_A3_TRIGGERED}
+        quality = self.ready_quality if self.ready_quality in {"LIGHT", "CONFIRMED"} else "NONE"
+        light_ready = quality in {"LIGHT", "CONFIRMED"}
+        confirmed_ready = quality == "CONFIRMED"
         return {
             "a2_rt_state": self.state,
             "a2_rt_state_reason": self.reason,
@@ -145,7 +152,7 @@ class A2RuntimeStateMachine:
             "a2_rt_light_ready_for_a3_flag": light_ready,
             "a2_rt_confirmed_ready_for_a3_flag": confirmed_ready,
             "a2_rt_ready_for_a3_flag": light_ready,
-            "a2_rt_quality": "CONFIRMED" if confirmed_ready else ("LIGHT" if light_ready else "NONE"),
+            "a2_rt_quality": quality,
             "a2_rt_defended_low": round(self.defended_low, 8),
             "a2_rt_defended_high": round(self.defended_high, 8),
             "a2_rt_expiry_sec": round(self.expiry_sec, 8),
