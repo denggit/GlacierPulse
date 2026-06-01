@@ -29,6 +29,7 @@ import heapq
 import io
 import json
 import os
+import re
 import sys
 import tarfile
 import time
@@ -499,6 +500,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-name", default="local_a1_research_replay")
     p.add_argument("--out-dir", type=Path)
     p.add_argument("--contract-multiplier", type=float)
+    p.add_argument("--enable-runtime-events-cache", choices=["true", "false"], default="true")
+    p.add_argument("--runtime-events-cache-root", type=Path, default=ROOT / "data" / "derived" / "runtime_events")
+    p.add_argument("--runtime-events-bucket-sec", type=float, default=1.0)
+    p.add_argument("--runtime-events-rolling-sec", type=float, default=3.0)
+    p.add_argument("--runtime-events-cache-overwrite", choices=["true", "false"], default="false")
+    p.add_argument("--runtime-events-cache-days", help="Optional comma-separated UTC dates, YYYY-MM-DD.")
+    p.add_argument("--disable-runtime-3a", action="store_true", help="Disable V7.3 runtime A2/A3 report generation for this run.")
     p.add_argument("--start-date", help="Replay lower bound as YYYY-MM-DD at 00:00:00 UTC.")
     p.add_argument("--end-date", help="Replay upper bound as inclusive YYYY-MM-DD; internally next day 00:00:00 UTC.")
     p.add_argument("--start-time", help="Replay lower bound as ISO8601 UTC timestamp. Timezone-less values are UTC.")
@@ -557,13 +565,50 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_runtime_environment(args=args, out_dir=out_dir, research_dir=research_dir)
 
     from src.config.runtime_profile_loader import load_runtime_profile
+    from src.research.runtime_three_a.runtime_event_builder import (
+        RuntimeEventAccumulator,
+        RuntimeEventCacheManager,
+    )
     from src.utils.log import get_logger
 
     load_runtime_profile()
     global logger
     logger = get_logger("BacktestLocalData")
 
-    multiplier = args.contract_multiplier or CONTRACT_MULTIPLIERS.get(args.symbol, 1.0)
+    multiplier = resolve_contract_multiplier_for_replay(str(args.symbol), args.contract_multiplier)
+    runtime_cache_enabled = parse_bool_arg(args.enable_runtime_events_cache)
+    runtime_cache_manager: RuntimeEventCacheManager | None = None
+    runtime_accumulator: RuntimeEventAccumulator | None = None
+    runtime_writers: dict[str, Any] = {}
+    selected_days = parse_runtime_cache_days(args.runtime_events_cache_days) or infer_utc_days_from_paths(trades_files)
+    actual_runtime_days: set[str] = set()
+    cache_hit_days: set[str] = set()
+    cache_miss_days: set[str] = set()
+    generated_days: set[str] = set()
+    runtime_events_used_by_zone_truth = False
+    if runtime_cache_enabled:
+        runtime_cache_manager = RuntimeEventCacheManager(
+            cache_root=Path(args.runtime_events_cache_root),
+            symbol=str(args.symbol),
+            bucket_sec=float(args.runtime_events_bucket_sec),
+            rolling_sec=float(args.runtime_events_rolling_sec),
+            contract_multiplier=float(multiplier),
+            notional_mode="price_x_size_x_contract_multiplier",
+            overwrite=parse_bool_arg(args.runtime_events_cache_overwrite),
+        )
+        for day in selected_days:
+            if runtime_cache_manager.has_valid_day(day):
+                cache_hit_days.add(day)
+            else:
+                cache_miss_days.add(day)
+        if not selected_days or cache_miss_days:
+            runtime_accumulator = RuntimeEventAccumulator(
+                symbol=str(args.symbol),
+                bucket_sec=float(args.runtime_events_bucket_sec),
+                rolling_sec=float(args.runtime_events_rolling_sec),
+                contract_multiplier=float(multiplier),
+                notional_mode="price_x_size_x_contract_multiplier",
+            )
     book_cleaning = BookCleaningOptions(
         event_mode=str(args.books_event_mode),
         depth_limit=max(1, int(args.books_depth_limit)),
@@ -624,6 +669,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
 
     event_loop_start = time.perf_counter()
+    replay_success = False
     try:
         events = build_events(
             trades_files,
@@ -642,6 +688,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             stats.touch(event.ts)
             if event.kind == "trade":
                 tick_start = time.perf_counter()
+                if runtime_cache_enabled and runtime_cache_manager is not None:
+                    handle_runtime_cache_trade(
+                        trade=event.payload,
+                        event_ts=event.ts,
+                        manager=runtime_cache_manager,
+                        accumulator=runtime_accumulator,
+                        writers=runtime_writers,
+                        selected_days=selected_days,
+                        actual_days=actual_runtime_days,
+                        cache_hit_days=cache_hit_days,
+                        cache_miss_days=cache_miss_days,
+                        generated_days=generated_days,
+                    )
                 runtime.on_trade_tick(event.payload, stats)
                 profiler.trade_tick_sec += time.perf_counter() - tick_start
             elif event.kind == "book":
@@ -659,7 +718,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     stats.a1_iceberg_events,
                     fmt_utc(stats.last_ts),
                 )
+        replay_success = True
     finally:
+        if runtime_cache_enabled and runtime_cache_manager is not None:
+            if replay_success:
+                finalize_runtime_cache_writers(
+                    manager=runtime_cache_manager,
+                    accumulator=runtime_accumulator,
+                    writers=runtime_writers,
+                    cache_miss_days=cache_miss_days,
+                    generated_days=generated_days,
+                )
+            else:
+                for writer in runtime_writers.values():
+                    writer.cleanup()
+                runtime_writers.clear()
         runtime.close()
 
     elapsed = time.perf_counter() - event_loop_start
@@ -677,12 +750,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     report_exit_code = 0
     if args.generate_reports:
         report_start = time.perf_counter()
+        runtime_events_source = None
+        if runtime_cache_enabled and runtime_cache_manager is not None:
+            effective_days = sorted(actual_runtime_days or set(selected_days))
+            runtime_events_source = runtime_cache_manager.selected_source(effective_days)
+            runtime_events_used_by_zone_truth = bool(runtime_events_source is not None and not args.disable_runtime_3a)
+            runtime_cache_manager.write_run_ref(
+                out_dir,
+                effective_days,
+                sorted(cache_hit_days & set(effective_days)),
+                sorted(cache_miss_days & set(effective_days)),
+                sorted(generated_days & set(effective_days)),
+                runtime_events_used_by_zone_truth=runtime_events_used_by_zone_truth,
+            )
         report_generation, report_exit_code = generate_replay_research_reports(
             args=args,
             research_dir=research_dir,
             report_generation=report_generation,
+            runtime_events_path=runtime_cache_manager.cache_dir() if runtime_events_used_by_zone_truth and runtime_cache_manager is not None else None,
         )
+        if runtime_cache_enabled and not runtime_events_used_by_zone_truth and not args.disable_runtime_3a:
+            patch_zone_truth_runtime_status(resolve_report_run_name(args), "SKIPPED_NO_RUNTIME_EVENTS_CACHE")
         profiler.report_generation_sec = time.perf_counter() - report_start
+    elif runtime_cache_enabled and runtime_cache_manager is not None:
+        effective_days = sorted(actual_runtime_days or set(selected_days))
+        runtime_cache_manager.write_run_ref(
+            out_dir,
+            effective_days,
+            sorted(cache_hit_days & set(effective_days)),
+            sorted(cache_miss_days & set(effective_days)),
+            sorted(generated_days & set(effective_days)),
+            runtime_events_used_by_zone_truth=False,
+        )
     profiler.total_sec = time.perf_counter() - total_start
 
     summary = {
@@ -715,6 +814,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             for key in LOCAL_REPLAY_LOG_OVERRIDE_ENV_KEYS
         },
         "report_generation": report_generation,
+        "runtime_events_cache": {
+            "enabled": runtime_cache_enabled,
+            "cache_dir": str(runtime_cache_manager.cache_dir()) if runtime_cache_manager is not None else "",
+            "selected_days": sorted(actual_runtime_days or set(selected_days)),
+            "cache_hit_days": sorted(cache_hit_days & set(actual_runtime_days or selected_days)),
+            "cache_miss_days": sorted(cache_miss_days & set(actual_runtime_days or selected_days)),
+            "generated_days": sorted(generated_days & set(actual_runtime_days or selected_days)),
+            "reused_days": sorted(cache_hit_days & set(actual_runtime_days or selected_days)),
+            "estimated_cache_size_mb": estimated_runtime_cache_size_mb(runtime_cache_manager.cache_dir()) if runtime_cache_manager is not None else 0.0,
+            "runtime_events_used_by_zone_truth": runtime_events_used_by_zone_truth,
+        },
         "replay_timing": profiler.timing_summary(),
         "replay_rates": profiler.rates_summary(stats),
         "book_cleaning_profile": profiler.book_cleaning_summary(stats),
@@ -767,11 +877,147 @@ def build_report_generation_summary(
     }
 
 
+def parse_bool_arg(value: Any) -> bool:
+    return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def resolve_contract_multiplier_for_replay(symbol: str, value: float | None) -> float:
+    if value is None and "-SWAP" in str(symbol).upper():
+        raise SystemExit("--contract-multiplier is required for SWAP symbols to avoid incorrect notional.")
+    return float(1.0 if value is None else value)
+
+
+def parse_runtime_cache_days(value: str | None) -> list[str]:
+    if not value:
+        return []
+    out: list[str] = []
+    for part in str(value).split(","):
+        day = part.strip()
+        if not day:
+            continue
+        parse_date_utc(day)
+        out.append(day)
+    return sorted(dict.fromkeys(out))
+
+
+def utc_day(ts: float) -> str:
+    return datetime.fromtimestamp(float(ts), timezone.utc).date().isoformat()
+
+
+def infer_utc_days_from_paths(paths: Sequence[Path]) -> list[str]:
+    days: set[str] = set()
+    for path in paths:
+        for match in re.finditer(r"\d{4}-\d{2}-\d{2}|\d{8}", path.name):
+            token = match.group(0)
+            if len(token) == 8:
+                token = f"{token[:4]}-{token[4:6]}-{token[6:8]}"
+            try:
+                parse_date_utc(token)
+            except SystemExit:
+                continue
+            days.add(token)
+    return sorted(days)
+
+
+def handle_runtime_cache_trade(
+    *,
+    trade: Mapping[str, Any],
+    event_ts: float,
+    manager: Any,
+    accumulator: Any,
+    writers: dict[str, Any],
+    selected_days: list[str],
+    actual_days: set[str],
+    cache_hit_days: set[str],
+    cache_miss_days: set[str],
+    generated_days: set[str],
+) -> None:
+    day = utc_day(event_ts)
+    actual_days.add(day)
+    if day not in cache_hit_days and day not in cache_miss_days:
+        if manager.has_valid_day(day):
+            cache_hit_days.add(day)
+        else:
+            cache_miss_days.add(day)
+    if accumulator is None:
+        return
+    raw_size = trade.get("raw_size", trade.get("size"))
+    events = accumulator.update_trade(
+        ts=float(event_ts),
+        price=float(trade.get("price") or 0.0),
+        side=str(trade.get("side") or ""),
+        size=to_float(raw_size),
+    )
+    for event in events:
+        write_runtime_cache_event(event, manager, writers, cache_miss_days, generated_days)
+
+
+def write_runtime_cache_event(
+    event: Mapping[str, Any],
+    manager: Any,
+    writers: dict[str, Any],
+    cache_miss_days: set[str],
+    generated_days: set[str],
+) -> None:
+    day = utc_day(float(event.get("ts") or 0.0))
+    if day not in cache_miss_days:
+        return
+    writer = writers.get(day)
+    if writer is None:
+        writer = manager.begin_day_writer(day)
+        writers[day] = writer
+    writer.write(event)
+    generated_days.add(day)
+
+
+def finalize_runtime_cache_writers(
+    *,
+    manager: Any,
+    accumulator: Any,
+    writers: dict[str, Any],
+    cache_miss_days: set[str],
+    generated_days: set[str],
+) -> None:
+    try:
+        if accumulator is not None:
+            for event in accumulator.flush():
+                write_runtime_cache_event(event, manager, writers, cache_miss_days, generated_days)
+        for day, writer in list(writers.items()):
+            stats = writer.commit()
+            manager.finalize_day(day, stats)
+    except Exception:
+        for writer in writers.values():
+            writer.cleanup()
+        raise
+    finally:
+        writers.clear()
+
+
+def patch_zone_truth_runtime_status(report_run_name: str, status: str) -> None:
+    path = ROOT / "reports" / report_run_name / "zone_truth" / "zone_truth_3a_rt_summary.json"
+    if not path.exists():
+        return
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    payload["runtime_3a_status"] = status
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def estimated_runtime_cache_size_mb(path: Path) -> float:
+    if not path.exists():
+        return 0.0
+    total = sum(child.stat().st_size for child in path.rglob("*.jsonl") if child.is_file())
+    return round(total / (1024.0 * 1024.0), 6)
+
+
 def generate_replay_research_reports(
     *,
     args: argparse.Namespace,
     research_dir: Path,
     report_generation: dict[str, Any],
+    runtime_events_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     from tools.generate_research_reports import main as generate_research_reports_main
 
@@ -795,6 +1041,10 @@ def generate_replay_research_reports(
         "--snapshot",
         "--zip",
     ]
+    if runtime_events_path is not None:
+        argv.extend(["--runtime-events", str(runtime_events_path)])
+    if args.disable_runtime_3a:
+        argv.extend(["--enable-3a-rt-backtest", "false"])
     exit_code = int(generate_research_reports_main(argv) or 0)
     report_generation.update(
         build_report_generation_summary(
