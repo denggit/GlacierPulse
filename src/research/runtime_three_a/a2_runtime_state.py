@@ -12,6 +12,7 @@ from src.research.a1_edge.schema import parse_float
 A2_A1_DETECTED = "A1_DETECTED"
 A2_FORMING = "A2_FORMING"
 A2_QUIET_HOLD = "A2_QUIET_HOLD"
+A2_LIGHT_READY = "A2_LIGHT_READY"
 A2_READY_FOR_A3 = "A2_READY_FOR_A3"
 A2_A3_TRIGGERED = "A3_TRIGGERED"
 A2_INVALIDATED = "A2_INVALIDATED"
@@ -28,6 +29,9 @@ class A2RuntimeConfig:
     quiet_volume_ratio_max: float = 0.45
     cvd_stall_ratio_max: float = 0.35
     invalidation_buffer_u: float = 0.5
+    enable_light_ready: bool = True
+    min_light_sec: float = 2.0
+    min_light_tick_count: int = 2
 
 
 class A2RuntimeStateMachine:
@@ -69,7 +73,7 @@ class A2RuntimeStateMachine:
             self.reason = "defended_level_broken"
             return self.snapshot()
         if self.state == A2_READY_FOR_A3:
-            self.reason = "ready_waiting_for_a3"
+            self.reason = "confirmed_ready_waiting_for_a3"
             return self.snapshot()
 
         self.tick_count += 1
@@ -90,9 +94,12 @@ class A2RuntimeStateMachine:
         if self.tick_count == 1:
             self.state = A2_FORMING
             self.reason = "first_runtime_tick"
-        elif self._ready():
+        elif self._confirmed_ready():
             self.state = A2_READY_FOR_A3
-            self.reason = "quiet_hold|box_width_ok|flow_exhaustion|cvd_stall"
+            self.reason = "confirmed_quiet_hold|box_width_ok|flow_exhaustion|cvd_stall"
+        elif self._light_ready():
+            self.state = A2_LIGHT_READY
+            self.reason = "light_ready|defended_level_hold|box_width_ok"
         else:
             self.state = A2_QUIET_HOLD
             self.reason = "collecting_quiet_hold_evidence"
@@ -109,6 +116,8 @@ class A2RuntimeStateMachine:
         buy_avg = self.buy_notional_sum / max(self.tick_count, 1)
         sell_avg = self.sell_notional_sum / max(self.tick_count, 1)
         quiet_ratio = self._quiet_volume_ratio()
+        light_ready = self.state in {A2_LIGHT_READY, A2_READY_FOR_A3, A2_A3_TRIGGERED}
+        confirmed_ready = self.state in {A2_READY_FOR_A3, A2_A3_TRIGGERED}
         return {
             "a2_rt_state": self.state,
             "a2_rt_state_reason": self.reason,
@@ -133,27 +142,45 @@ class A2RuntimeStateMachine:
             "a2_rt_cvd_stall_flag": self._cvd_stall(),
             "a2_rt_invalidated_flag": self.state == A2_INVALIDATED,
             "a2_rt_expired_flag": self.state == A2_EXPIRED,
-            "a2_rt_ready_for_a3_flag": self.state == A2_READY_FOR_A3,
+            "a2_rt_light_ready_for_a3_flag": light_ready,
+            "a2_rt_confirmed_ready_for_a3_flag": confirmed_ready,
+            "a2_rt_ready_for_a3_flag": light_ready,
+            "a2_rt_quality": "CONFIRMED" if confirmed_ready else ("LIGHT" if light_ready else "NONE"),
             "a2_rt_defended_low": round(self.defended_low, 8),
             "a2_rt_defended_high": round(self.defended_high, 8),
             "a2_rt_expiry_sec": round(self.expiry_sec, 8),
             "a2_rt_expiry_bucket": _expiry_bucket(self.expiry_sec),
         }
 
-    def _ready(self) -> bool:
+    def _confirmed_ready(self) -> bool:
         if self.tick_count < self.config.min_tick_count:
             return False
         if self.last_update_ts - self.start_ts < self.config.min_quiet_sec:
             return False
-        zone_width = max(parse_float(self.zone.get("zone_width")), abs(parse_float(self.zone.get("zone_upper")) - parse_float(self.zone.get("zone_lower"))), 1.0)
-        max_width = max(zone_width * self.config.max_box_width_multiplier, self.config.max_box_width_u)
-        if self.box_high <= 0 or self.box_low <= 0 or self.box_high - self.box_low > max_width:
+        if not self._box_width_ok():
             return False
         if self.direction == "BUY" and not self.snapshot()["a2_rt_active_sell_exhaustion_flag"]:
             return False
         if self.direction == "SELL" and not self.snapshot()["a2_rt_active_buy_exhaustion_flag"]:
             return False
         return self._cvd_stall()
+
+    def _light_ready(self) -> bool:
+        if not self.config.enable_light_ready:
+            return False
+        if self.tick_count < max(1, int(self.config.min_light_tick_count)):
+            return False
+        if self.last_update_ts - self.start_ts < max(float(self.config.min_light_sec), 0.0):
+            return False
+        return self._box_width_ok()
+
+    def _box_width_ok(self) -> bool:
+        zone_width = max(parse_float(self.zone.get("zone_width")), abs(parse_float(self.zone.get("zone_upper")) - parse_float(self.zone.get("zone_lower"))), 1.0)
+        max_width = max(zone_width * self.config.max_box_width_multiplier, self.config.max_box_width_u)
+        return not (self.box_high <= 0 or self.box_low <= 0 or self.box_high - self.box_low > max_width)
+
+    def _ready(self) -> bool:
+        return self._confirmed_ready()
 
     def _quiet_volume_ratio(self) -> float:
         if self.direction == "BUY":
